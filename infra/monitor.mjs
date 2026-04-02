@@ -15492,7 +15492,7 @@ injectMonitorFunctions({
         : {};
       const runtimeStats = getRuntimeStats();
       const activeSessions = getSessionTracker().listAllSessions({ includePersisted: false })
-        .filter((session) => session?.runtimeIsLive || session?.lifecycleStatus === "active");
+        .filter((session) => session?.runtimeIsLive === true);
       return buildMonitorStatsPayload({
         agentPool: {
           ...executorStats,

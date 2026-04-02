@@ -8,7 +8,7 @@ import { getInitData } from "./telegram.js";
 
 /** Map of in-flight GET request promises, keyed by path */
 const _inflight = new Map();
-const MAX_CONCURRENT_GET_REQUESTS = 4;
+const MAX_CONCURRENT_GET_REQUESTS = 6;
 const _queuedGetRequests = [];
 let _activeGetRequestCount = 0;
 

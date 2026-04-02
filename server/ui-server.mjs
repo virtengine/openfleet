@@ -298,6 +298,7 @@ import {
 } from "../infra/session-tracker.mjs";
 import { withIncomingTraceContext } from "../infra/tracing.mjs";
 import {
+  deleteSessionRecordFromStateLedger,
   appendTaskTraceEventToStateLedger,
   appendOperatorActionToStateLedger,
   getAgentActivityFromStateLedger,
@@ -310,6 +311,8 @@ import {
   listPromotedStrategyEventsFromStateLedger,
   listTaskAuditSummariesFromStateLedger,
   listTaskTraceEventsFromStateLedger,
+  listWorkflowRunSummariesPageFromStateLedger,
+  upsertSessionRecordToStateLedger,
   upsertStateLedgerKeyValue,
 } from "../lib/state-ledger-sqlite.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
@@ -2181,6 +2184,37 @@ function getWorkflowStoragePaths(workspaceDir = "") {
   };
 }
 
+function readActiveWorkflowRunIndexEntries(runsDir) {
+  try {
+    const indexPath = resolve(String(runsDir || ""), "_active-runs.json");
+    if (!indexPath || !existsSync(indexPath)) return [];
+    const raw = JSON.parse(readFileSync(indexPath, "utf8"));
+    const entries = Array.isArray(raw) ? raw : [];
+    return entries
+      .map((entry) => {
+        const runId = String(entry?.runId || entry?.id || "").trim();
+        if (!runId) return null;
+        return {
+          runId,
+          workflowId: String(entry?.workflowId || "").trim() || null,
+          workflowName: String(entry?.workflowName || entry?.name || "").trim() || null,
+          startedAt: entry?.startedAt || null,
+          activeNodeCount: Number.isFinite(Number(entry?.activeNodeCount))
+            ? Number(entry.activeNodeCount)
+            : 0,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftTs = Date.parse(String(left?.startedAt || "")) || 0;
+        const rightTs = Date.parse(String(right?.startedAt || "")) || 0;
+        return rightTs - leftTs;
+      });
+  } catch {
+    return [];
+  }
+}
+
 
 function mapWorkflowRunOutcome(eventType, status) {
   const normalizedType = String(eventType || "").trim().toLowerCase();
@@ -3685,6 +3719,7 @@ function resolveRepoLocalWorkspaceConfigDir() {
 function resolveManagedWorkspaceInventory() {
   const seen = new Set();
   const configDirs = [];
+  const explicitUiConfigDir = Boolean(uiDeps.configDir || process.env.BOSUN_CONFIG_PATH);
   const pushConfigDir = (value) => {
     const normalized = normalizeCandidatePath(value);
     if (!normalized || seen.has(normalized)) return;
@@ -3692,7 +3727,9 @@ function resolveManagedWorkspaceInventory() {
     configDirs.push(normalized);
   };
   pushConfigDir(resolveUiConfigDir());
-  pushConfigDir(resolveRepoLocalWorkspaceConfigDir());
+  if (!explicitUiConfigDir) {
+    pushConfigDir(resolveRepoLocalWorkspaceConfigDir());
+  }
 
   for (const configDir of configDirs) {
     try {
@@ -6024,36 +6061,46 @@ async function executeHarnessRunRequest(body = {}, options = {}) {
 }
 
 function buildHarnessOverview(configDir = resolveUiConfigDir()) {
+  const activeRuns = listActiveHarnessRunSnapshots();
+  const emptyOverview = {
+    enabled: false,
+    activeArtifactId: null,
+    activeArtifactPath: null,
+    activeProfile: null,
+    validationMode: null,
+    totals: { total: 0, successful: 0, failed: 0, dryRuns: 0, active: 0 },
+    activeRunCount: 0,
+    activeRuns: [],
+    lastRun: null,
+    recentRuns: [],
+  };
+  let persisted = emptyOverview;
   try {
-    const persisted = summarizeHarnessRuns(configDir, { limit: 5 });
-    const activeRuns = listActiveHarnessRunSnapshots();
-    const persistedRecentRuns = hydrateHarnessRunListItems(persisted?.recentRuns || []);
-    const recentRuns = mergeHarnessRunSummaries(persistedRecentRuns, activeRuns, 5);
-    return {
-      ...persisted,
-      totals: {
-        ...(persisted?.totals || {}),
-        active: activeRuns.length,
-      },
-      activeRunCount: activeRuns.length,
-      activeRuns,
-      lastRun: recentRuns[0] || persisted?.lastRun || activeRuns[0] || null,
-      recentRuns,
+    persisted = {
+      ...emptyOverview,
+      ...summarizeHarnessRuns(configDir, { limit: 5 }),
     };
   } catch {
-    return {
-      enabled: false,
-      activeArtifactId: null,
-      activeArtifactPath: null,
-      activeProfile: null,
-      validationMode: null,
-      totals: { total: 0, successful: 0, failed: 0, dryRuns: 0, active: 0 },
-      activeRunCount: 0,
-      activeRuns: [],
-      lastRun: null,
-      recentRuns: [],
-    };
+    persisted = { ...emptyOverview };
   }
+  let persistedRecentRuns = [];
+  try {
+    persistedRecentRuns = hydrateHarnessRunListItems(persisted?.recentRuns || []);
+  } catch {
+    persistedRecentRuns = [];
+  }
+  const recentRuns = mergeHarnessRunSummaries(persistedRecentRuns, activeRuns, 5);
+  return {
+    ...persisted,
+    totals: {
+      ...(persisted?.totals || {}),
+      active: activeRuns.length,
+    },
+    activeRunCount: activeRuns.length,
+    activeRuns,
+    lastRun: recentRuns[0] || persisted?.lastRun || activeRuns[0] || null,
+    recentRuns,
+  };
 }
 
 function resolveHarnessApprovalRepoRoot() {
@@ -6610,6 +6657,17 @@ function resolveWorkspaceRepoLocation(repo) {
   );
 }
 
+function normalizeResolvedWorkspaceEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const workspaceId = String(entry.id || "").trim();
+  const workspacePath = normalizeCandidatePath(entry.path);
+  const repos = Array.isArray(entry.repos) ? entry.repos : [];
+  if (!workspaceId && !workspacePath && repos.length === 0) {
+    return null;
+  }
+  return entry;
+}
+
 function pickWorkspaceRepoDir(workspace) {
   if (!workspace || typeof workspace !== "object") return "";
   const repos = Array.isArray(workspace.repos) ? workspace.repos : [];
@@ -6654,16 +6712,55 @@ function resolveActiveWorkspaceExecutionContext() {
     || process.env.BOSUN_DIR,
   );
 
-  const activeId = String(active?.id || "").trim();
+  const normalizedActive = normalizeResolvedWorkspaceEntry(active);
+  const normalizedListed = Array.isArray(listed)
+    ? listed.map((entry) => normalizeResolvedWorkspaceEntry(entry)).filter(Boolean)
+    : [];
+  const activeId = String(normalizedActive?.id || "").trim();
   const workspace =
     (activeId
-      ? listed.find((entry) => String(entry?.id || "") === activeId)
+      ? normalizedListed.find((entry) => String(entry?.id || "") === activeId)
       : null) ||
-    active ||
-    listed[0] ||
+    normalizedActive ||
+    normalizedListed[0] ||
     null;
   if (!workspace) {
-    if (process.env.VITEST && explicitWorkspaceDirHint) {
+    try {
+      const cfg = loadConfig([
+        "node",
+        "bosun",
+        "--repo-root",
+        repoRoot,
+        "--config-dir",
+        configDir,
+      ]);
+      const selectedRepoDir = normalizeCandidatePath(cfg?.selectedRepository?.path);
+      if (selectedRepoDir) {
+        return {
+          workspaceId: String(cfg?.activeWorkspace || "").trim(),
+          workspaceDir: selectedRepoDir,
+          workspaceRoot: selectedRepoDir,
+        };
+      }
+      if (explicitWorkspaceDirHint) {
+        return {
+          workspaceId: String(cfg?.activeWorkspace || "").trim(),
+          workspaceDir: explicitWorkspaceDirHint,
+          workspaceRoot: explicitWorkspaceDirHint,
+        };
+      }
+      const configRepoDir = normalizeCandidatePath(cfg?.repoRoot || cfg?.agentRepoRoot);
+      if (configRepoDir) {
+        return {
+          workspaceId: String(cfg?.activeWorkspace || "").trim(),
+          workspaceDir: configRepoDir,
+          workspaceRoot: configRepoDir,
+        };
+      }
+    } catch {
+      // Fall back to test/runtime hints below.
+    }
+    if (explicitWorkspaceDirHint) {
       return {
         workspaceId: "",
         workspaceDir: explicitWorkspaceDirHint,
@@ -8551,6 +8648,7 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
     status: document.status || document.lifecycleStatus || activity?.latestStatus || "completed",
     lifecycleStatus: document.lifecycleStatus || activity?.latestStatus || document.status || "completed",
     runtimeState: document.runtimeState || document.status || activity?.latestStatus || null,
+    runtimeIsLive: false,
     workspaceId,
     workspaceDir,
     workspaceRoot,
@@ -8759,6 +8857,10 @@ function mergeSessionRecords(primarySession, fallbackSession) {
 const DURABLE_SESSION_LIST_LIMIT = 750;
 const DURABLE_SESSION_LIST_CACHE_TTL_MS = 5000;
 const durableSessionListCache = new Map();
+
+function invalidateDurableSessionListCache() {
+  durableSessionListCache.clear();
+}
 
 function buildDurableSessionListCacheKey(workspaceContext = null) {
   try {
@@ -10368,7 +10470,17 @@ function buildManualFlowGuardrailsInput(template, templateId, formValues = {}, e
 
 function buildGuardrailsSnapshot(targetWorkspaceDir) {
   const workspaceContext = resolveActiveWorkspaceExecutionContext();
-  const workspaceDir = targetWorkspaceDir || String(workspaceContext?.workspaceDir || repoRoot).trim() || repoRoot;
+  const explicitWorkspaceDirHint = normalizeCandidatePath(
+    process.env.CODEX_MONITOR_HOME
+    || process.env.CODEX_MONITOR_DIR
+    || process.env.BOSUN_HOME
+    || process.env.BOSUN_DIR,
+  );
+  const workspaceDir =
+    targetWorkspaceDir
+    || (!String(workspaceContext?.workspaceId || "").trim() && explicitWorkspaceDirHint)
+    || String(workspaceContext?.workspaceDir || repoRoot).trim()
+    || repoRoot;
   const { configData } = readConfigDocument();
   const guardrailsPolicy = ensureGuardrailsPolicy(workspaceDir);
   const hooks = buildHookGuardrailsOverview(workspaceDir);
@@ -10616,6 +10728,12 @@ function shouldHideSessionFromDefaultList(session) {
   const normalizedLifecycleStatus = String(
     session.lifecycleStatus || session.status || "",
   ).trim().toLowerCase();
+  if (normalizedLifecycleStatus === "archived") return true;
+  const lifecycleLooksActive =
+    normalizedLifecycleStatus === "active"
+    || normalizedLifecycleStatus === "idle"
+    || normalizedLifecycleStatus === "stalled"
+    || normalizedLifecycleStatus === "recent";
   const normalizedRuntimeState = String(
     session.runtimeState || session.runtimeStatus || "",
   ).trim().toLowerCase();
@@ -10625,12 +10743,18 @@ function shouldHideSessionFromDefaultList(session) {
   const totalEvents = Number(session.totalEvents || session.eventCount || 0);
   const turnCount = Number(session.turnCount || 0);
   const createdAtMs = Date.parse(
-    String(session.lastActiveAt || session.runtimeUpdatedAt || session.createdAt || ""),
+    String(
+      session.createdAt
+      || session.startedAt
+      || session.lastActiveAt
+      || session.runtimeUpdatedAt
+      || "",
+    ),
   );
   const staleEmptyPrimaryAgeMs = 30 * 60 * 1000;
   const staleEmptyPrimarySession =
     ["primary", "manual", "chat"].includes(normalizedType) &&
-    normalizedLifecycleStatus === "active" &&
+    lifecycleLooksActive &&
     (normalizedRuntimeState === ""
       || normalizedRuntimeState === "idle"
       || normalizedRuntimeState === "stalled"
@@ -18083,40 +18207,41 @@ async function handleApi(req, res, url) {
     const execStatus = executor?.getStatus?.() || null;
     const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
       || resolveActiveWorkspaceExecutionContext();
-    /* Augment with active workflow run counts so Fleet Overview reflects
-       real system load even when no agent subprocess slots are occupied */
-    let activeWorkflowRuns = 0;
-    let workflowRunDetails = [];
-    try {
-      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
-      if (wfCtx?.ok && wfCtx.engine) {
-        const runs = await Promise.resolve(wfCtx.engine.list?.() || []).catch(() => []);
-        const active = (Array.isArray(runs) ? runs : []).filter(
-          (r) => String(r?.status || "").toLowerCase() === "running"
-        );
-        activeWorkflowRuns = active.length;
-        workflowRunDetails = active.slice(0, 20).map((r) => ({
-          runId: r.id || r.runId,
-          workflowId: r.workflowId,
-          workflowName: r.workflowName || r.workflowId,
-          startedAt: r.startedAt,
-          activeNodeCount: r.activeNodeCount || 0,
-        }));
+    const workspaceCacheKey = String(
+      workspaceContext?.workspaceDir
+      || workspaceContext?.workspaceId
+      || "default",
+    ).trim().toLowerCase();
+    const payload = await getOrComputeCachedApiResponse(`executor:${workspaceCacheKey}`, 3000, async () => {
+      const workflowRoots = Array.from(new Set([
+        normalizeCandidatePath(workspaceContext?.workspaceDir),
+        normalizeCandidatePath(workspaceContext?.workspaceRoot),
+      ].filter(Boolean)));
+      if (workflowRoots.length === 0) {
+        workflowRoots.push(repoRoot);
       }
-    } catch {
-      // best-effort: executor data is still returned without workflow augmentation
-    }
-    const workspaceSummary = execStatus
-      ? buildWorkspaceExecutorSummary(execStatus, workspaceContext)
-      : null;
-    jsonResponse(res, 200, {
-      ok: true,
-      data: execStatus
-        ? { ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails }
-        : null,
-      mode,
-      paused: executor?.isPaused?.() || false,
+      let workflowRunDetails = [];
+      for (const workflowRoot of workflowRoots) {
+        const nextDetails = readActiveWorkflowRunIndexEntries(getWorkflowStoragePaths(workflowRoot).runsDir);
+        if (nextDetails.length > 0) {
+          workflowRunDetails = nextDetails;
+          break;
+        }
+      }
+      const activeWorkflowRuns = workflowRunDetails.length;
+      const workspaceSummary = execStatus
+        ? buildWorkspaceExecutorSummary(execStatus, workspaceContext)
+        : null;
+      return {
+        ok: true,
+        data: execStatus
+          ? { ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails: workflowRunDetails.slice(0, 20) }
+          : null,
+        mode,
+        paused: executor?.isPaused?.() || false,
+      };
     });
+    jsonResponse(res, 200, payload);
     return;
   }
 
@@ -18155,6 +18280,7 @@ async function handleApi(req, res, url) {
       return;
     }
     executor.pause();
+    invalidateApiCache("executor:");
     jsonResponse(res, 200, { ok: true, paused: true });
     broadcastUiEvent(["executor", "overview", "agents"], "invalidate", {
       reason: "executor-paused",
@@ -18172,6 +18298,7 @@ async function handleApi(req, res, url) {
       return;
     }
     executor.resume();
+    invalidateApiCache("executor:");
     jsonResponse(res, 200, { ok: true, paused: false });
     broadcastUiEvent(["executor", "overview", "agents"], "invalidate", {
       reason: "executor-resumed",
@@ -21959,6 +22086,7 @@ async function handleApi(req, res, url) {
         setActiveManagedWorkspace(configDir, wsId);
         invalidateApiCache("workspaces:");
         invalidateApiCache("workflows:");
+        invalidateApiCache("executor:");
         const active = getActiveManagedWorkspace(configDir);
         jsonResponse(res, 200, {
           ok: true,
@@ -23973,18 +24101,23 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/runs") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
-      if (!wfCtx.ok) {
-        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace. Set a valid workspace query value." });
         return;
       }
-      const engine = wfCtx.engine;
+      const workspacePaths = getWorkflowStoragePaths(workspaceContext.workspaceDir);
       const workspaceCacheKey = String(
-        wfCtx.workspaceContext?.workspaceDir
-        || wfCtx.workspaceContext?.workspaceId
+        workspacePaths.workspaceRoot
+        || workspaceContext?.workspaceId
         || "default",
       ).trim().toLowerCase();
-      const payload = await getOrComputeCachedApiResponse(`workflows:runs:all:${workspaceCacheKey}:${url.search}`, 2000, async () => {
+      const payload = await getOrComputeCachedApiResponse(`workflows:runs:all:${workspaceCacheKey}:${url.search}`, 8000, async () => {
+        const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+        if (!wfCtx.ok) {
+          return { __error: true, status: wfCtx.status, body: { ok: false, error: wfCtx.error } };
+        }
+        const engine = wfCtx.engine;
         const rawOffset = Number(url.searchParams.get("offset"));
         const rawLimit = Number(url.searchParams.get("limit"));
         const offset = Number.isFinite(rawOffset) && rawOffset > 0
@@ -24019,6 +24152,10 @@ if (path === "/api/agent-logs/context") {
           },
         };
       });
+      if (payload?.__error) {
+        jsonResponse(res, payload.status, payload.body);
+        return;
+      }
       jsonResponse(res, 200, payload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -24028,40 +24165,76 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/approvals") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
-      if (!wfCtx.ok) {
-        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace. Set a valid workspace query value." });
         return;
       }
+      const workspacePaths = getWorkflowStoragePaths(workspaceContext.workspaceDir);
+      const workspaceCacheKey = String(
+        workspacePaths.workspaceRoot
+        || workspaceContext?.workspaceId
+        || "default",
+      ).trim().toLowerCase();
       const { listApprovalRequests, upsertWorkflowRunApprovalRequest, isWorkflowRunApprovalPending } =
         await import("../workflow/approval-queue.mjs");
-      const engine = wfCtx.engine;
       const rawLimit = Number(url.searchParams.get("limit"));
       const limit = Number.isFinite(rawLimit) && rawLimit > 0
         ? Math.min(Math.floor(rawLimit), 500)
         : 100;
       const statusFilter = String(url.searchParams.get("status") || "").trim().toLowerCase();
       const scopeTypeFilter = String(url.searchParams.get("scopeType") || "").trim().toLowerCase();
-      const repoRootForApprovals = wfCtx.workspaceContext?.workspaceDir || repoRoot;
-      const historyLimit = Math.max(limit, 200);
-      const history = typeof engine.getRunHistory === "function"
-        ? await engine.getRunHistory(null, historyLimit)
-        : [];
-      for (const run of Array.isArray(history) ? history : []) {
-        if (!isWorkflowRunApprovalPending(run)) continue;
-        upsertWorkflowRunApprovalRequest(run, { repoRoot: repoRootForApprovals });
-      }
-      const listing = listApprovalRequests({
-        repoRoot: repoRootForApprovals,
-        status: statusFilter,
-        scopeType: scopeTypeFilter,
-        limit,
-        includeResolved: statusFilter === "all",
+      const repoRootForApprovals = workspacePaths.workspaceRoot || repoRoot;
+      const payload = await getOrComputeCachedApiResponse(`workflows:approvals:${workspaceCacheKey}:${url.search}`, 5000, async () => {
+        let listing = listApprovalRequests({
+          repoRoot: repoRootForApprovals,
+          status: statusFilter,
+          scopeType: scopeTypeFilter,
+          limit,
+          includeResolved: statusFilter === "all",
+        });
+
+        const shouldRepairWorkflowRunApprovals =
+          (!scopeTypeFilter || scopeTypeFilter === "workflow-run")
+          && (!statusFilter || statusFilter === "pending" || statusFilter === "all")
+          && !listing.requests.some((entry) =>
+            String(entry?.scopeType || "").trim().toLowerCase() === "workflow-run",
+          );
+
+        if (shouldRepairWorkflowRunApprovals) {
+          const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+          if (wfCtx.ok) {
+            const engine = wfCtx.engine;
+            const historyLimit = Math.max(limit, 50);
+            const historyPage = typeof engine.getRunHistoryPage === "function"
+              ? await engine.getRunHistoryPage(null, { offset: 0, limit: historyLimit })
+              : {
+                  runs: typeof engine.getRunHistory === "function"
+                    ? await engine.getRunHistory(null, historyLimit)
+                    : [],
+                };
+            for (const run of Array.isArray(historyPage?.runs) ? historyPage.runs : []) {
+              if (!isWorkflowRunApprovalPending(run)) continue;
+              upsertWorkflowRunApprovalRequest(run, { repoRoot: repoRootForApprovals });
+            }
+            listing = listApprovalRequests({
+              repoRoot: repoRootForApprovals,
+              status: statusFilter,
+              scopeType: scopeTypeFilter,
+              limit,
+              includeResolved: statusFilter === "all",
+            });
+          }
+        }
+
+        return {
+          ok: true,
+          requests: listing.requests,
+          queuePath: listing.path,
+        };
       });
       jsonResponse(res, 200, {
-        ok: true,
-        requests: listing.requests,
-        queuePath: listing.path,
+        ...payload,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err?.message || String(err) });
@@ -24124,6 +24297,9 @@ if (path === "/api/agent-logs/context") {
         }
       }
       invalidateApiCache("server-state");
+      invalidateApiCache("workflows:approvals:");
+      invalidateApiCache("workflows:runs:");
+      invalidateApiCache("executor:");
       jsonResponse(res, 200, {
         ok: true,
         request: resolved.request,
@@ -24274,6 +24450,9 @@ if (path === "/api/agent-logs/context") {
           ? await engine.getRunDetail(runId, { decorate: false })
           : run;
         invalidateApiCache("server-state");
+        invalidateApiCache("workflows:approvals:");
+        invalidateApiCache("workflows:runs:");
+        invalidateApiCache("executor:");
         jsonResponse(res, 200, {
           ok: true,
           request: resolved.request,
@@ -27601,6 +27780,34 @@ if (path === "/api/agent-logs/context") {
         if (!durableSession) return null;
         return sessionMatchesWorkspaceContext(durableSession, workspaceContext) ? durableSession : null;
       };
+      const mutateDurableSessionRecord = (session, nextStatus) => {
+        if (!session || typeof session !== "object") return null;
+        const now = new Date().toISOString();
+        const document = {
+          ...session,
+          status: nextStatus,
+          lifecycleStatus: nextStatus,
+          runtimeState: nextStatus,
+          runtimeIsLive: false,
+          lastActiveAt: now,
+          updatedAt: now,
+          metadata:
+            session.metadata && typeof session.metadata === "object"
+              ? { ...session.metadata }
+              : {},
+        };
+        return upsertSessionRecordToStateLedger({
+          ...session,
+          status: nextStatus,
+          lifecycleStatus: nextStatus,
+          runtimeState: nextStatus,
+          runtimeIsLive: false,
+          updatedAt: now,
+          lastActiveAt: now,
+          eventCount: Math.max(0, Number(session.eventCount ?? session.totalEvents ?? 0) || 0),
+          document,
+        }, resolveUiStateLedgerOptions(workspaceContext));
+      };
 
     if (!action && req.method === "GET") {
       try {
@@ -27945,12 +28152,14 @@ if (path === "/api/agent-logs/context") {
 
     if (action === "archive" && req.method === "POST") {
       try {
-        const session = getScopedSession();
+        const session = getScopedSessionRecord({ includeMessages: true });
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
         }
         tracker.updateSessionStatus(sessionId, "archived");
+        mutateDurableSessionRecord(session, "archived");
+        invalidateDurableSessionListCache();
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", {
           reason: "session-archived",
@@ -28005,6 +28214,8 @@ if (path === "/api/agent-logs/context") {
           return;
         }
         tracker.removeSession(sessionId);
+        deleteSessionRecordFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext));
+        invalidateDurableSessionListCache();
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", {
           reason: "session-deleted",
@@ -29688,6 +29899,13 @@ async function handleStatic(req, res, url) {
 }
 
 export async function startTelegramUiServer(options = {}) {
+  _apiCache.clear();
+  _apiInflight.clear();
+  activeHarnessRuns.clear();
+  invalidateDurableSessionListCache();
+  _wfRecommendedInstalledByWorkspace.clear();
+  _wfEngineByWorkspace.clear();
+  _wfEngineInitByWorkspace.clear();
   if (uiServer) return uiServer;
 
   injectUiDependencies(options.dependencies || {});
@@ -30038,6 +30256,7 @@ export async function startTelegramUiServer(options = {}) {
     if (!sessionStateListenerAttached) {
       sessionStateListenerAttached = true;
       removeSessionStateListener = addSessionStateListener((payload) => {
+        invalidateDurableSessionListCache();
         broadcastTuiSessionsSnapshot(payload?.reason || payload?.event?.reason || "updated", payload || {});
       });
     }
@@ -30692,6 +30911,12 @@ export function stopTelegramUiServer() {
   stopWsHeartbeat();
   _activeSessions = [];
   _apiCache.clear();
+  _apiInflight.clear();
+  activeHarnessRuns.clear();
+  invalidateDurableSessionListCache();
+  _wfRecommendedInstalledByWorkspace.clear();
+  _wfEngineByWorkspace.clear();
+  _wfEngineInitByWorkspace.clear();
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;

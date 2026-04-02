@@ -669,7 +669,7 @@ describe("session-tracker", () => {
             status: "idle",
             lifecycleStatus: "active",
             runtimeState: "idle",
-            runtimeIsLive: true,
+            runtimeIsLive: false,
           }),
         );
       } finally {

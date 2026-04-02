@@ -13,6 +13,7 @@ import {
   appendTaskTraceEventToStateLedger,
   appendArtifactRecordToStateLedger,
   appendOperatorActionToStateLedger,
+  deleteSessionRecordFromStateLedger,
   getAgentActivityFromStateLedger,
   getActiveTaskClaimFromStateLedger,
   getRunAuditBundleFromStateLedger,
@@ -787,6 +788,43 @@ describe("state ledger sqlite audit helpers", () => {
         latestStatus: "completed",
       }),
     ]);
+  });
+
+  it("deletes durable session activity rows", () => {
+    const repoRoot = makeTempDir("state-ledger-session-delete-");
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "session-delete-1",
+      type: "manual",
+      workspaceId: "workspace-delete",
+      taskId: "task-delete-1",
+      taskTitle: "Delete me",
+      status: "completed",
+      latestEventType: "assistant",
+      updatedAt: "2026-03-31T06:05:00.000Z",
+      startedAt: "2026-03-31T06:00:00.000Z",
+      eventCount: 1,
+      document: {
+        id: "session-delete-1",
+        taskId: "task-delete-1",
+        type: "manual",
+        status: "completed",
+      },
+    }, { repoRoot });
+
+    expect(getSessionActivityFromStateLedger("session-delete-1", { repoRoot })).toEqual(
+      expect.objectContaining({
+        sessionId: "session-delete-1",
+        latestTaskId: "task-delete-1",
+      }),
+    );
+
+    expect(deleteSessionRecordFromStateLedger("session-delete-1", { repoRoot })).toEqual({
+      sessionId: "session-delete-1",
+      deleted: true,
+    });
+    expect(getSessionActivityFromStateLedger("session-delete-1", { repoRoot })).toBeNull();
+    expect(listSessionActivitiesFromStateLedger({ repoRoot, workspaceId: "workspace-delete" })).toEqual([]);
   });
 
   it("stores promoted strategy snapshots and audit events", () => {

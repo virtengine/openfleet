@@ -355,7 +355,7 @@ describe("executor workspace summary source", () => {
   it("adds workspace-scoped slot summaries to /api/executor", () => {
     expect(serverSource).toContain("function buildWorkspaceExecutorSummary(execStatus, workspaceContext)");
     expect(serverSource).toContain("const workspaceSummary = execStatus");
-    expect(serverSource).toContain("{ ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails }");
+    expect(serverSource).toContain("{ ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails: workflowRunDetails.slice(0, 20) }");
   });
 
   it("uses the actual request url when augmenting executor workflow counts", () => {

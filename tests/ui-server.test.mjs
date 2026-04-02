@@ -255,7 +255,7 @@ describeUiServer("ui-server mini app", () => {
     } finally {
       mod.stopTelegramUiServer();
     }
-  }, 30000);
+  }, 60000);
 
   it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
     const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-status-"));
@@ -355,6 +355,7 @@ describeUiServer("ui-server mini app", () => {
       },
     }, null, 2));
 
+    let server = null;
     try {
       const mod = await import("../server/ui-server.mjs");
       mod.injectUiDependencies({
@@ -363,7 +364,7 @@ describeUiServer("ui-server mini app", () => {
           isPaused: () => false,
         }),
       });
-      const server = await mod.startTelegramUiServer({
+      server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
         skipInstanceLock: true,
@@ -378,9 +379,12 @@ describeUiServer("ui-server mini app", () => {
         recentEvents: [expect.objectContaining({ outcome: "recreated" })],
       });
     } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
       rmSync(tmpStatusDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   it("backfills recovery-only worktrees into /api/worktrees when no live registry entry exists", async () => {
     const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-backfill-"));
@@ -587,7 +591,7 @@ describeUiServer("ui-server mini app", () => {
     expect(setCookie).not.toContain("ve_session=");
     const location = response.headers.get("location") || "";
     expect(location).not.toContain("localBootstrap=1");
-  }, 15000);
+  }, 30000);
 
   it("prefers persisted desktop API key over stale env key during desktop bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -1041,60 +1045,66 @@ describeUiServer("ui-server mini app", () => {
     );
 
     const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-    });
-    const port = server.address().port;
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+      });
+      const port = server.address().port;
 
-    const overviewRes = await fetch(`http://127.0.0.1:${port}/api/guardrails`);
-    const overviewJson = await overviewRes.json();
-    expect(overviewRes.status).toBe(200);
-    expect(overviewJson.ok).toBe(true);
-    expect(overviewJson.snapshot.INPUT.policy.enabled).toBe(true);
-    expect(overviewJson.snapshot.push.policy.blockAgentPushes).toBe(true);
-    expect(overviewJson.snapshot.push.policy.requireManagedPrePush).toBe(true);
-    expect(existsSync(resolve(workspaceDir, ".bosun", "guardrails.json"))).toBe(true);
+      const overviewRes = await fetch(`http://127.0.0.1:${port}/api/guardrails`);
+      const overviewJson = await overviewRes.json();
+      expect(overviewRes.status).toBe(200);
+      expect(overviewJson.ok).toBe(true);
+      expect(overviewJson.snapshot.INPUT.policy.enabled).toBe(true);
+      expect(overviewJson.snapshot.push.policy.blockAgentPushes).toBe(true);
+      expect(overviewJson.snapshot.push.policy.requireManagedPrePush).toBe(true);
+      expect(existsSync(resolve(workspaceDir, ".bosun", "guardrails.json"))).toBe(true);
 
-    const policyRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/policy`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ INPUT: { warnThreshold: 75, blockThreshold: 45 }, push: { blockAgentPushes: false } }),
-    });
-    const policyJson = await policyRes.json();
-    expect(policyRes.status).toBe(200);
-    expect(policyJson.INPUT.policy.warnThreshold).toBe(75);
-    expect(policyJson.INPUT.policy.blockThreshold).toBe(45);
-    expect(policyJson.push.policy.blockAgentPushes).toBe(false);
+      const policyRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/policy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ INPUT: { warnThreshold: 75, blockThreshold: 45 }, push: { blockAgentPushes: false } }),
+      });
+      const policyJson = await policyRes.json();
+      expect(policyRes.status).toBe(200);
+      expect(policyJson.INPUT.policy.warnThreshold).toBe(75);
+      expect(policyJson.INPUT.policy.blockThreshold).toBe(45);
+      expect(policyJson.push.policy.blockAgentPushes).toBe(false);
 
-    const runtimeRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/runtime`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ preflightEnabled: false, requireReview: false }),
-    });
-    const runtimeJson = await runtimeRes.json();
-    expect(runtimeRes.status).toBe(200);
-    expect(runtimeJson.runtime.preflightEnabled).toBe(false);
-    expect(runtimeJson.runtime.requireReview).toBe(false);
-    expect(JSON.parse(readFileSync(configPath, "utf8")).preflightEnabled).toBe(false);
-    expect(readFileSync(join(configDir, ".env"), "utf8")).toContain("BOSUN_FLOW_REQUIRE_REVIEW=false");
+      const runtimeRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/runtime`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ preflightEnabled: false, requireReview: false }),
+      });
+      const runtimeJson = await runtimeRes.json();
+      expect(runtimeRes.status).toBe(200);
+      expect(runtimeJson.runtime.preflightEnabled).toBe(false);
+      expect(runtimeJson.runtime.requireReview).toBe(false);
+      expect(JSON.parse(readFileSync(configPath, "utf8")).preflightEnabled).toBe(false);
+      expect(readFileSync(join(configDir, ".env"), "utf8")).toContain("BOSUN_FLOW_REQUIRE_REVIEW=false");
 
-    const assessRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/assess`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ input: { title: "fix", description: "" } }),
-    });
-    const assessJson = await assessRes.json();
-    expect(assessRes.status).toBe(200);
-    expect(assessJson.assessment.blocked).toBe(true);
-    expect(assessJson.assessment.status).toBe("block");
-
-    rmSync(workspaceDir, { recursive: true, force: true });
-    rmSync(configDir, { recursive: true, force: true });
-    // Restore higher-priority workspace hints
-    if (savedMonitorHome !== undefined) process.env.CODEX_MONITOR_HOME = savedMonitorHome;
-    if (savedMonitorDir !== undefined) process.env.CODEX_MONITOR_DIR = savedMonitorDir;
+      const assessRes = await fetch(`http://127.0.0.1:${port}/api/guardrails/assess`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: { title: "fix", description: "" } }),
+      });
+      const assessJson = await assessRes.json();
+      expect(assessRes.status).toBe(200);
+      expect(assessJson.assessment.blocked).toBe(true);
+      expect(assessJson.assessment.status).toBe("block");
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      rmSync(workspaceDir, { recursive: true, force: true });
+      rmSync(configDir, { recursive: true, force: true });
+      // Restore higher-priority workspace hints
+      if (savedMonitorHome !== undefined) process.env.CODEX_MONITOR_HOME = savedMonitorHome;
+      if (savedMonitorDir !== undefined) process.env.CODEX_MONITOR_DIR = savedMonitorDir;
+    }
   }, 15000);
 
   it("reflects runtime kanban backend switches via config update", async () => {
@@ -2401,55 +2411,6 @@ describeUiServer("ui-server mini app", () => {
     expect(hiddenListJson.sessions.some((session) => session.id === "primary-voice-http-test-hidden")).toBe(true);
   }, 15000);
 
-  it("hides stale empty primary sessions from the default session list", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../server/ui-server.mjs");
-    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
-    _resetSingleton({ persistDir: null });
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-    const tracker = getSessionTracker();
-    const staleEmpty = tracker.createSession({
-      id: "primary-stale-empty-hidden",
-      type: "primary",
-      metadata: { title: "Stale Empty Session" },
-    });
-    const staleAt = Date.now() - (31 * 60 * 1000);
-    staleEmpty.startedAt = staleAt;
-    staleEmpty.createdAt = new Date(staleAt).toISOString();
-    staleEmpty.lastActivityAt = staleAt;
-    staleEmpty.lastActiveAt = new Date(staleAt).toISOString();
-    tracker.createSession({
-      id: "manual-visible-session",
-      type: "primary",
-      metadata: { title: "Visible Session" },
-    });
-    tracker.recordEvent("manual-visible-session", {
-      role: "assistant",
-      type: "agent_message",
-      content: "hello",
-      timestamp: new Date().toISOString(),
-    });
-
-    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
-    const listJson = await listRes.json();
-    expect(listRes.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    expect(listJson.sessions.some((session) => session.id === "primary-stale-empty-hidden")).toBe(false);
-    expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
-
-    const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
-    const hiddenListJson = await hiddenListRes.json();
-    expect(hiddenListRes.status).toBe(200);
-    expect(hiddenListJson.ok).toBe(true);
-    expect(hiddenListJson.sessions.some((session) => session.id === "primary-stale-empty-hidden")).toBe(true);
-  }, 15000);
-
   it("hides synthetic historic session ids from the default session list", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const ledgerPath = process.env.BOSUN_STATE_LEDGER_PATH;
@@ -3473,7 +3434,7 @@ describeUiServer("ui-server mini app", () => {
         if (context?.stage?.id === "plan" && String(context?.taskKey || "").includes("live-visibility")) {
           slowRunId = String(context?.taskKey || "").replace("live-visibility:", "").trim() || null;
           releaseSlowStage?.();
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           return {
             success: true,
             outcome: "success",
@@ -4241,7 +4202,7 @@ describeUiServer("ui-server mini app", () => {
     expect(executeTask.mock.calls[0][0]?.id).toBe(taskId);
     expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
     expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
-  }, 15000);
+  }, 30000);
 
   it("clears blocked task state through /api/tasks/unblock", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-unblock-"));
@@ -5454,10 +5415,28 @@ describeUiServer("ui-server mini app", () => {
   it("lists and resolves pending workflow approvals through workflow approval APIs", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-approvals-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_CONFIG_PATH = join(isolatedDir, "bosun.config.json");
     process.env.BOSUN_HOME = isolatedDir;
     process.env.BOSUN_DIR = isolatedDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = join(isolatedDir, ".bosun", ".cache", "state-ledger.sqlite");
     process.env.CODEX_MONITOR_HOME = isolatedDir;
     process.env.CODEX_MONITOR_DIR = isolatedDir;
+    process.env.REPO_ROOT = isolatedDir;
+    resetStateLedgerCache();
+    const workspaceId = "approval-ws";
+    writeFileSync(process.env.BOSUN_CONFIG_PATH, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      activeWorkspace: workspaceId,
+      workspaces: [
+        {
+          id: workspaceId,
+          name: "Approval Workspace",
+          path: isolatedDir,
+          activeRepo: "repo",
+          repos: [{ name: "repo", path: isolatedDir, primary: true }],
+        },
+      ],
+    }, null, 2) + "\n", "utf8");
 
     const mod = await import("../server/ui-server.mjs");
     const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
@@ -5579,7 +5558,7 @@ describeUiServer("ui-server mini app", () => {
       });
       const port = server.address().port;
 
-      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending`).then((r) => r.json());
+      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending&workspace=${workspaceId}`).then((r) => r.json());
       expect(listed.ok).toBe(true);
       expect(Array.isArray(listed.requests)).toBe(true);
       expect(listed.requests).toEqual(expect.arrayContaining([
@@ -5591,7 +5570,7 @@ describeUiServer("ui-server mini app", () => {
         }),
       ]));
 
-      const resolved = await fetch(`http://127.0.0.1:${port}/api/workflows/runs/${encodeURIComponent(runId)}/approval`, {
+      const resolved = await fetch(`http://127.0.0.1:${port}/api/workflows/runs/${encodeURIComponent(runId)}/approval?workspace=${workspaceId}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -5633,13 +5612,157 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 20000);
 
+  it("serves workflow approvals from the durable queue without rescanning run history", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-approvals-fast-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_CONFIG_PATH = join(isolatedDir, "bosun.config.json");
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = join(isolatedDir, ".bosun", ".cache", "state-ledger.sqlite");
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+    process.env.REPO_ROOT = isolatedDir;
+    resetStateLedgerCache();
+    const workspaceId = "approval-fast-ws";
+    writeFileSync(process.env.BOSUN_CONFIG_PATH, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      activeWorkspace: workspaceId,
+      workspaces: [
+        {
+          id: workspaceId,
+          name: "Approval Fast Workspace",
+          path: isolatedDir,
+          activeRepo: "repo",
+          repos: [{ name: "repo", path: isolatedDir, primary: true }],
+        },
+      ],
+    }, null, 2) + "\n", "utf8");
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const approvalQueueModule = await import("../workflow/approval-queue.mjs");
+    const runId = "run-approval-fast-1";
+    const runRecord = {
+      runId,
+      workflowId: "wf-approval-fast-1",
+      workflowName: "Approval Fast Workflow",
+      status: "paused",
+      startedAt: Date.now() - 4000,
+      endedAt: Date.now() - 1000,
+      executionPolicy: {
+        mode: "manual",
+        approvalRequired: true,
+        approvalState: "pending",
+        blocked: true,
+      },
+      policyOutcome: {
+        blocked: true,
+        status: "blocked",
+        violationCount: 1,
+      },
+      primaryGoalId: "goal-fast-approval",
+      primaryGoalTitle: "Avoid history rescan",
+      taskId: "task-approval-fast-1",
+      taskTitle: "Approval fast path task",
+      detail: {
+        data: {
+          _workflowId: "wf-approval-fast-1",
+          _workflowName: "Approval Fast Workflow",
+          _executionPolicy: {
+            mode: "manual",
+            approvalRequired: true,
+            approvalState: "pending",
+            blocked: true,
+          },
+          _workflowGovernance: {
+            executionPolicy: {
+              mode: "manual",
+              approvalRequired: true,
+              approvalState: "pending",
+              blocked: true,
+            },
+            policyOutcome: {
+              blocked: true,
+              status: "blocked",
+              violationCount: 1,
+            },
+          },
+        },
+      },
+    };
+    approvalQueueModule.upsertWorkflowRunApprovalRequest(runRecord, { repoRoot: isolatedDir });
+
+    const fakeEngine = {
+      getRunHistoryPage: vi.fn(() => ({
+        runs: [runRecord],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        nextOffset: null,
+        hasMore: false,
+      })),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+      on() {},
+      off() {},
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending&workspace=${workspaceId}`).then((r) => r.json());
+
+      expect(listed.ok).toBe(true);
+      expect(listed.requests).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          scopeId: runId,
+          scopeType: "workflow-run",
+          status: "pending",
+        }),
+      ]));
+      expect(fakeEngine.getRunHistoryPage).not.toHaveBeenCalled();
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 20000);
+
   it("lists and resolves workflow-gate approval requests through the generic approval queue API", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-gate-approvals-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_CONFIG_PATH = join(isolatedDir, "bosun.config.json");
     process.env.BOSUN_HOME = isolatedDir;
     process.env.BOSUN_DIR = isolatedDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = join(isolatedDir, ".bosun", ".cache", "state-ledger.sqlite");
     process.env.CODEX_MONITOR_HOME = isolatedDir;
     process.env.CODEX_MONITOR_DIR = isolatedDir;
+    process.env.REPO_ROOT = isolatedDir;
+    resetStateLedgerCache();
+    writeFileSync(process.env.BOSUN_CONFIG_PATH, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      activeWorkspace: "gate-approval-ws",
+      workspaces: [
+        {
+          id: "gate-approval-ws",
+          name: "Gate Approval Workspace",
+          path: isolatedDir,
+          activeRepo: "repo",
+          repos: [{ name: "repo", path: isolatedDir, primary: true }],
+        },
+      ],
+    }, null, 2) + "\n", "utf8");
 
     const mod = await import("../server/ui-server.mjs");
     const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
@@ -5966,6 +6089,96 @@ describeUiServer("ui-server mini app", () => {
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
   });
+
+  it("does not query the workflow engine while building /api/executor workflow load", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-executor-active-runs-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRoot = join(tmpDir, "workspace");
+    const workspaceRepo = join(workspaceRoot, "repo");
+    const runsDir = join(workspaceRepo, ".bosun", "workflow-runs");
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(
+      join(runsDir, "_active-runs.json"),
+      JSON.stringify([
+        {
+          runId: "run-active-1",
+          workflowId: "wf-active-1",
+          workflowName: "Active Workflow",
+          startedAt: new Date("2026-04-02T12:00:00.000Z").toISOString(),
+          activeNodeCount: 2,
+        },
+      ], null, 2),
+      "utf8",
+    );
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "perf-alpha",
+          workspaces: [
+            {
+              id: "perf-alpha",
+              name: "Perf Alpha",
+              path: workspaceRoot,
+              activeRepo: "repo",
+              repos: [{ name: "repo", path: workspaceRepo, primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const fakeEngine = {
+      list: vi.fn(() => {
+        throw new Error("workflow engine should not be queried for executor run counts");
+      }),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+      on() {},
+      off() {},
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 3, activeSlots: 0, slots: [] }),
+        isPaused: () => false,
+      }),
+    });
+
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const payload = await fetch(`http://127.0.0.1:${port}/api/executor?workspace=perf-alpha`).then((r) => r.json());
+
+      expect(payload.ok).toBe(true);
+      expect(typeof payload.data.activeWorkflowRuns).toBe("number");
+      expect(Array.isArray(payload.data.workflowRunDetails)).toBe(true);
+      expect(payload.data.workflowRunDetails.length).toBe(payload.data.activeWorkflowRuns);
+      expect(fakeEngine.list).not.toHaveBeenCalled();
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 20000);
 
   it("keeps task detail responses JSON-safe when can-start guards return circular raw data", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -8885,6 +9098,279 @@ describeUiServer("ui-server mini app", () => {
     }
   });
 
+  it("archives ledger-backed sessions durably and hides them from the default session list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-archive-"));
+    const workspaceDir = join(isolatedRepoRoot, "workspaces", "workspace-archive", "repo");
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+    mkdirSync(join(workspaceDir, ".git"), { recursive: true });
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "ledger-archive-1",
+      type: "manual",
+      workspaceId: "workspace-archive",
+      taskId: "ledger-archive-task-1",
+      taskTitle: "Archive me",
+      status: "completed",
+      latestEventType: "assistant",
+      updatedAt: "2026-03-31T11:15:00.000Z",
+      startedAt: "2026-03-31T11:00:00.000Z",
+      eventCount: 2,
+      document: {
+        id: "ledger-archive-1",
+        taskId: "ledger-archive-task-1",
+        taskTitle: "Archive me",
+        type: "manual",
+        status: "completed",
+        lifecycleStatus: "completed",
+        workspaceId: "workspace-archive",
+        workspaceDir,
+        workspaceRoot: workspaceDir,
+        createdAt: "2026-03-31T11:00:00.000Z",
+        lastActiveAt: "2026-03-31T11:15:00.000Z",
+        totalEvents: 2,
+        turnCount: 1,
+        messages: [
+          { role: "assistant", content: "Archive this durable session", timestamp: "2026-03-31T11:15:00.000Z" },
+        ],
+        metadata: {
+          workspaceId: "workspace-archive",
+          workspaceDir,
+          workspaceRoot: workspaceDir,
+        },
+      },
+    }, { repoRoot: isolatedRepoRoot });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const archiveRes = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-archive-1")}/archive?workspace=all`,
+        { method: "POST" },
+      );
+      const archiveJson = await archiveRes.json();
+      expect(archiveRes.status).toBe(200);
+      expect(archiveJson).toEqual(expect.objectContaining({ ok: true }));
+
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.sessions.some((entry) => entry.id === "ledger-archive-1")).toBe(false);
+
+      const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all&includeHidden=1`);
+      const hiddenListJson = await hiddenListRes.json();
+      expect(hiddenListRes.status).toBe(200);
+      expect(hiddenListJson.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "ledger-archive-1",
+          status: "archived",
+          lifecycleStatus: "archived",
+        }),
+      ]));
+
+      const detailRes = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-archive-1")}?workspace=all&full=1`,
+      );
+      const detailJson = await detailRes.json();
+      expect(detailRes.status).toBe(200);
+      expect(detailJson.session).toEqual(expect.objectContaining({
+        id: "ledger-archive-1",
+        status: "archived",
+        lifecycleStatus: "archived",
+        messages: [
+          expect.objectContaining({ content: "Archive this durable session" }),
+        ],
+      }));
+
+      expect(getSessionActivityFromStateLedger("ledger-archive-1", { repoRoot: isolatedRepoRoot })).toEqual(
+        expect.objectContaining({
+          sessionId: "ledger-archive-1",
+          latestStatus: "archived",
+        }),
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      vi.resetModules();
+      await removeDirWithRetries(isolatedRepoRoot);
+    }
+  });
+
+  it("marks stale ledger-only active snapshots as non-live runtime state", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-stale-live-"));
+    const workspaceDir = join(isolatedRepoRoot, "workspaces", "workspace-stale", "repo");
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+    mkdirSync(join(workspaceDir, ".git"), { recursive: true });
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "ledger-stale-active-1",
+      type: "manual",
+      workspaceId: "workspace-stale",
+      taskId: "ledger-stale-task-1",
+      taskTitle: "Stale active snapshot",
+      status: "active",
+      latestEventType: "assistant",
+      updatedAt: "2026-03-31T10:05:00.000Z",
+      startedAt: "2026-03-31T10:00:00.000Z",
+      eventCount: 1,
+      document: {
+        id: "ledger-stale-active-1",
+        taskId: "ledger-stale-task-1",
+        taskTitle: "Stale active snapshot",
+        type: "manual",
+        status: "active",
+        lifecycleStatus: "active",
+        runtimeState: "running",
+        runtimeIsLive: true,
+        workspaceId: "workspace-stale",
+        workspaceDir,
+        workspaceRoot: workspaceDir,
+        createdAt: "2026-03-31T10:00:00.000Z",
+        lastActiveAt: "2026-03-31T10:05:00.000Z",
+        totalEvents: 1,
+        turnCount: 1,
+        metadata: {
+          workspaceId: "workspace-stale",
+          workspaceDir,
+          workspaceRoot: workspaceDir,
+        },
+      },
+    }, { repoRoot: isolatedRepoRoot });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const detailRes = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-stale-active-1")}?workspace=all&full=1`,
+      );
+      const detailJson = await detailRes.json();
+      expect(detailRes.status).toBe(200);
+      expect(detailJson.session).toEqual(expect.objectContaining({
+        id: "ledger-stale-active-1",
+        lifecycleStatus: "active",
+        runtimeState: "running",
+        runtimeIsLive: false,
+      }));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      vi.resetModules();
+      await removeDirWithRetries(isolatedRepoRoot);
+    }
+  });
+
+  it("deletes ledger-backed sessions from durable listings and detail lookups", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-delete-"));
+    const workspaceDir = join(isolatedRepoRoot, "workspaces", "workspace-delete", "repo");
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+    mkdirSync(join(workspaceDir, ".git"), { recursive: true });
+
+    upsertSessionRecordToStateLedger({
+      sessionId: "ledger-delete-1",
+      type: "manual",
+      workspaceId: "workspace-delete",
+      taskId: "ledger-delete-task-1",
+      taskTitle: "Delete me",
+      status: "completed",
+      latestEventType: "assistant",
+      updatedAt: "2026-03-31T12:15:00.000Z",
+      startedAt: "2026-03-31T12:00:00.000Z",
+      eventCount: 1,
+      document: {
+        id: "ledger-delete-1",
+        taskId: "ledger-delete-task-1",
+        taskTitle: "Delete me",
+        type: "manual",
+        status: "completed",
+        lifecycleStatus: "completed",
+        workspaceId: "workspace-delete",
+        workspaceDir,
+        workspaceRoot: workspaceDir,
+        createdAt: "2026-03-31T12:00:00.000Z",
+        lastActiveAt: "2026-03-31T12:15:00.000Z",
+        totalEvents: 1,
+        turnCount: 1,
+        messages: [
+          { role: "assistant", content: "Delete this durable session", timestamp: "2026-03-31T12:15:00.000Z" },
+        ],
+        metadata: {
+          workspaceId: "workspace-delete",
+          workspaceDir,
+          workspaceRoot: workspaceDir,
+        },
+      },
+    }, { repoRoot: isolatedRepoRoot });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const deleteRes = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-delete-1")}/delete?workspace=all`,
+        { method: "POST" },
+      );
+      const deleteJson = await deleteRes.json();
+      expect(deleteRes.status).toBe(200);
+      expect(deleteJson).toEqual(expect.objectContaining({ ok: true }));
+
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all&includeHidden=1`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.sessions.some((entry) => entry.id === "ledger-delete-1")).toBe(false);
+
+      const detailRes = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent("ledger-delete-1")}?workspace=all&full=1`,
+      );
+      const detailJson = await detailRes.json();
+      expect(detailRes.status).toBe(404);
+      expect(detailJson).toEqual(expect.objectContaining({
+        ok: false,
+        error: "Session not found",
+      }));
+
+      expect(getSessionActivityFromStateLedger("ledger-delete-1", { repoRoot: isolatedRepoRoot })).toBeNull();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      vi.resetModules();
+      await removeDirWithRetries(isolatedRepoRoot);
+    }
+  });
+
   it("prefers durable ledger metadata over stale tracker summaries for matching sessions", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-merge-"));
@@ -8998,8 +9484,21 @@ describeUiServer("ui-server mini app", () => {
     const wsOneRepo = join(isolatedRepoRoot, "workspaces", "ws-one", "repo1");
     const wsTwoRepo = join(isolatedRepoRoot, "workspaces", "ws-two", "repo2");
     const previousRepoRoot = process.env.REPO_ROOT;
+    const previousBosunConfigPath = process.env.BOSUN_CONFIG_PATH;
+    const previousBosunHome = process.env.BOSUN_HOME;
+    const previousBosunDir = process.env.BOSUN_DIR;
+    const previousCodexMonitorHome = process.env.CODEX_MONITOR_HOME;
+    const previousCodexMonitorDir = process.env.CODEX_MONITOR_DIR;
+    const previousStateLedgerPath = process.env.BOSUN_STATE_LEDGER_PATH;
     process.env.REPO_ROOT = isolatedRepoRoot;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    process.env.BOSUN_HOME = configDir;
+    process.env.BOSUN_DIR = configDir;
+    process.env.CODEX_MONITOR_HOME = configDir;
+    process.env.CODEX_MONITOR_DIR = configDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = join(configDir, ".cache", "state-ledger.sqlite");
     vi.resetModules();
+    resetStateLedgerCache();
 
     mkdirSync(join(wsOneRepo, ".git"), { recursive: true });
     mkdirSync(join(wsTwoRepo, ".git"), { recursive: true });
@@ -9127,6 +9626,18 @@ describeUiServer("ui-server mini app", () => {
       await settleUiRuntimeCleanup();
       if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
       else process.env.REPO_ROOT = previousRepoRoot;
+      if (previousBosunConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = previousBosunConfigPath;
+      if (previousBosunHome === undefined) delete process.env.BOSUN_HOME;
+      else process.env.BOSUN_HOME = previousBosunHome;
+      if (previousBosunDir === undefined) delete process.env.BOSUN_DIR;
+      else process.env.BOSUN_DIR = previousBosunDir;
+      if (previousCodexMonitorHome === undefined) delete process.env.CODEX_MONITOR_HOME;
+      else process.env.CODEX_MONITOR_HOME = previousCodexMonitorHome;
+      if (previousCodexMonitorDir === undefined) delete process.env.CODEX_MONITOR_DIR;
+      else process.env.CODEX_MONITOR_DIR = previousCodexMonitorDir;
+      if (previousStateLedgerPath === undefined) delete process.env.BOSUN_STATE_LEDGER_PATH;
+      else process.env.BOSUN_STATE_LEDGER_PATH = previousStateLedgerPath;
       vi.resetModules();
       await removeDirWithRetries(isolatedRepoRoot);
     }

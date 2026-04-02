@@ -16,7 +16,11 @@ import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
-import { getSessionActivityFromStateLedger, upsertSessionRecordToStateLedger } from "../lib/state-ledger-sqlite.mjs";
+import {
+  deleteSessionRecordFromStateLedger,
+  getSessionActivityFromStateLedger,
+  upsertSessionRecordToStateLedger,
+} from "../lib/state-ledger-sqlite.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
 
@@ -600,7 +604,7 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
     return derivedRuntimeState || progressStatus;
   })();
   const isLive = runtimeIsLive == null
-    ? Boolean(progress && progress.status !== "ended" && progress.status !== "not_found")
+    ? Boolean(progress && progress.status === "active")
     : Boolean(runtimeIsLive);
   const status = progressStatus === "ended"
     ? lifecycleStatus
@@ -783,19 +787,32 @@ function mergeSessionLedgerRecordWithExisting(record, existingActivity) {
 function persistSessionRecordToStateLedger(session) {
   const record = buildStateLedgerSessionRecord(session);
   if (!record) return;
-  const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
-  const explicitRepoRoot = String(process.env.REPO_ROOT || "").trim();
-  const ledgerOptions = explicitRepoRoot
-    ? { repoRoot: resolve(explicitRepoRoot) }
-    : explicitLedgerPath && isTestRuntime()
-      ? { ledgerPath: explicitLedgerPath }
-      : { repoRoot: SESSION_TRACKER_REPO_ROOT };
+  const ledgerOptions = resolveSessionLedgerPersistenceOptions();
   try {
     const existing = getSessionActivityFromStateLedger(record.sessionId, ledgerOptions);
     upsertSessionRecordToStateLedger(
       mergeSessionLedgerRecordWithExisting(record, existing),
       ledgerOptions,
     );
+  } catch {
+    // Best-effort persistence — session tracking should continue even if the
+    // durable index is temporarily unavailable.
+  }
+}
+
+function resolveSessionLedgerPersistenceOptions() {
+  const explicitLedgerPath = String(process.env.BOSUN_STATE_LEDGER_PATH || "").trim();
+  const explicitRepoRoot = String(process.env.REPO_ROOT || "").trim();
+  return explicitRepoRoot
+    ? { repoRoot: resolve(explicitRepoRoot) }
+    : explicitLedgerPath && isTestRuntime()
+      ? { ledgerPath: explicitLedgerPath }
+      : { repoRoot: SESSION_TRACKER_REPO_ROOT };
+}
+
+function deleteSessionRecordFromDurableLedger(sessionId) {
+  try {
+    deleteSessionRecordFromStateLedger(sessionId, resolveSessionLedgerPersistenceOptions());
   } catch {
     // Best-effort persistence — session tracking should continue even if the
     // durable index is temporarily unavailable.
@@ -1355,6 +1372,7 @@ export class SessionTracker {
     this.#sessions.delete(taskId);
     this.#dirty.delete(taskId);
     this.#invalidatePersistedSummaryCache();
+    deleteSessionRecordFromDurableLedger(taskId);
     // Remove persisted session file if it exists
     if (this.#persistDir) {
       try {

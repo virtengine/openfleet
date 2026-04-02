@@ -36,6 +36,9 @@ describe("chat session regressions", () => {
     expect(loadMessagesBlock).not.toContain("sessionPagination.value = null;");
     expect(loadMessagesBlock).toContain("const shouldRetryAll = shouldFallbackToAllSessions(err, baseUrl, fallbackUrl);");
     expect(loadMessagesBlock).toContain("res = await fetchSessionAtPath(fallbackUrl, limit, opts.offset);");
+    expect(source).toContain("const freshCandidates = existing");
+    expect(source).toContain("const reuseCheck = reusePath");
+    expect(source).toContain("reused: true");
   });
 
   it("keeps retained selection during list failures and recovers deterministically", () => {
@@ -60,6 +63,23 @@ describe("chat session regressions", () => {
     const source = read("infra/session-tracker.mjs");
     expect(source).toContain("workspaceId: String(s?.metadata?.workspaceId || \"\").trim() || null");
     expect(source).toContain("workspaceDir: String(s?.metadata?.workspaceDir || \"\").trim() || null");
+  });
+
+  it("clears sticky thinking state when chat sends fail after optimistic status changes", () => {
+    const source = read("ui/tabs/chat.js");
+    expect(source).toContain("clearAgentStatus");
+    expect(source).toContain("clearAgentStatus(sessionId);");
+    expect(source).toContain("clearAgentStatus(newId);");
+  });
+
+  it("filters stale empty primary shells from the default session list", () => {
+    const source = read("server/ui-server.mjs");
+    expect(source).toContain("const staleEmptyPrimaryAgeMs = 30 * 60 * 1000;");
+    expect(source).toContain("const staleEmptyPrimarySession =");
+    expect(source).toContain("[\"primary\", \"manual\", \"chat\"].includes(normalizedType)");
+    expect(source).toContain("turnCount <= 0");
+    expect(source).toContain("totalEvents <= 0");
+    expect(source).toContain("if (staleEmptyPrimarySession) return true;");
   });
 });
 

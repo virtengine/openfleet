@@ -64,7 +64,7 @@ describe.each(MODULES)("$label api client", ({ path }) => {
     restoreGlobal("Telegram", originalGlobals.Telegram);
   });
 
-  it("limits concurrent GET dispatches to four requests", async () => {
+  it("limits concurrent GET dispatches to six requests", async () => {
     let active = 0;
     let maxActive = 0;
     const pendingResolvers = [];
@@ -84,9 +84,9 @@ describe.each(MODULES)("$label api client", ({ path }) => {
     );
 
     await vi.waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(6);
     });
-    expect(maxActive).toBe(4);
+    expect(maxActive).toBe(6);
 
     const firstBatch = pendingResolvers.splice(0, pendingResolvers.length);
     for (const release of firstBatch) {
@@ -103,7 +103,7 @@ describe.each(MODULES)("$label api client", ({ path }) => {
     }
 
     await Promise.all(requests);
-    expect(maxActive).toBe(4);
+    expect(maxActive).toBe(6);
   });
 
   it("dedupes matching inflight GET requests", async () => {
