@@ -14,6 +14,7 @@ import {
   projectSessionRow,
   reconcileSessionEntries,
 } from "./agents-screen-helpers.mjs";
+import { buildSessionApiPath } from "../../ui/modules/session-api.js";
 
 const html = htm.bind(React.createElement);
 const FIXED_TABLE_WIDTH = 2 + 8 + 12 + 8 + 10 + 12 + 14 + 7;
@@ -45,7 +46,7 @@ function describeSelection(session) {
 }
 
 function sessionActionPath(sessionId, action) {
-  return `/api/sessions/${encodeURIComponent(String(sessionId || "").trim())}/${action}?workspace=all`;
+  return buildSessionApiPath(sessionId, action, { workspace: "all" });
 }
 
 async function fetchJson(host, port, path, init) {
@@ -88,6 +89,17 @@ function normalizeAgentLiveness(payload) {
 }
 
 function normalizeAgentErrorPatterns(payload) {
+  if (
+    payload
+    && typeof payload === "object"
+    && !Array.isArray(payload?.patterns)
+    && !Array.isArray(payload?.errors)
+  ) {
+    return Object.entries(payload).map(([pattern, detail]) => ({
+      pattern,
+      ...(detail && typeof detail === "object" ? detail : {}),
+    }));
+  }
   if (Array.isArray(payload?.patterns)) return payload.patterns;
   if (Array.isArray(payload?.errors)) return payload.errors;
   return [];
@@ -668,20 +680,21 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
 
   const refreshData = React.useCallback(async () => {
     try {
-      const [sessionsPayload, retryPayload, harnessPayload, eventStatusPayload, livenessPayload, errorPayload, recentEventsPayload] = await Promise.all([
-        fetchJson(resolvedHost, resolvedPort, "/api/sessions?workspace=all"),
-        fetchJson(resolvedHost, resolvedPort, "/api/retry-queue"),
-        fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8"),
-        fetchJson(resolvedHost, resolvedPort, "/api/agents/events/status"),
-        fetchJson(resolvedHost, resolvedPort, "/api/agents/events/liveness"),
-        fetchJson(resolvedHost, resolvedPort, "/api/agents/events/errors"),
-        fetchJson(resolvedHost, resolvedPort, "/api/agents/events?limit=25"),
-      ]);
+      const surfacePayload = await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        "/api/harness/surface?view=agents&limit=25",
+      );
       const now = Date.now();
-      applyRetryQueue(retryPayload);
-      applyAgentMonitoring(eventStatusPayload, livenessPayload, errorPayload, recentEventsPayload);
-      applySessionSnapshot(sessionsPayload.sessions || [], now);
-      const nextHarnessRuns = normalizeHarnessRuns(harnessPayload?.items || harnessPayload?.runs || []);
+      applyRetryQueue(surfacePayload?.retryQueue || {});
+      applyAgentMonitoring(
+        surfacePayload?.agent?.status || null,
+        { agents: surfacePayload?.agent?.liveness || [] },
+        { patterns: surfacePayload?.agent?.patterns || {} },
+        { events: surfacePayload?.agent?.events || [] },
+      );
+      applySessionSnapshot(surfacePayload?.sessions || [], now);
+      const nextHarnessRuns = normalizeHarnessRuns(surfacePayload?.harness?.runs || []);
       setHarnessRuns(nextHarnessRuns);
       setSelectedHarnessRunId((current) => {
         if (current && nextHarnessRuns.some((run) => String(run?.runId || "").trim() === current)) return current;
@@ -782,7 +795,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const loadLogs = React.useCallback(async () => {
     if (!selectedSession?.id) return;
     try {
-      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all`);
+      const payload = await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        buildSessionApiPath(selectedSession.id, "", { workspace: "all" }),
+      );
       setLogLines(sessionMessagesToLogLines(payload));
       setStatusLine(`Loaded logs for ${describeSelection(selectedSession)}`);
     } catch (error) {
@@ -793,7 +810,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const loadDiff = React.useCallback(async () => {
     if (!selectedSession?.id) return;
     try {
-      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}/diff?workspace=all`);
+      const payload = await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        buildSessionApiPath(selectedSession.id, "diff", { workspace: "all" }),
+      );
       setDiffView(summarizeDiff(payload));
       setStatusLine(`Loaded diff for ${describeSelection(selectedSession)}`);
     } catch (error) {
@@ -804,7 +825,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const loadDetail = React.useCallback(async () => {
     if (!selectedSession?.id) return;
     try {
-      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all`);
+      const payload = await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        buildSessionApiPath(selectedSession.id, "", { workspace: "all" }),
+      );
       setDetailView(payload);
       setStatusLine("");
     } catch (error) {

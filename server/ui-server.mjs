@@ -6110,6 +6110,184 @@ function buildHarnessOverview(configDir = resolveUiConfigDir()) {
   };
 }
 
+async function listWorkflowSurfaceApprovals(limit = 25) {
+  try {
+    const {
+      listApprovalRequests,
+      reconcileWorkflowRunApprovalRequests,
+    } = await import("../workflow/approval-queue.mjs");
+    const workspaceContext = resolveActiveWorkspaceExecutionContext();
+    const workspaceDir = workspaceContext?.workspaceDir || repoRoot;
+    const workspacePaths = getWorkflowStoragePaths(workspaceDir);
+    const approvalsRepoRoot = workspacePaths.workspaceRoot || repoRoot;
+    reconcileWorkflowRunApprovalRequests({ repoRoot: approvalsRepoRoot });
+    const listed = listApprovalRequests({
+      repoRoot: approvalsRepoRoot,
+      scopeType: "workflow-run",
+      status: "pending",
+      includeResolved: false,
+      limit: Math.max(1, Math.min(Number(limit) || 25, 100)),
+    });
+    return Array.isArray(listed?.requests) ? listed.requests : [];
+  } catch {
+    return [];
+  }
+}
+
+async function listWorkflowSurfaceRuns(limit = 8) {
+  try {
+    const wfUrl = new URL("http://127.0.0.1/api/workflows/runs?workspace=active");
+    const wfCtx = await getWorkflowRequestContext(wfUrl, { bootstrapTemplates: false });
+    if (!wfCtx?.ok) return [];
+    const engine = wfCtx.engine;
+    const resolvedLimit = Math.max(1, Math.min(Number(limit) || 8, 100));
+    const page = typeof engine.getRunHistoryPage === "function"
+      ? await engine.getRunHistoryPage(null, { offset: 0, limit: resolvedLimit })
+      : {
+          runs: engine.getRunHistory ? await engine.getRunHistory(null, resolvedLimit) : [],
+        };
+    return Array.isArray(page?.runs) ? page.runs : [];
+  } catch {
+    return [];
+  }
+}
+
+function getAgentSurfaceSnapshot(limit = 25) {
+  const bus = _resolveEventBus();
+  if (!bus) {
+    return {
+      status: { ok: false, started: false, source: "unavailable" },
+      liveness: [],
+      patterns: {},
+      events: [],
+    };
+  }
+  let status = { ok: true };
+  let liveness = [];
+  let patterns = {};
+  let events = [];
+  try {
+    status = { ok: true, ...bus.getStatus() };
+  } catch {
+    status = { ok: false, started: false, source: "error" };
+  }
+  try {
+    liveness = Array.isArray(bus.getAgentLiveness()) ? bus.getAgentLiveness() : [];
+  } catch {
+    liveness = [];
+  }
+  try {
+    patterns = bus.getErrorPatternSummary() || {};
+  } catch {
+    patterns = {};
+  }
+  try {
+    const eventLog = bus.getEventLog({ limit: Math.max(1, Math.min(Number(limit) || 25, 200)) });
+    events = Array.isArray(eventLog) ? eventLog : [];
+  } catch {
+    events = [];
+  }
+  return { status, liveness, patterns, events };
+}
+
+function getRetryQueueSurfaceSnapshot() {
+  const bus = _resolveEventBus();
+  if (bus && typeof bus.getRetryQueue === "function") {
+    try {
+      const snapshot = bus.getRetryQueue();
+      if (snapshot && typeof snapshot === "object") return snapshot;
+    } catch {
+      // fall through
+    }
+  }
+  return {
+    count: 0,
+    items: [],
+    stats: {
+      totalRetriesToday: 0,
+      peakRetryDepth: 0,
+      exhaustedTaskIds: [],
+    },
+  };
+}
+
+async function buildHarnessSurfacePayload(options = {}) {
+  const view = String(options?.view || "all").trim().toLowerCase() || "all";
+  const limit = Math.max(1, Math.min(Number(options?.limit) || 25, 100));
+  const logLines = Math.max(10, Math.min(Number(options?.logLines) || 30, 200));
+  const includeAgents = view === "all" || view === "agents";
+  const includeWorkflows = view === "all" || view === "workflows";
+  const includeTelemetry = view === "all" || view === "telemetry" || view === "agents";
+  const includeLogs = view === "all" || view === "logs";
+
+  const harnessSummary = getHarnessTelemetrySummary({ configDir: process.cwd() });
+  const harnessLive = getHarnessLiveTelemetrySnapshot({ configDir: process.cwd() });
+  const harnessProviders = getHarnessProviderUsageSummary({ configDir: process.cwd() });
+  const harnessRuns = mergeHarnessRunSummaries(
+    hydrateHarnessRunListItems(listHarnessRuns(resolveUiConfigDir(), { limit: Math.max(limit, 8) })),
+    listActiveHarnessRunSnapshots(),
+    Math.max(limit, 8),
+  );
+  const {
+    listApprovalRequests,
+  } = await import("../workflow/approval-queue.mjs");
+  const harnessApprovals = (() => {
+    try {
+      const listed = listApprovalRequests({
+        repoRoot: resolveHarnessApprovalRepoRoot(),
+        scopeType: "harness-run",
+        status: "pending",
+        includeResolved: false,
+        limit,
+      });
+      return Array.isArray(listed?.requests) ? listed.requests : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  const payload = {
+    view,
+    harness: {
+      summary: harnessSummary,
+      live: harnessLive,
+      providers: harnessProviders,
+      runs: harnessRuns,
+      approvals: harnessApprovals,
+    },
+  };
+
+  if (includeAgents) {
+    payload.sessions = getCurrentSessionSnapshot();
+    payload.retryQueue = getRetryQueueSurfaceSnapshot();
+    payload.agent = getAgentSurfaceSnapshot(limit);
+  }
+
+  if (includeTelemetry) {
+    payload.telemetry = {
+      monitor: buildCurrentTuiMonitorStats(),
+      harnessSummary,
+      harnessLive,
+      harnessProviders,
+    };
+  }
+
+  if (includeWorkflows) {
+    payload.workflows = {
+      approvals: await listWorkflowSurfaceApprovals(limit),
+      runs: await listWorkflowSurfaceRuns(Math.min(limit, 8)),
+    };
+  }
+
+  if (includeLogs) {
+    payload.logs = {
+      tail: await getLatestLogTail(logLines),
+    };
+  }
+
+  return payload;
+}
+
 function resolveHarnessApprovalRepoRoot() {
   const configDir = resolveUiConfigDir();
   const repoLocalConfigPath = resolve(configDir, "bosun.config.json");
@@ -26292,6 +26470,23 @@ if (path === "/api/agent-logs/context") {
             }
           : null,
       });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/harness/surface" && req.method === "GET") {
+    try {
+      const view = String(url.searchParams.get("view") || "all").trim().toLowerCase() || "all";
+      const limit = Number(url.searchParams.get("limit") || 25);
+      const logLines = Number(url.searchParams.get("lines") || 30);
+      const payload = await buildHarnessSurfacePayload({
+        view,
+        limit,
+        logLines,
+      });
+      jsonResponse(res, 200, { ok: true, ...payload });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

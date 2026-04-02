@@ -660,11 +660,8 @@ for (const relPath of ["ui/tabs/agents.js", "site/ui/tabs/agents.js"]) {
 
 describe("TUI agents harness monitor", () => {
   it("renders harness detail, approvals, and nudge controls backed by harness APIs", () => {
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/harness/runs?limit=8")');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events/status")');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events/liveness")');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events/errors")');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, "/api/agents/events?limit=25")');
+    expect(tuiAgentsSource).toContain('fetchJson(');
+    expect(tuiAgentsSource).toContain('"/api/harness/surface?view=agents&limit=25"');
     expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`)');
     expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`)');
     expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/approval`)');
@@ -704,9 +701,7 @@ describe("TUI workflows operator inbox", () => {
   it("renders merged workflow and harness approvals with inbox actions", () => {
     const workflowsTuiSource = readFileSync(resolve(process.cwd(), "tui/screens/workflows.mjs"), "utf8");
     const helpSource = readFileSync(resolve(process.cwd(), "ui/tui/HelpScreen.js"), "utf8");
-    expect(workflowsTuiSource).toContain('requestJson("/api/workflows/approvals?status=pending&limit=25")');
-    expect(workflowsTuiSource).toContain('requestJson("/api/harness/approvals?status=pending&limit=25")');
-    expect(workflowsTuiSource).toContain('requestJson("/api/harness/runs?limit=8")');
+    expect(workflowsTuiSource).toContain('requestJson("/api/harness/surface?view=workflows&limit=25")');
     expect(workflowsTuiSource).toContain("Operator Inbox (");
     expect(workflowsTuiSource).toContain("Pending workflow approvals plus waiting or stalled harness runs");
     expect(workflowsTuiSource).toContain('"/api/workflows/approvals/${encodeURIComponent(item.requestId)}/resolve"');
@@ -779,4 +774,14 @@ describe("Web workflows operator surfaces", () => {
       expect(source).toContain("Remediate Run");
     });
   }
+});
+
+describe("Telegram harness surface routing", () => {
+  it("routes fleet, telemetry, and logs through the shared UI control plane when available", () => {
+    const telegramSource = readFileSync(resolve(process.cwd(), "telegram/telegram-bot.mjs"), "utf8");
+    expect(telegramSource).toContain("async function localUiRequest(");
+    expect(telegramSource).toContain('localUiRequest("/api/harness/surface?view=agents&limit=12")');
+    expect(telegramSource).toContain('localUiRequest("/api/harness/surface?view=telemetry&limit=12")');
+    expect(telegramSource).toContain('localUiRequest(`/api/logs?lines=${Math.max(10, Math.min(numLines, 100))}`)');
+  });
 });

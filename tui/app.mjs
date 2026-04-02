@@ -338,7 +338,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       if (action.type === "navigation") {
         setScreen(action.payload.screen);
       } else if (action.type === "session") {
-        await requestJson(`/api/sessions/${encodeURIComponent(action.payload.sessionId)}/${action.command}?workspace=all`, {
+        await requestJson(buildSessionApiPath(action.payload.sessionId, action.command, { workspace: "all" }), {
           method: "POST",
         });
       } else if (action.type === "task") {

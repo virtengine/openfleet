@@ -7163,6 +7163,35 @@ async function cmdTelemetry(chatId, args = "") {
     return sendReply(chatId, lines.join("\n"));
   }
 
+  if (!mode) {
+    const surface = await localUiRequest("/api/harness/surface?view=telemetry&limit=12").catch(() => null);
+    if (surface?.ok) {
+      const monitor = surface?.telemetry?.monitor || {};
+      const harnessSummary = surface?.telemetry?.harnessSummary || {};
+      const harnessProviders = surface?.telemetry?.harnessProviders || {};
+      const providerRows = Array.isArray(harnessProviders?.providers) ? harnessProviders.providers : [];
+      const lines = [
+        ":chart: Telemetry Summary",
+        "",
+        `Agents: ${monitor?.activeAgents || 0}/${monitor?.maxAgents || 0}`,
+        `Tokens: in ${monitor?.tokensIn || 0} | out ${monitor?.tokensOut || 0} | total ${monitor?.totalTokens || monitor?.tokensTotal || 0}`,
+        `Harness sessions: ${harnessSummary?.sessionCount || 0} | events: ${harnessSummary?.eventCount || 0} | runs: ${harnessSummary?.runCount || 0}`,
+      ];
+      if (providerRows.length) {
+        lines.push("");
+        lines.push(":electric_plug: Providers");
+        for (const provider of providerRows.slice(0, 6)) {
+          lines.push(
+            `  ${provider?.providerId || provider?.provider || "provider"}: sessions=${provider?.sessionCount || 0} tokens=${provider?.tokenCount || 0} calls=${provider?.callCount || 0}`,
+          );
+        }
+      }
+      lines.push("");
+      lines.push("Use /telemetry errors | executors | alerts for drill-down.");
+      return sendReply(chatId, lines.join("\n"));
+    }
+  }
+
   const metrics = await readJsonlTail(metricsPath, 2000);
   const summary = summarizeTelemetry(metrics, days);
   if (!summary) {
@@ -7700,6 +7729,54 @@ async function cmdStartTask(chatId, args) {
 
 async function cmdAgents(chatId) {
   try {
+    const surface = await localUiRequest("/api/harness/surface?view=agents&limit=12").catch(() => null);
+    if (surface?.ok) {
+      const lines = [":bot: Agent Fleet", ""];
+      const monitor = surface?.telemetry?.monitor || {};
+      const executor = monitor?.executor || null;
+      const sessions = Array.isArray(surface?.sessions) ? surface.sessions : [];
+      const retryQueue = surface?.retryQueue && typeof surface.retryQueue === "object"
+        ? surface.retryQueue
+        : { count: 0, items: [] };
+      const liveness = Array.isArray(surface?.agent?.liveness) ? surface.agent.liveness : [];
+      const harnessRuns = Array.isArray(surface?.harness?.runs) ? surface.harness.runs : [];
+      const harnessApprovals = Array.isArray(surface?.harness?.approvals) ? surface.harness.approvals : [];
+
+      if (executor) {
+        lines.push(
+          `Task Executor: mode=${executor.mode || "internal"} | slots=${executor.activeSlots || 0}/${executor.maxParallel || 0} | paused=${executor.paused === true ? "yes" : "no"}`,
+        );
+        for (const slot of Array.isArray(executor.slots) ? executor.slots.slice(0, 5) : []) {
+          lines.push(
+            `  ${slot.taskId || "task"}: ${slot.taskTitle || "-"} | sdk=${slot.sdk || "-"} | status=${slot.status || "-"} | run=${formatRuntimeSeconds(Math.floor(Number(slot.runningFor || 0) / 1000))}`,
+          );
+        }
+      }
+
+      lines.push(
+        `Sessions: ${sessions.length} | live agents: ${liveness.filter((entry) => entry?.alive !== false).length} | retry queue: ${retryQueue.count || 0}`,
+      );
+      if (harnessRuns.length) {
+        lines.push(`Harness runs: ${harnessRuns.length} | pending approvals: ${harnessApprovals.length}`);
+        for (const run of harnessRuns.slice(0, 4)) {
+          lines.push(
+            `  ${String(run?.runId || "run").slice(0, 12)}: ${run?.health?.state || run?.status || "unknown"} | stage=${run?.currentStageId || run?.health?.approvalStageId || "n/a"} | ${run?.health?.lastEventSummary || run?.summary || "no summary"}`,
+          );
+        }
+      }
+      if (liveness.length) {
+        lines.push("");
+        lines.push(":satellite: Live agent monitor");
+        for (const entry of liveness.slice(0, 5)) {
+          lines.push(
+            `  ${entry?.taskId || entry?.sessionId || "agent"}: ${entry?.alive === false ? "stale" : "live"} | heartbeat=${entry?.lastHeartbeatAt || entry?.updatedAt || entry?.lastSeenAt || "n/a"}`,
+          );
+        }
+      }
+      await sendReply(chatId, lines.join("\n"));
+      return;
+    }
+
     const lines = [":bot: Agent Fleet", ""];
     let statusSnapshot = null;
     if (_readStatusData) {
@@ -7971,6 +8048,17 @@ async function cmdAgentLogs(chatId, args) {
 async function cmdLogs(chatId, _args) {
   const numLines = parseInt(_args, 10) || 30;
   try {
+    const surfaceLogs = await localUiRequest(`/api/logs?lines=${Math.max(10, Math.min(numLines, 100))}`).catch(() => null);
+    if (surfaceLogs?.ok && surfaceLogs?.data) {
+      const tailLines = Array.isArray(surfaceLogs.data.lines) ? surfaceLogs.data.lines : [];
+      const files = Array.isArray(surfaceLogs.data.files) ? surfaceLogs.data.files.join(", ") : String(surfaceLogs.data.file || "logs");
+      await sendReply(
+        chatId,
+        `:file: Last ${tailLines.length || numLines} lines (${files}):\n\n${tailLines.join("\n") || "(empty)"}`,
+      );
+      return;
+    }
+
     const logFiles = await readdir(resolve(__dirname, "..", "logs")).catch(() => []);
     const logFile = logFiles
       .filter((f) => f.endsWith(".log"))
@@ -9623,6 +9711,59 @@ async function workspaceRequest(host, path, options = {}) {
     throw new Error(data.message || "Workspace API error");
   }
   return data?.data ?? data;
+}
+
+function resolveLocalUiApiBaseUrl() {
+  const raw = String(getTelegramUiUrl?.() || telegramUiUrl || "").trim();
+  if (!raw) {
+    throw new Error("Bosun UI server is not available.");
+  }
+  return raw;
+}
+
+async function localUiRequest(path, options = {}) {
+  const {
+    method = "GET",
+    body,
+    timeoutMs = 15000,
+  } = options;
+  const base = resolveLocalUiApiBaseUrl();
+  const token = String(getSessionToken?.() || "").trim();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  let response;
+  try {
+    response = await fetch(new URL(path, base).toString(), {
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(`Bosun UI request failed: ${err.message}`);
+  }
+  clearTimeout(timer);
+
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (err) {
+      throw new Error(`Bosun UI response parse error: ${err.message}`);
+    }
+  }
+  if (!response.ok || data?.ok === false) {
+    throw new Error(
+      String(data?.error || data?.message || response.statusText || `HTTP ${response.status}`).trim() || `HTTP ${response.status}`,
+    );
+  }
+  return data;
 }
 
 async function getWorkspaceSummaries(host) {
