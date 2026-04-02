@@ -482,6 +482,36 @@ function appendBosunCreatedPrFooter(body = "") {
   return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
 }
 
+const WORKFLOW_TEMPLATE_TOKEN_RE = /\{\{\s*[^{}]+\s*\}\}/;
+const VALID_GITHUB_REPO_SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function hasUnresolvedWorkflowTemplateToken(value) {
+  return WORKFLOW_TEMPLATE_TOKEN_RE.test(String(value || "").trim());
+}
+
+function normalizeWorkflowRepoSlug(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = raw
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^github\.com\//i, "")
+    .replace(/^git@github\.com:/i, "")
+    .replace(/\.git$/i, "")
+    .replace(/^\/+|\/+$/g, "");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length < 2) return normalized;
+  return `${parts[0]}/${parts[1]}`;
+}
+
+function normalizeWorkflowHeadBranch(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw
+    .replace(/^refs\/heads\//i, "")
+    .replace(/^heads\//i, "")
+    .trim();
+}
+
 function taskHasReviewReference(task) {
   if (!task || typeof task !== "object") return false;
   const prNumber = Number.parseInt(String(task.prNumber || task.pr_number || ""), 10);
@@ -1984,32 +2014,76 @@ function bindTaskContext(ctx, { taskId, taskTitle, task = null, branch = null, b
     ctx.data = {};
   }
 
-  const normalizedTaskId = String(taskId || task?.id || task?.task_id || "").trim();
+  const normalizeTaskContextIdentity = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text || isUnresolvedTemplateToken(text)) return "";
+    const lowered = text.toLowerCase();
+    if (lowered === "null" || lowered === "undefined") return "";
+    return text;
+  };
+
+  const normalizedTaskId = normalizeTaskContextIdentity(taskId || task?.id || task?.task_id);
   if (normalizedTaskId) {
     ctx.data.taskId = normalizedTaskId;
     ctx.data.activeTaskId = normalizedTaskId;
+  } else {
+    if (isUnresolvedTemplateToken(ctx.data.taskId)) delete ctx.data.taskId;
+    if (isUnresolvedTemplateToken(ctx.data.activeTaskId)) delete ctx.data.activeTaskId;
   }
 
-  const normalizedTaskTitle = String(taskTitle || task?.title || "").trim();
+  const normalizedTaskTitle = normalizeTaskContextIdentity(
+    taskTitle || task?.title || task?.taskTitle,
+  );
   if (normalizedTaskTitle) {
     ctx.data.taskTitle = normalizedTaskTitle;
+  } else if (isUnresolvedTemplateToken(ctx.data.taskTitle)) {
+    delete ctx.data.taskTitle;
   }
 
-  const normalizedBranch = String(
+  const normalizedBranch = normalizeTaskContextIdentity(
     branchName ||
     branch ||
     task?.branchName ||
     task?.branch ||
     "",
-  ).trim();
+  );
   if (normalizedBranch) {
     ctx.data.branchName = normalizedBranch;
     ctx.data.branch = normalizedBranch;
+  } else {
+    if (isUnresolvedTemplateToken(ctx.data.branchName)) delete ctx.data.branchName;
+    if (isUnresolvedTemplateToken(ctx.data.branch)) delete ctx.data.branch;
   }
 
   if (task && typeof task === "object") {
+    const sanitizedTask = { ...task };
+    if (normalizedTaskId) {
+      sanitizedTask.id = normalizedTaskId;
+      if (Object.prototype.hasOwnProperty.call(sanitizedTask, "task_id")) {
+        sanitizedTask.task_id = normalizedTaskId;
+      }
+    } else {
+      delete sanitizedTask.id;
+      delete sanitizedTask.task_id;
+    }
+    if (normalizedTaskTitle) {
+      sanitizedTask.title = normalizedTaskTitle;
+      if (Object.prototype.hasOwnProperty.call(sanitizedTask, "taskTitle")) {
+        sanitizedTask.taskTitle = normalizedTaskTitle;
+      }
+    } else {
+      if (isUnresolvedTemplateToken(sanitizedTask.title)) delete sanitizedTask.title;
+      if (isUnresolvedTemplateToken(sanitizedTask.taskTitle)) delete sanitizedTask.taskTitle;
+    }
+    if (normalizedBranch) {
+      sanitizedTask.branch = normalizedBranch;
+      sanitizedTask.branchName = normalizedBranch;
+    } else {
+      if (isUnresolvedTemplateToken(sanitizedTask.branch)) delete sanitizedTask.branch;
+      if (isUnresolvedTemplateToken(sanitizedTask.branchName)) delete sanitizedTask.branchName;
+    }
     ctx.data.task = {
-      ...task,
+      ...sanitizedTask,
       ...(normalizedBranch ? { branch: normalizedBranch, branchName: normalizedBranch } : {}),
     };
     const taskWorktreePath = String(
@@ -7722,21 +7796,159 @@ registerBuiltinNodeType("action.create_pr", {
         .replace(/[ \t]{2,}/g, " ")
         .trim();
     };
+    const buildBlockedCreatePrResult = (reason, message, details = {}) => {
+      ctx.log(node.id, `Create PR blocked: ${message}`);
+      return {
+        success: false,
+        blocked: true,
+        actionable: true,
+        lifecycle: "blocked",
+        reason,
+        error: message,
+        title: null,
+        base: null,
+        branch: null,
+        repoSlug: null,
+        ...details,
+      };
+    };
 
     const title = normalizePrText(resolveNodeValue(node.config?.title, ""));
     const body = appendBosunCreatedPrFooter(String(resolveNodeValue(node.config?.body, "")));
     const baseInput = resolveNodeValue(node.config?.base ?? node.config?.baseBranch, "main");
-    let base = String(baseInput || "main").trim() || "main";
+    const rawBase = String(baseInput || "main").trim() || "main";
+    if (hasUnresolvedWorkflowTemplateToken(rawBase)) {
+      return buildBlockedCreatePrResult(
+        "unresolved_base_placeholder",
+        `PR base branch contains an unresolved placeholder: ${rawBase}`,
+        {
+          title,
+          base: rawBase,
+          branch: null,
+          repoSlug: null,
+          blocking: {
+            field: "base",
+            value: rawBase,
+            retryable: false,
+          },
+        },
+      );
+    }
+    let base = rawBase;
     try {
       base = normalizeBaseBranch(base).branch;
-    } catch {
+    } catch (err) {
+      return buildBlockedCreatePrResult(
+        "invalid_base_branch",
+        `Invalid PR base branch: ${rawBase}`,
+        {
+          title,
+          base: rawBase,
+          branch: null,
+          repoSlug: null,
+          blocking: {
+            field: "base",
+            value: rawBase,
+            retryable: false,
+            cause: err?.message || String(err),
+          },
+        },
+      );
     }
-    const branch = String(resolveNodeValue(node.config?.branch, "")).trim();
-    const repoSlug = String(
+    const rawBranch = String(resolveNodeValue(node.config?.branch, "")).trim();
+    if (hasUnresolvedWorkflowTemplateToken(rawBranch)) {
+      return buildBlockedCreatePrResult(
+        "unresolved_branch_placeholder",
+        `PR head branch contains an unresolved placeholder: ${rawBranch}`,
+        {
+          title,
+          base,
+          branch: rawBranch,
+          repoSlug: null,
+          blocking: {
+            field: "branch",
+            value: rawBranch,
+            retryable: false,
+          },
+        },
+      );
+    }
+    const branch = normalizeWorkflowHeadBranch(rawBranch);
+    if (/^(?:refs\/remotes\/)?origin\//i.test(branch)) {
+      return buildBlockedCreatePrResult(
+        "invalid_head_branch",
+        `PR head branch must be a local branch name, not a remote ref: ${rawBranch}`,
+        {
+          title,
+          base,
+          branch,
+          repoSlug: null,
+          blocking: {
+            field: "branch",
+            value: rawBranch,
+            retryable: false,
+          },
+        },
+      );
+    }
+    const rawRepoSlug = String(
       resolveNodeValue(node.config?.repoSlug ?? ctx.data?.repoSlug ?? ctx.data?.repository, ""),
     ).trim();
+    if (hasUnresolvedWorkflowTemplateToken(rawRepoSlug)) {
+      return buildBlockedCreatePrResult(
+        "unresolved_repo_placeholder",
+        `PR repoSlug contains an unresolved placeholder: ${rawRepoSlug}`,
+        {
+          title,
+          base,
+          branch: branch || null,
+          repoSlug: rawRepoSlug,
+          blocking: {
+            field: "repoSlug",
+            value: rawRepoSlug,
+            retryable: false,
+          },
+        },
+      );
+    }
+    const repoSlug = normalizeWorkflowRepoSlug(rawRepoSlug);
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
+    if (rawRepoSlug && !VALID_GITHUB_REPO_SLUG_RE.test(repoSlug)) {
+      return buildBlockedCreatePrResult(
+        "invalid_repo_slug",
+        `PR repoSlug must be owner/repo: ${rawRepoSlug}`,
+        {
+          title,
+          base,
+          branch: branch || null,
+          repoSlug: rawRepoSlug,
+          blocking: {
+            field: "repoSlug",
+            value: rawRepoSlug,
+            normalizedValue: repoSlug || null,
+            retryable: false,
+          },
+        },
+      );
+    }
+    if (ctx?.data?._hasNewCommits === false) {
+      return buildBlockedCreatePrResult(
+        "no_new_commits",
+        "PR creation blocked because the workflow recorded no new commits to publish.",
+        {
+          title,
+          base,
+          branch: branch || null,
+          repoSlug: repoSlug || null,
+          blocking: {
+            field: "commits",
+            value: false,
+            retryable: false,
+          },
+        },
+      );
+    }
     await requireWorkflowActionApproval({
       node,
       ctx,
@@ -18074,6 +18286,17 @@ export function classifyAcquireWorktreeFailure(errorInput) {
   const errorMessage = String(errorInput?.message || errorInput || "worktree_acquisition_failed");
   const normalized = errorMessage.trim();
 
+  if (/action\.acquire_worktree: .* is required/i.test(normalized)) {
+    return {
+      errorMessage: normalized,
+      retryable: false,
+      failureKind: "acquire_worktree_config_error",
+      blockedReason: normalized,
+      detectedIssues: ["config_error"],
+      phase: "config-validation",
+    };
+  }
+
   if (/managed worktree was removed after stale refresh state/i.test(normalized)) {
     return {
       errorMessage: normalized,
@@ -18148,6 +18371,38 @@ registerBuiltinNodeType("action.acquire_worktree", {
       worktreePath: null,
       repairArtifacts: null,
     };
+    const deriveFailureWorktreePath = () => {
+      if (!repoRoot || !taskId) return recoveryState.worktreePath || null;
+      return recoveryState.worktreePath
+        || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId, branch));
+    };
+    const buildFailureResult = ({
+      errorMessage,
+      retryable = false,
+      failureKind = "worktree_acquisition_failed",
+      recordedAt = new Date().toISOString(),
+      autoRecoverDelayMs = 0,
+      retryAt = null,
+      blockedReason = errorMessage,
+      repairArtifacts = null,
+      recoveryNote = "",
+    }) => ({
+      success: false,
+      error: errorMessage,
+      branch,
+      baseBranch,
+      taskId,
+      repoRoot,
+      worktreePath: deriveFailureWorktreePath(),
+      retryable: retryable === true,
+      failureKind: String(failureKind || "worktree_acquisition_failed"),
+      recordedAt,
+      autoRecoverDelayMs,
+      retryAt,
+      blockedReason: blockedReason || errorMessage,
+      repairArtifacts,
+      recoveryNote,
+    });
     const persistRecoveryEvent = async (event) => {
       const payload = {
         reason: "poisoned_worktree",
@@ -18633,11 +18888,8 @@ registerBuiltinNodeType("action.acquire_worktree", {
         });
       }
       ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
-      return {
-        success: false,
-        error: errorMessage,
-        branch,
-        baseBranch,
+      return buildFailureResult({
+        errorMessage,
         retryable,
         failureKind,
         recordedAt,
@@ -18646,26 +18898,22 @@ registerBuiltinNodeType("action.acquire_worktree", {
         blockedReason,
         repairArtifacts: retryable ? null : recoveryState.repairArtifacts,
         recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
-      };
+      });
     }
     } catch (outerErr) {
       // Outer catch: guard throws, cfgOrCtx errors, or any uncaught path.
       // Always return structured output so {{acquire-worktree.recoveryNote}} resolves.
-      const errorMessage = String(outerErr?.message || outerErr || "acquire_worktree_outer_failure");
+      const classified = classifyAcquireWorktreeFailure(outerErr);
+      const errorMessage = String(
+        classified?.errorMessage || outerErr?.message || outerErr || "acquire_worktree_outer_failure",
+      );
       ctx.log(node.id, `Worktree acquisition outer error: ${errorMessage}`);
-      return {
-        success: false,
-        error: errorMessage,
-        branch: branch || "",
-        baseBranch: baseBranch || "",
-        retryable: true,
-        failureKind: "acquire_outer_error",
-        recordedAt: new Date().toISOString(),
-        autoRecoverDelayMs: 0,
-        retryAt: null,
-        blockedReason: errorMessage,
-        recoveryNote: "",
-      };
+      return buildFailureResult({
+        errorMessage,
+        retryable: classified?.retryable === true,
+        failureKind: classified?.failureKind || "acquire_outer_error",
+        blockedReason: classified?.blockedReason || errorMessage,
+      });
     }
   },
 });

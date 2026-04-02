@@ -33,6 +33,7 @@ let detectProjectStack;
 let resolveAutoCommand;
 let getTemplate;
 let installTemplate;
+let reconcileInstalledTemplates;
 
 if (SPAWN_BLOCKED) {
   describe("workflow-task-lifecycle", () => {
@@ -43,7 +44,7 @@ if (SPAWN_BLOCKED) {
   ({ clearContractCache } = await import("../workflow/workflow-contract.mjs"));
   ({ WorkflowEngine, WorkflowContext } = await import("../workflow/workflow-engine.mjs"));
   ({ detectProjectStack, resolveAutoCommand } = await import("../workflow/project-detection.mjs"));
-  ({ getTemplate, installTemplate } = await import("../workflow/workflow-templates.mjs"));
+  ({ getTemplate, installTemplate, reconcileInstalledTemplates } = await import("../workflow/workflow-templates.mjs"));
 
 // -- Helpers -----------------------------------------------------------------
 
@@ -795,7 +796,7 @@ describe("trigger.task_available", () => {
     }
   });
 
-  it("polls configured statuses in order, prioritizes earlier statuses, and deduplicates repeated tasks", async () => {
+  it("polls explicitly configured custom statuses in order, prioritizes earlier statuses, and deduplicates repeated tasks", async () => {
     const nt = getNodeType("trigger.task_available");
     const sharedTask = {
       id: "task-shared",
@@ -852,7 +853,7 @@ describe("trigger.task_available", () => {
     expect(result.selectedTaskId).toBe("task-shared");
   });
 
-  it("returns all unique tasks across configured statuses in priority order", async () => {
+  it("returns all unique tasks across explicitly configured statuses in priority order", async () => {
     const nt = getNodeType("trigger.task_available");
     const sharedTask = {
       id: "task-shared",
@@ -2318,6 +2319,26 @@ describe("action.acquire_worktree", () => {
     expect(ctx.data.baseBranch).toBe("main");
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
+  });
+
+  it("returns explicit non-retryable metadata for config validation failures", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "cfg-err-1",
+      branch: "",
+      baseBranch: "main",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(result.failureKind).toBe("acquire_worktree_config_error");
+    expect(result.taskId).toBe("cfg-err-1");
+    expect(result.repoRoot).toBe(repoDir);
+    expect(typeof result.worktreePath).toBe("string");
+    expect(result.worktreePath).toContain(".bosun");
   });
 
   it("resolves repoRoot from config when workflow cwd is a non-git .bosun directory", async () => {
@@ -4234,6 +4255,13 @@ describe("template-task-lifecycle", () => {
     expect(t.recommended).toBe(true);
   });
 
+  it("polls todo only by default so inreview remediation stays on dedicated review flows", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const triggerNode = t.nodes.find((n) => n.id === "trigger");
+    expect(triggerNode?.type).toBe("trigger.task_available");
+    expect(triggerNode?.config?.statuses).toEqual(["todo"]);
+  });
+
   it("has all required node IDs", () => {
     const t = getTemplate("template-task-lifecycle");
     const ids = t.nodes.map((n) => n.id);
@@ -4395,6 +4423,8 @@ describe("template-task-lifecycle", () => {
 
   it("worktree-failed path releases claim and slot", () => {
     const t = getTemplate("template-task-lifecycle");
+    const retryGate = t.nodes.find((n) => n.id === "wt-retry-eligible");
+    expect(retryGate?.config?.expression).toBe("$ctx.getNodeOutput('acquire-worktree')?.retryable === true");
     // Auto-recovery path: worktree-ok -> wt-retry-eligible -> recover -> retry -> retry-wt-ok
     expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "wt-retry-eligible")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "recover-worktree")).toBeDefined();
@@ -4414,6 +4444,144 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
     expect(t.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+  });
+
+  it("routes retryable worktree acquisition failures through recover-worktree before retry", async () => {
+    const lifecycle = getTemplate("template-task-lifecycle");
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const nodeIds = [
+      "acquire-worktree",
+      "worktree-ok",
+      "wt-retry-eligible",
+      "recover-worktree",
+      "retry-acquire-wt",
+      "retry-wt-ok",
+    ];
+    const nodes = nodeIds.map((id) => clone(lifecycle.nodes.find((node) => node.id === id)));
+    const workflow = {
+      id: "test-worktree-retry-routing",
+      name: "Test Worktree Retry Routing",
+      description: "Regression for retryable acquire_worktree routing",
+      trigger: "trigger.manual",
+      enabled: true,
+      variables: {},
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.manual",
+          label: "Trigger",
+          config: {},
+          position: { x: 0, y: 0 },
+        },
+        ...nodes,
+        {
+          id: "done",
+          type: "notify.log",
+          label: "Done",
+          config: { message: "done" },
+          position: { x: 0, y: 0 },
+        },
+        {
+          id: "failed",
+          type: "notify.log",
+          label: "Failed",
+          config: { message: "failed" },
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [
+        { source: "trigger", target: "acquire-worktree" },
+        { source: "acquire-worktree", target: "worktree-ok" },
+        { source: "worktree-ok", target: "wt-retry-eligible", sourcePort: "no", condition: "$output?.result !== true" },
+        { source: "wt-retry-eligible", target: "recover-worktree", sourcePort: "yes", condition: "$output?.result === true" },
+        { source: "wt-retry-eligible", target: "failed", sourcePort: "no", condition: "$output?.result !== true" },
+        { source: "recover-worktree", target: "retry-acquire-wt" },
+        { source: "retry-acquire-wt", target: "retry-wt-ok" },
+        { source: "retry-wt-ok", target: "done", sourcePort: "yes", condition: "$output?.result === true" },
+        { source: "retry-wt-ok", target: "failed", sourcePort: "no", condition: "$output?.result !== true" },
+      ],
+    };
+    engine.save(workflow);
+
+    const acquireHandler = getNodeType("action.acquire_worktree");
+    const recoverHandler = getNodeType("action.recover_worktree");
+    const acquireSpy = vi.spyOn(acquireHandler, "execute");
+    const recoverSpy = vi.spyOn(recoverHandler, "execute");
+    const recoveredPath = join(tmpDir, "recovered-worktree");
+
+    acquireSpy.mockResolvedValueOnce({
+      success: false,
+      error: "simulated acquire failure",
+      taskId: "task-route-1",
+      repoRoot: tmpDir,
+      worktreePath: recoveredPath,
+      branch: "task/retry-route",
+      baseBranch: "main",
+      retryable: true,
+      failureKind: "worktree_acquisition_failed",
+      blockedReason: "simulated acquire failure",
+      recordedAt: new Date().toISOString(),
+      autoRecoverDelayMs: 0,
+      retryAt: null,
+      recoveryNote: "",
+    });
+    acquireSpy.mockResolvedValueOnce({
+      success: true,
+      worktreePath: recoveredPath,
+      created: true,
+      branch: "task/retry-route",
+      baseBranch: "main",
+    });
+    recoverSpy.mockResolvedValue({
+      success: true,
+      recovered: true,
+      worktreePath: recoveredPath,
+    });
+
+    try {
+      const run = await engine.execute(workflow.id, new WorkflowContext({
+        taskId: "task-route-1",
+        taskTitle: "Retry route task",
+        repoRoot: tmpDir,
+        branch: "task/retry-route",
+        baseBranch: "main",
+        defaultTargetBranch: "main",
+      }));
+
+      expect(acquireSpy).toHaveBeenCalledTimes(2);
+      expect(recoverSpy).toHaveBeenCalledTimes(1);
+      expect(run.ctx.getNodeOutput("recover-worktree")).toMatchObject({
+        success: true,
+        recovered: true,
+      });
+      expect(run.ctx.getNodeOutput("retry-wt-ok")).toMatchObject({ result: true });
+    } finally {
+      acquireSpy.mockRestore();
+      recoverSpy.mockRestore();
+    }
+  });
+
+  it("reconciles installed lifecycle definitions missing deterministic worktree routing", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const broken = JSON.parse(JSON.stringify(engine.get(installed.id)));
+    const retryGate = broken.nodes.find((node) => node.id === "wt-retry-eligible");
+    retryGate.config.expression = "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false";
+    broken.edges = broken.edges.filter((edge) => !(
+      edge.source === "wt-retry-eligible" && edge.target === "recover-worktree"
+    ));
+    engine.save(broken);
+
+    const reconcile = reconcileInstalledTemplates(engine, {
+      autoUpdateUnmodified: true,
+    });
+
+    expect(reconcile.updatedWorkflowIds).toContain(installed.id);
+    const repaired = engine.get(installed.id);
+    expect(repaired.nodes.find((node) => node.id === "wt-retry-eligible")?.config?.expression)
+      .toBe("$ctx.getNodeOutput('acquire-worktree')?.retryable === true");
+    expect(repaired.edges.find((edge) => (
+      edge.source === "wt-retry-eligible" && edge.target === "recover-worktree"
+    ))).toBeDefined();
   });
 
   it("all edges reference valid node IDs", () => {

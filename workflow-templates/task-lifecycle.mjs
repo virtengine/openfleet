@@ -85,7 +85,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("trigger", "trigger.task_available", "Poll for Tasks", {
       maxParallel: "{{maxParallel}}",
       pollIntervalMs: "{{pollIntervalMs}}",
-      statuses: ["inreview", "todo"],
+      statuses: ["todo"],
       filterCodexScoped: true,
       filterDrafts: true,
     }, { x: 400, y: 50 }),
@@ -578,7 +578,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     // ── AUTO-RECOVERY: Retry worktree acquisition once after cleanup ─────
     node("wt-retry-eligible", "condition.expression", "Retryable WT Failure?", {
-      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false",
+      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable === true",
     }, { x: 850, y: 960, outputs: ["yes", "no"] }),
 
     node("recover-worktree", "action.recover_worktree", "Clean Broken WT", {

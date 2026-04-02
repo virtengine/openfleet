@@ -1047,6 +1047,20 @@ async function ensureWorkflowAutomationEngine() {
                 : ""),
           );
         }
+        if (Array.isArray(reconcile?.criticalRemaining) && reconcile.criticalRemaining.length > 0) {
+          const criticalSummary = reconcile.criticalRemaining
+            .map((entry) => {
+              const workflowId = String(entry?.workflowId || "").trim() || "workflow-unknown";
+              const templateId = String(entry?.templateId || "").trim() || "template-unknown";
+              const issueCodes = (Array.isArray(entry?.issues) ? entry.issues : [])
+                .map((issue) => String(issue?.code || "").trim())
+                .filter(Boolean)
+                .join(",");
+              return `${workflowId}:${templateId}${issueCodes ? `:${issueCodes}` : ""}`;
+            })
+            .join("; ");
+          throw new Error(`Startup-critical workflow template mismatch remains after reconcile: ${criticalSummary}`);
+        }
         if (
           typeof engine.load === "function" &&
           (Number(reconcile?.autoUpdated || 0) > 0 ||
@@ -1210,6 +1224,16 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
 function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
+
+const REVIEW_FIX_HANDOFF_MODES = Object.freeze({
+  ACTIVE_SESSION_STEERING: "active_session_steering",
+  REVIEW_REDISPATCH: "review_redispatch",
+});
+
+const REVIEW_FIX_HANDOFF_STATES = Object.freeze({
+  ACTIVE_SESSION_ATTACHED: "active_session_attached",
+  SESSION_REBIND_REQUESTED: "session_rebind_requested",
+});
 
 // ── GitHub webhook → workflow-engine bridge ──────────────────────────────────
 // Forwards GitHub App webhook events from the OAuth portal's EventEmitter into
@@ -7306,10 +7330,12 @@ async function queueFlowReview(taskId, ctx, reason = "") {
 }
 
 function redispatchInReviewTask(task, reason, extra = {}) {
-  const taskId = String(task?.id || "").trim();
+  const handoff = buildReviewFixTaskHandoff(task, reason, {
+    ...extra,
+    mode: REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH,
+  });
+  const taskId = handoff?.taskId || "";
   if (!taskId) return false;
-  const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
-  const eventType = String(extra.workflowEvent || "task.assigned").trim() || "task.assigned";
   const now = Date.now();
   const existing = reviewRedispatchCooldownByTask.get(taskId);
   if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {
@@ -7317,39 +7343,188 @@ function redispatchInReviewTask(task, reason, extra = {}) {
   }
   reviewRedispatchCooldownByTask.set(taskId, {
     at: now,
-    reason: normalizedReason,
+    reason: handoff.reason,
   });
-  const taskTitle = String(task?.title || taskId).trim() || taskId;
-  const branch = String(task?.branchName || task?.branch || extra.branch || "").trim() || null;
-  const worktreePath = String(task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "").trim() || null;
+  persistReviewFixTaskHandoff(taskId, handoff);
+  queueWorkflowEvent(handoff.eventType, handoff.workflowPayload, {
+    dedupKey: `workflow-event:${handoff.eventType}:${taskId}:${handoff.workflowPayload?.taskStatus || "todo"}:${handoff.reason}:${handoff.mode}`,
+  });
+  return true;
+}
+
+function buildReviewFixTaskHandoff(task, reason, extra = {}) {
+  const taskId = String(task?.id || extra?.taskId || "").trim();
+  const taskTitle = String(task?.title || extra?.taskTitle || taskId).trim() || taskId;
+  const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
+  const eventType = String(extra.workflowEvent || "task.review_fix_requested").trim() || "task.review_fix_requested";
+  const mode = String(extra.mode || REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH).trim()
+    || REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH;
+  const branchName = String(task?.branchName || task?.branch || extra.branch || extra.branchName || "").trim() || null;
+  const worktreePath = String(
+    task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "",
+  ).trim() || null;
   const prNumber =
     parsePositivePrNumber(extra.prNumber) ||
     parsePositivePrNumber(task?.prNumber) ||
     parsePositivePrNumber(task?.pr_number) ||
     null;
   const prUrl = String(extra.prUrl || task?.prUrl || task?.pr_url || "").trim() || null;
-  const reviewIssues = Array.isArray(extra.reviewIssues)
+  const reviewIssuesSource = Array.isArray(extra.reviewIssues)
     ? extra.reviewIssues
     : (Array.isArray(task?.reviewIssues) ? task.reviewIssues : []);
-  queueWorkflowEvent(
+  const reviewIssues = reviewIssuesSource
+    .map((issue, index) => {
+      if (!issue || typeof issue !== "object") {
+        const description = String(issue || "").trim();
+        return description
+          ? { severity: "major", category: "review", description, order: index }
+          : null;
+      }
+      const normalized = {
+        severity: String(issue.severity || "major").trim() || "major",
+        category: String(issue.category || "review").trim() || "review",
+        file: String(issue.file || issue.path || "").trim() || null,
+        line: parsePositivePrNumber(issue.line) || null,
+        description: String(issue.description || issue.message || issue.body || "").trim() || null,
+        code: String(issue.code || "").trim() || null,
+        source: String(issue.source || issue.kind || "").trim() || null,
+        author: String(issue.author || issue.reviewer || "").trim() || null,
+        url: String(issue.url || "").trim() || null,
+        order: index,
+      };
+      return Object.fromEntries(
+        Object.entries(normalized).filter(([, value]) => value !== null && value !== ""),
+      );
+    })
+    .filter(Boolean);
+  const issueCount = reviewIssues.length;
+  const reviewStatus = String(task?.reviewStatus || extra.reviewStatus || "").trim() || null;
+  const nowIso = String(extra.requestedAt || new Date().toISOString());
+  const requiresNewSession = mode === REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH;
+  const handoffState = requiresNewSession
+    ? REVIEW_FIX_HANDOFF_STATES.SESSION_REBIND_REQUESTED
+    : REVIEW_FIX_HANDOFF_STATES.ACTIVE_SESSION_ATTACHED;
+  const issueSummary = reviewIssues
+    .slice(0, 5)
+    .map((issue) => {
+      const severity = String(issue?.severity || "major");
+      const category = String(issue?.category || "review");
+      const file = String(issue?.file || "(unknown)");
+      const line = Number.isFinite(Number(issue?.line))
+        ? `:${Number(issue.line)}`
+        : "";
+      const description = String(issue?.description || "").trim();
+      return `- [${severity}/${category}] ${file}${line}${description ? ` - ${description}` : ""}`;
+    })
+    .join("\n");
+  const prompt = [
+    `Review requested changes for task "${taskTitle}".`,
+    issueSummary
+      ? `Fix these review issues first:\n${issueSummary}`
+      : "Fix the reported review issues first.",
+    "Stay on the current branch, run relevant tests, commit the fixes, and continue toward PR update.",
+  ].join("\n\n");
+  const reviewFixLifecycle = {
+    mode,
+    state: handoffState,
+    reason: normalizedReason,
+    requestedAt: nowIso,
+    branchName,
+    prNumber,
+    prUrl,
+    reviewIssueCount: issueCount,
+  };
+  const existingMeta = task?.meta && typeof task.meta === "object" ? task.meta : {};
+  const taskPatch = {
+    branchName,
+    prNumber,
+    prUrl,
+    reviewIssues,
+    reviewIssueCount: issueCount,
+    reviewFixDispatchMode: mode,
+    reviewFixState: handoffState,
+    reviewFixRequestedAt: nowIso,
+    reviewStatus: reviewStatus || undefined,
+    meta: {
+      ...existingMeta,
+      reviewFixLifecycle,
+    },
+  };
+  if (requiresNewSession) {
+    taskPatch.status = "todo";
+    taskPatch.sessionId = null;
+    taskPatch.latestSessionId = null;
+  }
+  const workflowTask = {
+    id: taskId,
+    title: taskTitle,
+    status: requiresNewSession ? "todo" : (String(task?.status || "").trim() || "inreview"),
+    branchName,
+    worktreePath,
+    prNumber,
+    prUrl,
+    reviewStatus,
+    reviewIssues,
+    reviewIssueCount: issueCount,
+    reviewFixDispatchMode: mode,
+    reviewFixState: handoffState,
+    reviewFixRequestedAt: nowIso,
+    sessionId: requiresNewSession ? null : (task?.sessionId || null),
+    latestSessionId: requiresNewSession ? null : (task?.latestSessionId || null),
+  };
+  return {
+    taskId,
+    taskTitle,
+    reason: normalizedReason,
     eventType,
-    {
+    mode,
+    prompt,
+    issueCount,
+    reviewIssues,
+    taskPatch,
+    workflowPayload: {
       taskId,
       taskTitle,
-      taskStatus: "inreview",
-      branch,
+      taskStatus: workflowTask.status,
+      branch: branchName,
+      branchName,
       worktreePath,
       prNumber,
       prUrl,
-      reviewStatus: String(task?.reviewStatus || "").trim() || null,
+      reviewStatus,
       reviewIssues,
-      reviewIssueCount: reviewIssues.length,
+      reviewIssueCount: issueCount,
+      reviewFixDispatchMode: mode,
+      reviewFixState: handoffState,
+      reviewFixRequestedAt: nowIso,
       reviewRedispatchReason: normalizedReason,
+      task: workflowTask,
       ...extra,
+      mode,
     },
-    { dedupKey: `workflow-event:${eventType}:${taskId}:inreview:${normalizedReason}` },
-  );
-  return true;
+  };
+}
+
+function persistReviewFixTaskHandoff(taskId, handoff) {
+  if (!taskId || !handoff?.taskPatch) return;
+  const nextStatus = String(handoff.taskPatch.status || "").trim().toLowerCase();
+  if (nextStatus) {
+    try {
+      setInternalTaskStatus(taskId, nextStatus, handoff.reason || "review-fix");
+    } catch {
+      /* best-effort */
+    }
+    try {
+      updateTaskStatus(taskId, nextStatus);
+    } catch {
+      /* best-effort */
+    }
+  }
+  try {
+    updateInternalTask(taskId, handoff.taskPatch);
+  } catch {
+    /* best-effort */
+  }
 }
 
 function isReviewRedispatchCoolingDown(taskId, now = Date.now()) {
@@ -15174,41 +15349,33 @@ if (isExecutorDisabled()) {
           }
 
           if (hasActiveSession(normalizedTaskId)) {
-            const issueSummary = issueList
-              .slice(0, 5)
-              .map((issue) => {
-                const severity = String(issue?.severity || "major");
-                const category = String(issue?.category || "review");
-                const file = String(issue?.file || "(unknown)");
-                const line = Number.isFinite(Number(issue?.line))
-                  ? `:${Number(issue.line)}`
-                  : "";
-                const description = String(issue?.description || "").trim();
-                return `- [${severity}/${category}] ${file}${line}${description ? ` - ${description}` : ""}`;
-              })
-              .join("\n");
-            const prompt = [
-              `Review requested changes for task "${task?.title || normalizedTaskId}".`,
-              issueSummary
-                ? `Fix these review issues first:\n${issueSummary}`
-                : "Fix the reported review issues first.",
-              "Stay on the current branch, run relevant tests, commit the fixes, and continue toward PR update.",
-            ].join("\n\n");
-            console.log(
-              `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId}`,
+            const handoff = buildReviewFixTaskHandoff(
+              task || { id: normalizedTaskId, title: normalizedTaskId },
+              "review-fix-active-session",
+              {
+                mode: REVIEW_FIX_HANDOFF_MODES.ACTIVE_SESSION_STEERING,
+                reviewIssues: issueList,
+                workflowEvent: "task.review_fix_requested",
+              },
             );
-            steerActiveThread(normalizedTaskId, prompt);
+            persistReviewFixTaskHandoff(normalizedTaskId, handoff);
+            console.log(
+              `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId} ` +
+              `(mode=${handoff.mode} state=${handoff.taskPatch.reviewFixState})`,
+            );
+            steerActiveThread(normalizedTaskId, handoff.prompt);
             return {
               dispatched: true,
-              mode: "active_session",
-              issueCount,
+              mode: handoff.mode,
+              issueCount: handoff.issueCount,
               taskId: normalizedTaskId,
               taskTitle: task?.title || normalizedTaskId,
             };
           }
 
           console.warn(
-            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; re-dispatching inreview session`,
+            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; ` +
+            `re-dispatching inreview session with session rebind`,
           );
           redispatchInReviewTask(task || { id: normalizedTaskId, title: normalizedTaskId }, "review-fix-redispatch", {
             reviewIssueCount: issueCount,
@@ -15217,7 +15384,7 @@ if (isExecutorDisabled()) {
           });
           return {
             dispatched: true,
-            mode: "redispatch",
+            mode: REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH,
             issueCount,
             taskId: normalizedTaskId,
             taskTitle: task?.title || normalizedTaskId,

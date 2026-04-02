@@ -242,7 +242,6 @@ export function normalizeTemplateLayoutInPlace(template, opts = {}) {
  */
 export function agentDefaults(extra = {}) {
   return {
-    taskId: "{{taskId}}",
     sdk: "{{resolvedSdk}}",
     model: "{{resolvedModel}}",
     agentProfile: "{{agentProfile}}",

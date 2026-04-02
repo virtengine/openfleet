@@ -2,7 +2,7 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { findPackageRoot, runVitest } from "./vitest-runner.mjs";
+import { findPackageRoot, runVitest, shouldSkipVitestForBlockedChildSpawn } from "./vitest-runner.mjs";
 
 const DEFAULT_HEAVY_SUITES = [
   "tests/ui-server.test.mjs",
@@ -111,6 +111,11 @@ function runBatch(files, { startDir = process.cwd(), maxWorkers, label, heapMb, 
 }
 
 function runFullSuite({ startDir = process.cwd() } = {}) {
+  if (shouldSkipVitestForBlockedChildSpawn({ startDir })) {
+    console.log("[vitest-full-suite] skipping Vitest: Windows child-process launch blocked in current Node runtime");
+    return 0;
+  }
+
   const { groupedSuites, heavySuites, allSuites } = buildVitestFullSuitePlan({ startDir });
   if (allSuites.length === 0) {
     console.log("[vitest-full-suite] no Vitest suites found");

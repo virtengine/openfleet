@@ -1240,6 +1240,129 @@ describe("WorkflowEngine - run history details", () => {
     expect(run.ledger?.events?.some((event) => event.eventType === "run.end")).toBe(true);
   });
 
+  it("fails run persistence when task identity fields still contain unresolved template tokens", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "log", type: "notify.log", label: "Log", config: { message: "identity validation" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "log" }],
+      { name: "Identity Validation Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+      branchName: "{{branch}}",
+      task: {
+        id: "{{taskId}}",
+        title: "{{taskTitle}}",
+        branchName: "{{branch}}",
+      },
+    });
+
+    const historyEntry = engine.getRunHistory(wf.id, 1)[0];
+    expect(historyEntry?.runId).toBe(ctx.id);
+    expect(historyEntry?.status).toBe(WorkflowStatus.FAILED);
+    expect(historyEntry?.invalidTaskIdentity).toBe(true);
+    expect(historyEntry?.resumeResult).toBe("invalid_task_identity");
+    expect(historyEntry?.taskId).toBeNull();
+    expect(historyEntry?.taskIds || []).toEqual([]);
+    expect(historyEntry?.identityValidation?.code).toBe("invalid_task_identity");
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.detail?.identityValidation?.code).toBe("invalid_task_identity");
+    expect(detail?.detail?.errors || []).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "invalid_task_identity" }),
+    ]));
+    expect(detail?.detail?.data?.taskId).toBeUndefined();
+    expect(detail?.detail?.data?.taskTitle).toBeUndefined();
+    expect(detail?.detail?.data?.branchName).toBeUndefined();
+    expect(detail?.detail?.data?.task?.id).toBeUndefined();
+    expect(detail?.detail?.data?.task?.title).toBeUndefined();
+    expect(detail?.detail?.data?.task?.branchName).toBeUndefined();
+
+    const persisted = readFileSync(join(tmpDir, "runs", `${ctx.id}.json`), "utf8");
+    expect(persisted).not.toContain("{{taskId}}");
+    expect(persisted).not.toContain("{{taskTitle}}");
+    expect(persisted).not.toContain("{{branch}}");
+  });
+
+  it("sanitizes legacy polluted run history so unresolved task tokens are ignored on read", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-legacy-polluted-history", name: "Legacy Polluted History" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-legacy-polluted-history";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.COMPLETED,
+          startedAt: 1,
+          endedAt: 2,
+          taskId: "{{taskId}}",
+          taskIds: ["{{taskId}}"],
+          taskTitle: "{{taskTitle}}",
+          delegationTopology: {
+            taskId: "{{taskId}}",
+            rootTaskId: "{{taskId}}",
+          },
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: 2,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "{{taskId}}",
+          taskTitle: "{{taskTitle}}",
+          branchName: "{{branch}}",
+          task: {
+            id: "{{taskId}}",
+            title: "{{taskTitle}}",
+            branchName: "{{branch}}",
+          },
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+
+    const historyEntry = engine.getRunHistory(wf.id, 5).find((entry) => entry.runId === runId);
+    expect(historyEntry).toBeTruthy();
+    expect(historyEntry?.invalidTaskIdentity).toBe(true);
+    expect(historyEntry?.taskId).toBeNull();
+    expect(historyEntry?.taskIds || []).toEqual([]);
+    expect(historyEntry?.identityValidation?.code).toBe("invalid_task_identity");
+
+    const detail = engine.getRunDetail(runId);
+    expect(detail?.detail?.identityValidation?.code).toBe("invalid_task_identity");
+    expect(detail?.detail?.data?.taskId).toBeUndefined();
+    expect(detail?.detail?.data?.taskTitle).toBeUndefined();
+    expect(detail?.detail?.data?.branchName).toBeUndefined();
+    expect(detail?.detail?.data?.task?.id).toBeUndefined();
+    expect(detail?.detail?.data?.task?.title).toBeUndefined();
+    expect(detail?.detail?.data?.task?.branchName).toBeUndefined();
+  });
+
   it("persists governance metadata into run summary, detail, and execution ledger", async () => {
     const completions = [];
     engine.on("run:complete", (event) => completions.push(event));

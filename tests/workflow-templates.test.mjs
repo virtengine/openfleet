@@ -1146,6 +1146,48 @@ describe("template drift + update behavior", () => {
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 
+  it("force-refreshes startup-critical task lifecycle workflows with banned trigger statuses or missing required edges", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const wf = engine.get(installed.id);
+    const triggerNode = wf.nodes.find((node) => node.id === "trigger");
+
+    triggerNode.config.statuses = ["todo", "inreview"];
+    wf.edges = wf.edges.filter((edge) => !(
+      (edge.source === "recover-worktree" && edge.target === "retry-acquire-wt")
+      || (edge.source === "create-pr" && edge.target === "pr-created")
+    ));
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+
+    expect(result.autoUpdated).toBe(1);
+    expect(result.forceUpdated).toEqual([wf.id]);
+    expect(result.criticalMismatches).toEqual([
+      expect.objectContaining({
+        workflowId: wf.id,
+        templateId: "template-task-lifecycle",
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: "fingerprint_mismatch" }),
+          expect.objectContaining({ code: "task_lifecycle_trigger_statuses" }),
+          expect.objectContaining({ code: "task_lifecycle_worktree_routing" }),
+          expect.objectContaining({ code: "task_lifecycle_pr_creation_routing" }),
+        ]),
+      }),
+    ]);
+    expect(result.criticalRemaining).toEqual([]);
+
+    const refreshed = engine.get(wf.id);
+    const refreshedTrigger = refreshed.nodes.find((node) => node.id === "trigger");
+    expect(refreshedTrigger?.config?.statuses).toEqual(["todo"]);
+    expect(
+      refreshed.edges.some((edge) => edge.source === "recover-worktree" && edge.target === "retry-acquire-wt"),
+    ).toBe(true);
+    expect(
+      refreshed.edges.some((edge) => edge.source === "create-pr" && edge.target === "pr-created"),
+    ).toBe(true);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
   it("supports copy update mode for customized workflows", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -1639,6 +1681,20 @@ describe("github template CLI compatibility", () => {
     const fixNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const reviewNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-review");
     const fixAgentNode = progressorTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    const triggerNode = progressorTemplate.nodes.find((n) => n.id === "trigger");
+    const normalizeNode = progressorTemplate.nodes.find((n) => n.id === "normalize-context");
+    const buildFixPromptNode = progressorTemplate.nodes.find((n) => n.id === "build-fix-prompt");
+    expect(triggerNode?.config?.inputs?.reviewIssues?.type).toBe("array");
+    expect(triggerNode?.config?.inputs?.reviewIssueCount?.type).toBe("number");
+    expect(triggerNode?.config?.inputs?.reviewFixDispatchMode?.type).toBe("string");
+    expect(triggerNode?.config?.inputs?.reviewFixRequestedAt?.type).toBe("string");
+    expect(normalizeNode?.config?.value).toContain("reviewIssues: Array.isArray($data?.reviewIssues) ? $data.reviewIssues : []");
+    expect(normalizeNode?.config?.value).toContain("reviewIssueCount: Number($data?.reviewIssueCount || 0) || 0");
+    expect(normalizeNode?.config?.value).toContain("reviewFixDispatchMode: String($data?.reviewFixDispatchMode || '').trim() || null");
+    expect(buildFixPromptNode?.config?.value).toContain("const persistedReviewIssues = Array.isArray($data?.prProgressContext?.reviewIssues) ? $data.prProgressContext.reviewIssues : [];");
+    expect(buildFixPromptNode?.config?.value).toContain("Persisted review issues");
+    expect(buildFixPromptNode?.config?.value).toContain("reviewFixDispatchMode");
+    expect(buildFixPromptNode?.config?.value).toContain("reviewFixRequestedAt");
     expect(getNodeCommandCode(inspectNode)).toContain("['pr','view',String(prNumber),'--repo',repo");
     expect(getNodeCommandCode(inspectNode)).toContain("collectPrDigest");
     expect(getNodeCommandCode(inspectNode)).toContain("/issues/'+prNumber+'/comments?per_page=100");
@@ -1658,6 +1714,24 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(fixNode)).toContain("reason:'branch_updated_from_base'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
     expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");
+  });
+
+  it("dependency audit no longer feeds placeholder branch names into create_pr and gates blocked PR creation", () => {
+    const dependencyAudit = getTemplate("template-dependency-audit");
+    const createPrNode = dependencyAudit.nodes.find((n) => n.id === "create-fix-pr");
+    const prCreatedNode = dependencyAudit.nodes.find((n) => n.id === "fix-pr-created");
+    const blockedNode = dependencyAudit.nodes.find((n) => n.id === "log-pr-blocked");
+
+    expect(createPrNode?.config?.branch).toBeUndefined();
+    expect(createPrNode?.config?.baseBranch).toBe("main");
+    expect(prCreatedNode?.config?.expression).toContain("success === true");
+    expect(prCreatedNode?.config?.expression).toContain("prNumber");
+    expect(prCreatedNode?.config?.expression).toContain("prUrl");
+    expect(prCreatedNode?.config?.expression).toContain("handedOff");
+    expect(blockedNode?.config?.message).toContain("Dependency audit PR creation blocked");
+    expect(dependencyAudit.edges.find((e) => e.source === "create-fix-pr" && e.target === "fix-pr-created")).toBeDefined();
+    expect(dependencyAudit.edges.find((e) => e.source === "fix-pr-created" && e.target === "alert-high")).toBeDefined();
+    expect(dependencyAudit.edges.find((e) => e.source === "fix-pr-created" && e.target === "log-pr-blocked")).toBeDefined();
   });
 
   it("task lifecycle and repair templates directly dispatch the PR progressor after inreview transitions", () => {

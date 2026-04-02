@@ -126,6 +126,238 @@ function normalizeWorkflowIdentityText(value) {
   return normalized;
 }
 
+function hasUnresolvedWorkflowTemplateToken(value) {
+  return UNRESOLVED_WORKFLOW_TEMPLATE_TOKEN_RE.test(String(value || ""));
+}
+
+function readWorkflowNestedValue(target, path = []) {
+  let current = target;
+  for (const key of path) {
+    if (!current || typeof current !== "object") return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function writeWorkflowNestedValue(target, path = [], value) {
+  if (!target || typeof target !== "object" || !Array.isArray(path) || path.length === 0) return;
+  let current = target;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    if (!current[key] || typeof current[key] !== "object") {
+      current[key] = {};
+    }
+    current = current[key];
+  }
+  current[path[path.length - 1]] = value;
+}
+
+function deleteWorkflowNestedValue(target, path = []) {
+  if (!target || typeof target !== "object" || !Array.isArray(path) || path.length === 0) return;
+  let current = target;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    if (!current || typeof current !== "object" || !current[key] || typeof current[key] !== "object") {
+      return;
+    }
+    current = current[key];
+  }
+  if (current && typeof current === "object") {
+    delete current[path[path.length - 1]];
+  }
+}
+
+function recordWorkflowRunIdentityIssue(issues, path, value) {
+  if (!Array.isArray(issues) || !Array.isArray(path)) return;
+  issues.push({
+    path: path.join("."),
+    value: normalizeWorkflowRunText(value).trim(),
+  });
+}
+
+function buildWorkflowRunIdentityValidationMessage(issues = []) {
+  const fields = Array.isArray(issues)
+    ? issues.map((entry) => String(entry?.path || "").trim()).filter(Boolean)
+    : [];
+  const preview = fields.slice(0, 6);
+  const suffix = fields.length > preview.length ? ` (+${fields.length - preview.length} more)` : "";
+  return `workflow run identity validation failed: unresolved template token(s) in ${preview.join(", ")}${suffix}`;
+}
+
+function sanitizeWorkflowIdentityField(target, path, issues) {
+  const current = readWorkflowNestedValue(target, path);
+  const normalizedInput = normalizeWorkflowRunText(current).trim();
+  if (!normalizedInput) return;
+  const normalizedValue = normalizeWorkflowIdentityText(normalizedInput);
+  if (!normalizedValue) {
+    if (hasUnresolvedWorkflowTemplateToken(normalizedInput)) {
+      recordWorkflowRunIdentityIssue(issues, path, normalizedInput);
+    }
+    deleteWorkflowNestedValue(target, path);
+    return;
+  }
+  if (normalizedValue !== current) {
+    writeWorkflowNestedValue(target, path, normalizedValue);
+  }
+}
+
+function sanitizeWorkflowRunIdentityPayload(detail = null) {
+  const nextDetail = sanitizeJsonValue(detail) || {};
+  const issues = [];
+  const simpleFieldPaths = [
+    ["taskId"],
+    ["taskTitle"],
+    ["branch"],
+    ["branchName"],
+    ["data", "taskId"],
+    ["data", "activeTaskId"],
+    ["data", "taskTitle"],
+    ["data", "activeTaskTitle"],
+    ["data", "_taskTitle"],
+    ["data", "branch"],
+    ["data", "branchName"],
+    ["data", "_workflowRootTaskId"],
+    ["data", "_workflowParentTaskId"],
+    ["inputData", "taskId"],
+    ["inputData", "taskTitle"],
+    ["inputData", "branch"],
+    ["inputData", "branchName"],
+  ];
+  for (const path of simpleFieldPaths) {
+    sanitizeWorkflowIdentityField(nextDetail, path, issues);
+  }
+
+  const taskObjectPaths = [
+    ["data", "task"],
+    ["data", "taskInfo"],
+    ["data", "taskDetail"],
+    ["inputData", "task"],
+    ["inputData", "taskInfo"],
+    ["inputData", "taskDetail"],
+  ];
+  for (const path of taskObjectPaths) {
+    const taskRecord = readWorkflowNestedValue(nextDetail, path);
+    if (!taskRecord || typeof taskRecord !== "object") continue;
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "id"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "task_id"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "title"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "taskTitle"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "branch"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "branchName"], issues);
+  }
+
+  const topologyPaths = [
+    ["delegationTopology"],
+    ["data", "_delegationTopology"],
+  ];
+  for (const path of topologyPaths) {
+    const topology = readWorkflowNestedValue(nextDetail, path);
+    if (!topology || typeof topology !== "object") continue;
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "taskId"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "rootTaskId"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "parentTaskId"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "branch"], issues);
+    sanitizeWorkflowIdentityField(nextDetail, [...path, "branchName"], issues);
+  }
+
+  const taskEventLists = [
+    ["data", "_taskWorkflowEvents"],
+  ];
+  for (const path of taskEventLists) {
+    const events = readWorkflowNestedValue(nextDetail, path);
+    if (!Array.isArray(events)) continue;
+    for (let index = 0; index < events.length; index += 1) {
+      sanitizeWorkflowIdentityField(nextDetail, [...path, index, "taskId"], issues);
+      sanitizeWorkflowIdentityField(nextDetail, [...path, index, "taskTitle"], issues);
+      sanitizeWorkflowIdentityField(nextDetail, [...path, index, "branch"], issues);
+      sanitizeWorkflowIdentityField(nextDetail, [...path, index, "branchName"], issues);
+    }
+  }
+
+  if (issues.length > 0) {
+    const validation = {
+      code: "invalid_task_identity",
+      reason: "unresolved_template_tokens",
+      invalidFields: issues.map((entry) => entry.path),
+      message: buildWorkflowRunIdentityValidationMessage(issues),
+      issueCount: issues.length,
+    };
+    nextDetail.identityValidation = validation;
+    nextDetail.data = nextDetail.data && typeof nextDetail.data === "object"
+      ? {
+          ...nextDetail.data,
+          _workflowIdentityValidation: validation,
+        }
+      : { _workflowIdentityValidation: validation };
+  }
+
+  return {
+    detail: nextDetail,
+    issues,
+    validation: nextDetail.identityValidation || null,
+  };
+}
+
+function sanitizeWorkflowRunSummaryIdentity(summary = null) {
+  if (!summary || typeof summary !== "object") return summary;
+  const normalized = { ...summary };
+  const issues = [];
+  const rawTaskId = normalizeWorkflowRunText(summary.taskId).trim();
+  const taskId = normalizeWorkflowIdentityText(rawTaskId);
+  if (rawTaskId && !taskId && hasUnresolvedWorkflowTemplateToken(rawTaskId)) {
+    recordWorkflowRunIdentityIssue(issues, ["taskId"], rawTaskId);
+  }
+  normalized.taskId = taskId || null;
+
+  const rawTaskTitle = normalizeWorkflowRunText(summary.taskTitle).trim();
+  const taskTitle = normalizeWorkflowIdentityText(rawTaskTitle);
+  if (rawTaskTitle && !taskTitle && hasUnresolvedWorkflowTemplateToken(rawTaskTitle)) {
+    recordWorkflowRunIdentityIssue(issues, ["taskTitle"], rawTaskTitle);
+  }
+  normalized.taskTitle = taskTitle || null;
+
+  normalized.taskIds = Array.isArray(summary.taskIds)
+    ? summary.taskIds
+      .map((value) => {
+        const raw = normalizeWorkflowRunText(value).trim();
+        const nextValue = normalizeWorkflowIdentityText(raw);
+        if (raw && !nextValue && hasUnresolvedWorkflowTemplateToken(raw)) {
+          recordWorkflowRunIdentityIssue(issues, ["taskIds"], raw);
+        }
+        return nextValue;
+      })
+      .filter(Boolean)
+    : [];
+
+  if (summary.delegationTopology && typeof summary.delegationTopology === "object") {
+    normalized.delegationTopology = { ...summary.delegationTopology };
+    for (const key of ["taskId", "rootTaskId", "parentTaskId", "branch", "branchName"]) {
+      const raw = normalizeWorkflowRunText(summary.delegationTopology[key]).trim();
+      const nextValue = normalizeWorkflowIdentityText(raw);
+      if (raw && !nextValue && hasUnresolvedWorkflowTemplateToken(raw)) {
+        recordWorkflowRunIdentityIssue(issues, ["delegationTopology", key], raw);
+      }
+      if (nextValue) normalized.delegationTopology[key] = nextValue;
+      else delete normalized.delegationTopology[key];
+    }
+  }
+
+  if (issues.length > 0 || summary.invalidTaskIdentity === true) {
+    normalized.invalidTaskIdentity = true;
+    normalized.identityValidation = {
+      code: "invalid_task_identity",
+      reason: "unresolved_template_tokens",
+      invalidFields: issues.map((entry) => entry.path),
+      message: issues.length > 0
+        ? buildWorkflowRunIdentityValidationMessage(issues)
+        : "workflow run identity validation failed",
+      issueCount: issues.length,
+    };
+  }
+
+  return normalized;
+}
+
 function normalizeWorkflowRunTimestampMs(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const text = String(value || "").trim();
@@ -176,7 +408,7 @@ function repairWorkflowRunDetail(detail = null) {
     nextDetail.data = nextData;
   }
 
-  return nextDetail;
+  return sanitizeWorkflowRunIdentityPayload(nextDetail).detail;
 }
 
 function getRuntimeCwd() {
@@ -6988,7 +7220,7 @@ export class WorkflowEngine extends EventEmitter {
       detail.endedAt = null;
       detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));
     }
-    return detail;
+    return repairWorkflowRunDetail(detail);
   }
 
   _buildSummaryFromDetail({ runId, workflowId, workflowName, status, detail }) {
@@ -7051,6 +7283,10 @@ export class WorkflowEngine extends EventEmitter {
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
     const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
     const validationFailures = collectValidationFailures(detail);
+    const identityValidation =
+      detail?.identityValidation ||
+      detail?.data?._workflowIdentityValidation ||
+      null;
     const taskIds = collectRunTaskIds(detail);
     const sessionIds = collectRunSessionIds(detail);
     const taskTitle = normalizeWorkflowRunText(resolveRunTaskTitle(detail));
@@ -7112,6 +7348,8 @@ export class WorkflowEngine extends EventEmitter {
       taskId: taskIds[0] || null,
       taskIds,
       taskTitle,
+      invalidTaskIdentity: identityValidation?.code === "invalid_task_identity",
+      ...(identityValidation ? { identityValidation } : {}),
       sessionId: sessionIds[0] || null,
       sessionIds,
       primarySessionId: sessionIds[0] || null,
@@ -7151,7 +7389,7 @@ export class WorkflowEngine extends EventEmitter {
 
   _normalizeRunSummary(summary) {
     if (!summary || !summary.runId) return null;
-    const normalized = {
+    const normalized = sanitizeWorkflowRunSummaryIdentity({
       ...summary,
       runId: String(summary.runId),
       status: summary.status || WorkflowStatus.COMPLETED,
@@ -7159,7 +7397,7 @@ export class WorkflowEngine extends EventEmitter {
       taskTitle: normalizeWorkflowRunText(summary.taskTitle || null),
       issueAdvisorSummary: normalizeWorkflowRunText(summary.issueAdvisorSummary || null),
       primaryGoalTitle: normalizeWorkflowRunText(summary.primaryGoalTitle || null),
-    };
+    });
     if (!Number.isFinite(Number(normalized.stuckThresholdMs))) {
       normalized.stuckThresholdMs = this._getRunStuckThresholdMs();
     }
@@ -7708,13 +7946,45 @@ export class WorkflowEngine extends EventEmitter {
       const workflow = this.get(workflowId);
       const workflowName = workflow?.name || ctx.data?._workflowName || workflowId;
       const detail = this._serializeRunContext(ctx, false);
+      const identityValidation =
+        detail?.identityValidation ||
+        detail?.data?._workflowIdentityValidation ||
+        null;
+      if (identityValidation?.code === "invalid_task_identity") {
+        const message = String(
+          identityValidation.message ||
+          "workflow run identity validation failed",
+        ).trim();
+        detail.errors = Array.isArray(detail.errors) ? [...detail.errors] : [];
+        const alreadyRecorded = detail.errors.some(
+          (entry) => String(entry?.message || "").trim() === message,
+        );
+        if (!alreadyRecorded) {
+          detail.errors.push({
+            nodeId: null,
+            message,
+            category: "validation",
+            code: "invalid_task_identity",
+            timestamp: Date.now(),
+          });
+        }
+        console.warn(`${TAG} ${message} [runId=${runId}]`);
+      }
       const summary = this._buildSummaryFromDetail({
         runId,
         workflowId,
         workflowName,
-        status: this._resolveWorkflowStatus(ctx),
+        status: identityValidation?.code === "invalid_task_identity"
+          ? WorkflowStatus.FAILED
+          : this._resolveWorkflowStatus(ctx),
         detail,
       });
+      if (identityValidation?.code === "invalid_task_identity") {
+        summary.invalidTaskIdentity = true;
+        summary.identityValidation = identityValidation;
+        summary.resumable = false;
+        summary.resumeResult = "invalid_task_identity";
+      }
 
       // Deduplicate: remove any existing entry for this runId before appending
       let runs = this._readRunIndex().filter((r) => r.runId !== runId);

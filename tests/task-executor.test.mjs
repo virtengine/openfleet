@@ -326,6 +326,15 @@ describe("task-executor", () => {
           staleSharedClaimCount: 1,
           workflowOwnerlessResetCount: 1,
           durationMs: 3200,
+          workflowEvidenceKept: [
+            {
+              taskId: "task-abc",
+              runId: "run-live-1",
+              source: "history",
+              reason: "workflow_liveness",
+              lastActivityAt: new Date().toISOString(),
+            },
+          ],
         },
         recentRuns: [],
       };
@@ -335,6 +344,12 @@ describe("task-executor", () => {
 
       expect(status.inProgressRecovery.totals.resetToTodo).toBe(4);
       expect(status.inProgressRecovery.lastRun.scannedCount).toBe(5);
+      expect(status.inProgressRecovery.lastRun.workflowEvidenceKept).toEqual([
+        expect.objectContaining({
+          taskId: "task-abc",
+          runId: "run-live-1",
+        }),
+      ]);
       expect(tuiStats.recovery.totals.resumed).toBe(3);
       expect(tuiStats.executor.activeSlots).toBe(0);
     });
@@ -1170,6 +1185,13 @@ describe("task-executor", () => {
               scannedCount: 4,
               resetToTodoCount: 2,
               staleSharedClaimCount: 1,
+              workflowEvidenceKept: [
+                {
+                  taskId: "task-restore-1",
+                  runId: "run-restore-1",
+                  source: "active-runs",
+                },
+              ],
             },
             recentRuns: [
               { trigger: "interval", scannedCount: 1, resetToTodoCount: 1 },
@@ -1186,6 +1208,12 @@ describe("task-executor", () => {
       expect(recovery.totals.runs).toBe(3);
       expect(recovery.totals.resetToTodo).toBe(5);
       expect(recovery.lastRun.trigger).toBe("startup");
+      expect(recovery.lastRun.workflowEvidenceKept).toEqual([
+        expect.objectContaining({
+          taskId: "task-restore-1",
+          runId: "run-restore-1",
+        }),
+      ]);
       expect(recovery.recentRuns).toHaveLength(1);
     });
   });
@@ -1724,6 +1752,115 @@ describe("task-executor", () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
+    it("keeps workflow-owned tasks in progress when history has a newer live run after an older stale run", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-history-multi-1",
+          title: "Workflow-owned newer history run evidence",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-stale-owner",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "index.json"),
+          resolve("/workflow-runs", "run-history-stale-1.json"),
+          resolve("/workflow-runs", "run-history-live-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([]);
+        }
+        if (targetPath === resolve("/workflow-runs", "index.json")) {
+          return JSON.stringify({
+            runs: [
+              {
+                runId: "run-history-stale-1",
+                taskId: "wf-history-multi-1",
+                status: "paused",
+                startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+              },
+              {
+                runId: "run-history-live-1",
+                taskId: "wf-history-multi-1",
+                status: "running",
+                startedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+              },
+            ],
+          });
+        }
+        if (targetPath === resolve("/workflow-runs", "run-history-stale-1.json")) {
+          return JSON.stringify({
+            id: "run-history-stale-1",
+            startedAt: Date.now() - 60 * 60 * 1000,
+            endedAt: null,
+            data: {
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        if (targetPath === resolve("/workflow-runs", "run-history-live-1.json")) {
+          return JSON.stringify({
+            id: "run-history-live-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-history-multi-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-history-multi-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+        }),
+      );
+      expect(releaseTaskClaim).not.toHaveBeenCalledWith({
+        taskId: "wf-history-multi-1",
+        force: true,
+      });
+      expect(invalidateThread).not.toHaveBeenCalledWith("wf-history-multi-1");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
     it("builds a stale workflow cleanup patch when ownerless workflow tasks are reset", () => {
       const ex = new TaskExecutor({
         projectId: "proj-1",
@@ -1959,6 +2096,231 @@ describe("task-executor", () => {
       });
       expect(invalidateThread).not.toHaveBeenCalledWith("wf-stale-active-run-1");
       expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("keeps workflow-owned tasks in progress when duplicate same-task runs contain a newer live history entry", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-duplicate-live-1",
+          title: "Workflow-owned duplicate same-task run evidence",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+          topology: {
+            latestRunId: "run-thin-detail-1",
+          },
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-stale-owner",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "index.json"),
+          resolve("/workflow-runs", "run-thin-detail-1.json"),
+          resolve("/workflow-runs", "run-live-history-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([
+            {
+              runId: "run-thin-detail-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "wf-duplicate-live-1",
+              startedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+            },
+            {
+              runId: "run-live-history-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "wf-duplicate-live-1",
+              startedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+            },
+            {
+              runId: "run-placeholder-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "{{taskId}}",
+              startedAt: new Date().toISOString(),
+            },
+          ]);
+        }
+        if (targetPath === resolve("/workflow-runs", "index.json")) {
+          return JSON.stringify({
+            runs: [
+              {
+                runId: "run-thin-detail-1",
+                taskId: "wf-duplicate-live-1",
+                status: "running",
+                startedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+              },
+              {
+                runId: "run-live-history-1",
+                taskId: "wf-duplicate-live-1",
+                status: "running",
+                startedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+                updatedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+              },
+              {
+                runId: "run-placeholder-1",
+                taskId: "{{taskId}}",
+                status: "running",
+                startedAt: new Date().toISOString(),
+              },
+            ],
+          });
+        }
+        if (targetPath === resolve("/workflow-runs", "run-thin-detail-1.json")) {
+          return JSON.stringify({
+            id: "run-thin-detail-1",
+            startedAt: Date.now() - 30 * 60 * 1000,
+            endedAt: null,
+          });
+        }
+        if (targetPath === resolve("/workflow-runs", "run-live-history-1.json")) {
+          return JSON.stringify({
+            id: "run-live-history-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks("startup");
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-duplicate-live-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(releaseTaskClaim).not.toHaveBeenCalledWith({
+        taskId: "wf-duplicate-live-1",
+        force: true,
+      });
+      expect(executeSpy).not.toHaveBeenCalled();
+      expect(ex.getStatus().inProgressRecovery.lastRun.workflowEvidenceKept).toEqual([
+        expect.objectContaining({
+          taskId: "wf-duplicate-live-1",
+          runId: "run-live-history-1",
+          reason: "stale_shared_claim",
+        }),
+      ]);
+    });
+
+    it("does not treat carried taskIds arrays in active-runs as authoritative workflow evidence", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-array-carryover-1",
+          title: "Workflow-owned carried taskIds array should not count",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-stale-owner",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "index.json"),
+          resolve("/workflow-runs", "run-other-task-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([
+            {
+              runId: "run-other-task-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "wf-other-task-1",
+              taskIds: [
+                "wf-other-task-1",
+                "wf-array-carryover-1",
+              ],
+              startedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+            },
+          ]);
+        }
+        if (targetPath === resolve("/workflow-runs", "index.json")) {
+          return JSON.stringify({
+            runs: [
+              {
+                runId: "run-other-task-1",
+                taskId: "wf-other-task-1",
+                status: "running",
+                startedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+              },
+            ],
+          });
+        }
+        if (targetPath === resolve("/workflow-runs", "run-other-task-1.json")) {
+          return JSON.stringify({
+            id: "run-other-task-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              taskId: "wf-other-task-1",
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks("startup");
+
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-array-carryover-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(releaseTaskClaim).toHaveBeenCalledWith({
+        taskId: "wf-array-carryover-1",
+        force: true,
+      });
+      expect(executeSpy).not.toHaveBeenCalled();
+      expect(ex.getStatus().inProgressRecovery.lastRun.workflowEvidenceKept).toEqual([]);
     });
 
     it("resets workflow-owned tasks when a fresh shared-state claim belongs to a dead local pid", async () => {

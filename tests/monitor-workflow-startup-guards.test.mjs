@@ -5,6 +5,43 @@ import { describe, expect, it } from "vitest";
 describe("monitor workflow startup guards", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
   const maintenanceSource = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
+  const lifecycleTemplateSource = readFileSync(
+    resolve(process.cwd(), "workflow-templates/task-lifecycle.mjs"),
+    "utf8",
+  );
+  const workflowTemplatesSource = readFileSync(
+    resolve(process.cwd(), "workflow/workflow-templates.mjs"),
+    "utf8",
+  );
+  const buildReviewFixTaskHandoffFactory = (() => {
+    const modes = {
+      ACTIVE_SESSION_STEERING: "active_session_steering",
+      REVIEW_REDISPATCH: "review_redispatch",
+    };
+    const states = {
+      ACTIVE_SESSION_ATTACHED: "active_session_attached",
+      SESSION_REBIND_REQUESTED: "session_rebind_requested",
+    };
+    const match = monitorSource.match(
+      /function buildReviewFixTaskHandoff\(task, reason, extra = \{\}\) \{[\s\S]*?\n\}/,
+    );
+    if (!match) {
+      throw new Error("buildReviewFixTaskHandoff source not found");
+    }
+    return new Function(
+      "parsePositivePrNumber",
+      "REVIEW_FIX_HANDOFF_MODES",
+      "REVIEW_FIX_HANDOFF_STATES",
+      `${match[0]}; return buildReviewFixTaskHandoff;`,
+    )(
+      (value) => {
+        const parsed = Number(String(value || "").trim());
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      },
+      modes,
+      states,
+    );
+  })();
 
   it("initializes workflow automation before runtime subsystems in non-test mode", () => {
     expect(monitorSource).toContain("if (!isMonitorTestRuntime) {");
@@ -51,13 +88,21 @@ describe("monitor workflow startup guards", () => {
 
   it("forces agent session monitor template reconciliation on startup", () => {
     expect(monitorSource).toContain('forceUpdateTemplateIds: [');
+    expect(monitorSource).toContain('"template-task-lifecycle"');
+    expect(monitorSource).toContain('"template-bosun-pr-watchdog"');
+    expect(monitorSource).toContain('"template-github-kanban-sync"');
     expect(monitorSource).toContain('"template-task-batch-processor"');
     expect(monitorSource).toContain('"template-agent-session-monitor"');
-    expect(monitorSource).toContain('"template-github-kanban-sync"');
     expect(monitorSource).toContain("Number(reconcile?.autoUpdated || 0) > 0");
     expect(monitorSource).toContain("reconcile.updatedWorkflowIds.length > 0");
     expect(monitorSource).toContain('typeof engine.load === "function"');
     expect(monitorSource).toContain("engine.load();");
+  });
+
+  it("fails startup when startup-critical workflow mismatches survive reconciliation", () => {
+    expect(monitorSource).toContain("Array.isArray(reconcile?.criticalRemaining) && reconcile.criticalRemaining.length > 0");
+    expect(monitorSource).toContain("Startup-critical workflow template mismatch remains after reconcile");
+    expect(monitorSource).toContain("issue?.code");
   });
 
   it("resumes interrupted workflow runs after monitor services are wired", () => {
@@ -212,6 +257,75 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
     expect(monitorSource).toContain("review-fix-redispatch");
     expect(monitorSource).toContain("re-dispatching inreview session");
+    expect(monitorSource).toContain("mode=REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH");
+    expect(monitorSource).toContain('taskPatch.status = "todo";');
+    expect(monitorSource).toContain("taskPatch.sessionId = null;");
+    expect(monitorSource).toContain("taskPatch.latestSessionId = null;");
+    expect(monitorSource).toContain('taskStatus: workflowTask.status');
+  });
+
+  it("builds a redispatch handoff that clears stale session linkage and requests a new session", () => {
+    const handoff = buildReviewFixTaskHandoffFactory(
+      {
+        id: "TASK-REDISPATCH-1",
+        title: "Repair rejected review",
+        status: "inreview",
+        branchName: "task/rejected-review",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+        reviewStatus: "changes_requested",
+        sessionId: "session-stale-1",
+        latestSessionId: "session-stale-1",
+        meta: { keep: true },
+      },
+      "review-fix-redispatch",
+      {
+        mode: "review_redispatch",
+        workflowEvent: "task.review_fix_requested",
+        reviewIssues: [
+          {
+            severity: "major",
+            category: "review",
+            file: "src/app.ts",
+            line: 42,
+            description: "Address the rejected review comment",
+          },
+        ],
+      },
+    );
+
+    expect(handoff.mode).toBe("review_redispatch");
+    expect(handoff.taskPatch.status).toBe("todo");
+    expect(handoff.taskPatch.sessionId).toBeNull();
+    expect(handoff.taskPatch.latestSessionId).toBeNull();
+    expect(handoff.taskPatch.branchName).toBe("task/rejected-review");
+    expect(handoff.taskPatch.prNumber).toBe(321);
+    expect(handoff.taskPatch.prUrl).toBe("https://github.com/virtengine/bosun/pull/321");
+    expect(handoff.taskPatch.reviewIssues).toHaveLength(1);
+    expect(handoff.taskPatch.reviewFixDispatchMode).toBe("review_redispatch");
+    expect(handoff.taskPatch.reviewFixState).toBe("session_rebind_requested");
+    expect(handoff.workflowPayload.taskStatus).toBe("todo");
+    expect(handoff.workflowPayload.task.sessionId).toBeNull();
+    expect(handoff.workflowPayload.task.latestSessionId).toBeNull();
+    expect(handoff.workflowPayload.task.reviewIssues).toHaveLength(1);
+    expect(handoff.workflowPayload.reviewFixDispatchMode).toBe("review_redispatch");
+  });
+
+  it("keeps inreview remediation on dedicated review-fix redispatch instead of task lifecycle polling", () => {
+    expect(lifecycleTemplateSource).toContain('statuses: ["todo"]');
+    expect(monitorSource).toContain("review-fix-redispatch");
+    expect(monitorSource).toContain("re-dispatching inreview session");
+  });
+
+  it("forces deterministic lifecycle worktree recovery routing during startup reconciliation", () => {
+    expect(monitorSource).toContain('"template-task-lifecycle"');
+    expect(lifecycleTemplateSource).toContain("$ctx.getNodeOutput('acquire-worktree')?.retryable === true");
+    expect(workflowTemplatesSource).toContain("hasDeterministicTaskLifecycleWorktreeRouting");
+    expect(workflowTemplatesSource).toContain('edgeDef?.source || "").trim() === source');
+    expect(workflowTemplatesSource).toContain('String(retryGate?.config?.expression || "").trim()');
+    expect(workflowTemplatesSource).toContain('"wt-retry-eligible"');
+    expect(workflowTemplatesSource).toContain('"recover-worktree"');
+    expect(workflowTemplatesSource).toContain('"release-claim-wt-failed"');
   });
 
   it("resolves repo slug from task/PR context before flow-gate merge and review rehydrate", () => {
@@ -259,7 +373,8 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     expect(executorSource).toContain("const hasRecentWorkflowRunEvidence =");
     expect(executorSource).toContain("const hasWorkflowEvidence =");
     expect(executorSource).toContain("const hasWorkflowLiveness =");
-    expect(executorSource).toContain("this._findRecentWorkflowEvidenceRunIdByTaskId(taskId)");
+    expect(executorSource).toContain("this._collectRecentWorkflowEvidenceCandidates(");
+    expect(executorSource).toContain("this._workflowRunCandidateHasRecentEvidence(candidate)");
     expect(executorSource).toContain(
       "if (hasWorkflowEvidence) {",
     );
@@ -273,7 +388,7 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
   });
 
   it("falls back to the workflow run index when task metadata has not yet recorded latestRunId", () => {
-    expect(executorSource).toContain("_findRecentWorkflowEvidenceRunIdByTaskId(taskId)");
+    expect(executorSource).toContain("_findRecentWorkflowEvidenceEntriesByTaskId(taskId)");
     expect(executorSource).toContain('const WORKFLOW_RUNS_HISTORY_INDEX = "index.json";');
     expect(executorSource).toContain("const indexPath = resolve(this.workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);");
     expect(executorSource).toContain("entry?.taskId ||");

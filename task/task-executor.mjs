@@ -805,6 +805,7 @@ const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
 const INPROGRESS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 const INPROGRESS_RECOVERY_HISTORY_LIMIT = 12;
 const WORKFLOW_RUN_RECOVERY_GRACE_MS = 15 * 60 * 1000;
+const UNRESOLVED_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -1284,6 +1285,46 @@ function normalizeTaskIdKey(taskId) {
   return normalized;
 }
 
+function normalizeAuthoritativeWorkflowTaskId(taskId) {
+  const normalized = normalizeTaskIdKey(taskId);
+  if (!normalized) return "";
+  if (UNRESOLVED_TEMPLATE_TOKEN_RE.test(normalized)) return "";
+  return normalized;
+}
+
+function collectWorkflowEvidenceTaskIds(target, value) {
+  if (!(target instanceof Set) || value == null) return target;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectWorkflowEvidenceTaskIds(target, entry);
+    }
+    return target;
+  }
+  const normalized = normalizeAuthoritativeWorkflowTaskId(value);
+  if (normalized) target.add(normalized);
+  return target;
+}
+
+function collectWorkflowEvidenceScalarTaskIds(target, ...values) {
+  if (!(target instanceof Set)) return target;
+  for (const value of values) {
+    if (Array.isArray(value)) continue;
+    collectWorkflowEvidenceTaskIds(target, value);
+  }
+  return target;
+}
+
+function normalizeWorkflowRecoveryEvidenceEntry(entry = {}) {
+  return {
+    taskId: normalizeTaskIdKey(entry?.taskId),
+    runId: String(entry?.runId || "").trim() || null,
+    source: String(entry?.source || "").trim() || "workflow",
+    reason: String(entry?.reason || "").trim() || "workflow_liveness",
+    status: String(entry?.status || "").trim().toLowerCase() || null,
+    lastActivityAt: toIsoTimestamp(entry?.lastActivityAt) || null,
+  };
+}
+
 function createEmptyInProgressRecoverySnapshot() {
   return {
     totals: {
@@ -1326,6 +1367,12 @@ function normalizeInProgressRecoveryRun(run = {}) {
     staleSharedClaimCount: toNonNegativeInt(run?.staleSharedClaimCount),
     workflowOwnerlessResetCount: toNonNegativeInt(run?.workflowOwnerlessResetCount),
     prunedRuntimeCount: toNonNegativeInt(run?.prunedRuntimeCount),
+    workflowEvidenceKept: Array.isArray(run?.workflowEvidenceKept)
+      ? run.workflowEvidenceKept
+        .map((entry) => normalizeWorkflowRecoveryEvidenceEntry(entry))
+        .filter((entry) => entry.runId)
+        .slice(-INPROGRESS_RECOVERY_HISTORY_LIMIT)
+      : [],
     failed: run?.failed === true,
     error: String(run?.error || "").trim() || null,
   };
@@ -4152,6 +4199,7 @@ class TaskExecutor {
       resetUnstartedCount: 0,
       staleSharedClaimCount: 0,
       workflowOwnerlessResetCount: 0,
+      workflowEvidenceKept: [],
       prunedRuntimeCount: 0,
       failed: false,
       error: null,
@@ -4215,9 +4263,9 @@ class TaskExecutor {
         .map((entry) => String(entry?.taskKey || "").trim())
         .filter(Boolean),
     );
-    const activeWorkflowTaskIds = this.workflowOwnsTaskLifecycle
-      ? this._readActiveWorkflowTaskIds()
-      : new Set();
+    const activeWorkflowEvidenceByTaskId = this.workflowOwnsTaskLifecycle
+      ? this._readActiveWorkflowEvidenceByTaskId()
+      : new Map();
 
     const available = Math.max(0, this.maxParallel - this._activeSlots.size);
     summary.availableSlots = available;
@@ -4368,22 +4416,30 @@ class TaskExecutor {
       }
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
-      const hasWorkflowRun = activeWorkflowTaskIds.has(id);
-
       // In workflow-owned mode, the authoritative liveness signals are the
       // persisted workflow active-runs index, then any live executor thread,
       // then the shared-state owner. If none of those exist, the task is
       // ownerless and must be reset even when still "fresh".
       if (this.workflowOwnsTaskLifecycle) {
-        const hasRecentWorkflowRunEvidence = this._hasRecentWorkflowRunEvidence(
+        const recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(
           task,
           internalTask,
+          activeWorkflowEvidenceByTaskId,
         );
-        const hasWorkflowEvidence =
-          hasWorkflowRun || hasRecentWorkflowRunEvidence;
+        const hasWorkflowEvidence = Boolean(recentWorkflowEvidence);
         const hasWorkflowLiveness = hasWorkflowEvidence || hasThread;
         if (hasStaleSharedClaim) {
           if (hasWorkflowEvidence) {
+            if (recentWorkflowEvidence?.runId) {
+              summary.workflowEvidenceKept.push({
+                taskId: id,
+                runId: recentWorkflowEvidence.runId,
+                source: recentWorkflowEvidence.source,
+                reason: "stale_shared_claim",
+                status: recentWorkflowEvidence.status,
+                lastActivityAt: recentWorkflowEvidence.lastActivityAt,
+              });
+            }
             skippedForActiveClaim++;
             continue;
           }
@@ -4416,6 +4472,16 @@ class TaskExecutor {
           continue;
         }
         if (hasWorkflowLiveness) {
+          if (recentWorkflowEvidence?.runId) {
+            summary.workflowEvidenceKept.push({
+              taskId: id,
+              runId: recentWorkflowEvidence.runId,
+              source: recentWorkflowEvidence.source,
+              reason: "workflow_liveness",
+              status: recentWorkflowEvidence.status,
+              lastActivityAt: recentWorkflowEvidence.lastActivityAt,
+            });
+          }
           skippedForActiveClaim++;
           continue;
         }
@@ -4530,11 +4596,11 @@ class TaskExecutor {
     return summary;
   }
 
-  _readActiveWorkflowTaskIds() {
-    const taskIds = new Set();
-    if (!this.workflowRunsDir) return taskIds;
+  _readActiveWorkflowEvidenceByTaskId() {
+    const evidenceByTaskId = new Map();
+    if (!this.workflowRunsDir) return evidenceByTaskId;
     const activeRunsPath = resolve(this.workflowRunsDir, WORKFLOW_ACTIVE_RUNS_INDEX);
-    if (!existsSync(activeRunsPath)) return taskIds;
+    if (!existsSync(activeRunsPath)) return evidenceByTaskId;
     let activeRuns = [];
     try {
       const parsed = JSON.parse(readFileSync(activeRunsPath, "utf8"));
@@ -4544,78 +4610,213 @@ class TaskExecutor {
           ? parsed.runs
           : [];
     } catch {
-      return taskIds;
+      return evidenceByTaskId;
     }
+
     for (const entry of activeRuns) {
-      const directTaskId = normalizeTaskIdKey(
-        entry?.taskId || entry?.activeTaskId,
-      );
-      if (directTaskId) {
-        taskIds.add(directTaskId);
-        continue;
-      }
-      const runId = String(entry?.runId || "").trim();
+      const runId = String(entry?.runId || entry?.id || "").trim();
       if (!runId) continue;
-      const detailPath = resolve(this.workflowRunsDir, `${runId}.json`);
-      if (!existsSync(detailPath)) continue;
-      try {
-        const detail = JSON.parse(readFileSync(detailPath, "utf8"));
-        const detailTaskId = normalizeTaskIdKey(
-          detail?.data?.taskId ||
-            detail?.data?.activeTaskId ||
-            detail?.inputData?.taskId ||
-            detail?.inputData?.activeTaskId,
-        );
-        if (detailTaskId) {
-          taskIds.add(detailTaskId);
+      const detail = this._readWorkflowRunDetail(runId);
+      const taskIds = new Set();
+      collectWorkflowEvidenceScalarTaskIds(
+        taskIds,
+        entry?.taskId,
+        entry?.activeTaskId,
+        detail?.taskId,
+        detail?.data?.taskId,
+        detail?.data?.activeTaskId,
+        detail?.inputData?.taskId,
+        detail?.inputData?.activeTaskId,
+      );
+      if (taskIds.size === 0) {
+        collectWorkflowEvidenceTaskIds(taskIds, entry?.taskIds);
+        collectWorkflowEvidenceTaskIds(taskIds, detail?.taskIds);
+        collectWorkflowEvidenceTaskIds(taskIds, detail?.data?.taskIds);
+        collectWorkflowEvidenceTaskIds(taskIds, detail?.inputData?.taskIds);
+      }
+      if (taskIds.size === 0) continue;
+
+      for (const taskId of taskIds) {
+        const existing = evidenceByTaskId.get(taskId) || [];
+        if (!existing.some((candidate) => String(candidate?.runId || "").trim() === runId)) {
+          existing.push({
+            runId,
+            taskId,
+            source: "active-runs",
+            fallbackEntry: entry,
+            detail,
+          });
         }
-      } catch {
-        /* best effort */
+        evidenceByTaskId.set(taskId, existing);
+      }
+    }
+    return evidenceByTaskId;
+  }
+
+  _resolveRecentWorkflowEvidence(task, internalTask = null, activeWorkflowEvidenceByTaskId = null) {
+    const candidates = this._collectRecentWorkflowEvidenceCandidates(
+      task,
+      internalTask,
+      activeWorkflowEvidenceByTaskId,
+    );
+    return this._selectBestRecentWorkflowEvidenceCandidate(
+      candidates,
+      normalizeTaskIdKey(task?.id || internalTask?.id),
+    );
+  }
+
+  _selectBestRecentWorkflowEvidenceCandidate(candidates, expectedTaskId = "") {
+    for (const candidate of candidates) {
+      const ranked = this._rankWorkflowEvidenceCandidate(candidate, expectedTaskId);
+      if (ranked?.hasRecentEvidence) return ranked;
+    }
+    return null;
+  }
+
+  _rankWorkflowEvidenceCandidate(candidate, expectedTaskId = "") {
+    const runId = String(candidate?.runId || "").trim();
+    if (!runId) return null;
+
+    const fallbackEntry =
+      candidate?.fallbackEntry && typeof candidate.fallbackEntry === "object"
+        ? candidate.fallbackEntry
+        : null;
+    const detail =
+      candidate?.detail && typeof candidate.detail === "object"
+        ? candidate.detail
+        : this._readWorkflowRunDetail(runId);
+    const dagState = detail?.data?._dagState || detail?._dagState || null;
+    const taskIds = new Set();
+    collectWorkflowEvidenceScalarTaskIds(
+      taskIds,
+      candidate?.taskId,
+      fallbackEntry?.taskId,
+      fallbackEntry?.activeTaskId,
+      detail?.taskId,
+      detail?.data?.taskId,
+      detail?.data?.activeTaskId,
+      detail?.inputData?.taskId,
+      detail?.inputData?.activeTaskId,
+    );
+    if (taskIds.size === 0) {
+      collectWorkflowEvidenceTaskIds(taskIds, fallbackEntry?.taskIds);
+      collectWorkflowEvidenceTaskIds(taskIds, detail?.taskIds);
+      collectWorkflowEvidenceTaskIds(taskIds, detail?.data?.taskIds);
+      collectWorkflowEvidenceTaskIds(taskIds, detail?.inputData?.taskIds);
+    }
+    const authoritativeTaskId = expectedTaskId && taskIds.has(expectedTaskId)
+      ? expectedTaskId
+      : (taskIds.values().next().value || "");
+    if (expectedTaskId && authoritativeTaskId && authoritativeTaskId !== expectedTaskId) {
+      return null;
+    }
+
+    const status = String(
+      dagState?.status || detail?.status || fallbackEntry?.status || fallbackEntry?.outcome || "",
+    )
+      .trim()
+      .toLowerCase();
+    const endedAtMs = Math.max(
+      parseTimestampMs(detail?.endedAt),
+      parseTimestampMs(dagState?.endedAt),
+      parseTimestampMs(fallbackEntry?.endedAt),
+    );
+    const lastActivityMs = Math.max(
+      parseTimestampMs(dagState?.updatedAt),
+      parseTimestampMs(dagState?.lastStatusAt),
+      parseTimestampMs(dagState?.createdAt),
+      parseTimestampMs(detail?.lastProgressAt),
+      parseTimestampMs(detail?.updatedAt),
+      parseTimestampMs(detail?.startedAt),
+      parseTimestampMs(fallbackEntry?.updatedAt),
+      parseTimestampMs(fallbackEntry?.lastStatusAt),
+      parseTimestampMs(fallbackEntry?.createdAt),
+      parseTimestampMs(fallbackEntry?.startedAt),
+    );
+    const hasRecentEvidence =
+      endedAtMs <= 0 &&
+      !TERMINAL_WORKFLOW_RUN_STATUSES.has(status) &&
+      lastActivityMs > 0 &&
+      Date.now() - lastActivityMs <= WORKFLOW_RUN_RECOVERY_GRACE_MS;
+    const source = String(candidate?.source || fallbackEntry?.source || "history")
+      .trim()
+      .toLowerCase();
+    const sourcePriority = ({
+      "active-runs": 4,
+      history: 3,
+      timeline: 2,
+      "workflow-runs": 2,
+      topology: 1,
+      direct: 1,
+    })[source] || 0;
+    return {
+      ...candidate,
+      runId,
+      detail,
+      fallbackEntry,
+      taskId: authoritativeTaskId || expectedTaskId || "",
+      source,
+      status,
+      endedAtMs,
+      lastActivityMs,
+      lastActivityAt: toIsoTimestamp(lastActivityMs),
+      hasRecentEvidence,
+      sourcePriority,
+      hasDagState: Boolean(dagState),
+      hasDetail: Boolean(detail),
+    };
+  }
+
+  _compareWorkflowEvidenceCandidates(a, b) {
+    return (
+      Number(b?.hasRecentEvidence === true) - Number(a?.hasRecentEvidence === true) ||
+      (Number(b?.lastActivityMs || 0) - Number(a?.lastActivityMs || 0)) ||
+      (Number(b?.sourcePriority || 0) - Number(a?.sourcePriority || 0)) ||
+      Number(b?.hasDagState === true) - Number(a?.hasDagState === true) ||
+      Number(b?.hasDetail === true) - Number(a?.hasDetail === true) ||
+      String(b?.runId || "").localeCompare(String(a?.runId || ""))
+    );
+  }
+
+  _readActiveWorkflowTaskIds() {
+    const taskIds = new Set();
+    for (const [taskId, candidates] of this._readActiveWorkflowEvidenceByTaskId()) {
+      if (this._selectBestRecentWorkflowEvidenceCandidate(candidates, taskId)) {
+        taskIds.add(taskId);
       }
     }
     return taskIds;
   }
 
   _hasRecentWorkflowRunEvidence(task, internalTask = null) {
-    if (!this.workflowRunsDir) return false;
-    const latestRunId = this._resolveRecentWorkflowEvidenceRunId(task, internalTask);
-    if (!latestRunId) return false;
-
-    const detailPath = resolve(this.workflowRunsDir, `${latestRunId}.json`);
-    if (!existsSync(detailPath)) return false;
-
-    try {
-      const detail = JSON.parse(readFileSync(detailPath, "utf8"));
-      const dagState = detail?.data?._dagState || detail?._dagState || null;
-      const status = String(dagState?.status || detail?.status || "")
-        .trim()
-        .toLowerCase();
-      const endedAtMs = Math.max(
-        parseTimestampMs(detail?.endedAt),
-        parseTimestampMs(dagState?.endedAt),
-      );
-      if (
-        endedAtMs > 0 ||
-        ["completed", "failed", "cancelled", "canceled", "blocked"].includes(status)
-      ) {
-        return false;
-      }
-
-      const lastActivityMs = Math.max(
-        parseTimestampMs(dagState?.updatedAt),
-        parseTimestampMs(dagState?.lastStatusAt),
-        parseTimestampMs(dagState?.createdAt),
-        parseTimestampMs(detail?.startedAt),
-      );
-      if (lastActivityMs <= 0) return false;
-
-      return Date.now() - lastActivityMs <= WORKFLOW_RUN_RECOVERY_GRACE_MS;
-    } catch {
-      return false;
-    }
+    return Boolean(this._resolveRecentWorkflowEvidence(task, internalTask));
   }
 
   _resolveRecentWorkflowEvidenceRunId(task, internalTask = null) {
+    return String(this._resolveRecentWorkflowEvidence(task, internalTask)?.runId || "").trim();
+  }
+
+  _findRecentWorkflowEvidenceRunIdByTaskId(taskId) {
+    const [firstRunId] = this._findRecentWorkflowEvidenceRunIdsByTaskId(taskId);
+    return firstRunId || "";
+  }
+
+  _collectRecentWorkflowEvidenceCandidates(task, internalTask = null, activeWorkflowEvidenceByTaskId = null) {
+    const candidates = [];
+    const seenRunIds = new Set();
+    const addCandidate = (runId, fallbackEntry = null, source = "", taskId = "", detail = null) => {
+      const normalizedRunId = String(runId || "").trim();
+      if (!normalizedRunId || seenRunIds.has(normalizedRunId)) return;
+      seenRunIds.add(normalizedRunId);
+      candidates.push({
+        runId: normalizedRunId,
+        fallbackEntry,
+        source,
+        taskId,
+        detail,
+      });
+    };
+
     const taskId = normalizeTaskIdKey(task?.id || internalTask?.id);
     const directRunId = String(
       task?.topology?.latestRunId ||
@@ -4625,34 +4826,63 @@ class TaskExecutor {
         task?.meta?.workflow?.runId ||
         "",
     ).trim();
-    if (directRunId) return directRunId;
+    if (directRunId) {
+      addCandidate(directRunId, null, "topology", taskId);
+    }
+
+    const workflowRuns = [
+      ...(Array.isArray(task?.workflowRuns) ? task.workflowRuns : []),
+      ...(Array.isArray(internalTask?.workflowRuns) ? internalTask.workflowRuns : []),
+    ];
+    for (let index = workflowRuns.length - 1; index >= 0; index -= 1) {
+      const entry = workflowRuns[index];
+      if (!entry || typeof entry !== "object") continue;
+      addCandidate(entry?.runId || entry?.id, entry, "workflow-runs", taskId);
+    }
 
     const timelineEntries = Array.isArray(task?.timeline) ? task.timeline : [];
     for (let index = timelineEntries.length - 1; index >= 0; index -= 1) {
       const entry = timelineEntries[index];
       if (!entry || typeof entry !== "object") continue;
-      const runId = String(
-        entry?.payload?.runId ||
-          entry?.payload?.workflowRunId ||
-          "",
-      ).trim();
-      if (runId) return runId;
+      addCandidate(
+        entry?.payload?.runId || entry?.payload?.workflowRunId,
+        entry?.payload || entry,
+        "timeline",
+        taskId,
+      );
     }
 
     if (taskId) {
-      const activeIndexRunId = this._findRecentWorkflowEvidenceRunIdByTaskId(taskId);
-      if (activeIndexRunId) return activeIndexRunId;
+      const activeEvidence =
+        activeWorkflowEvidenceByTaskId instanceof Map
+          ? activeWorkflowEvidenceByTaskId.get(taskId) || []
+          : this._readActiveWorkflowEvidenceByTaskId().get(taskId) || [];
+      for (const entry of activeEvidence) {
+        addCandidate(
+          entry?.runId || entry?.id,
+          entry?.fallbackEntry || entry,
+          entry?.source || "active-runs",
+          taskId,
+          entry?.detail || null,
+        );
+      }
+      for (const historyEntry of this._findRecentWorkflowEvidenceEntriesByTaskId(taskId)) {
+        addCandidate(historyEntry?.runId || historyEntry?.id, historyEntry, "history", taskId);
+      }
     }
 
-    return "";
+    return candidates
+      .map((candidate) => this._rankWorkflowEvidenceCandidate(candidate, taskId))
+      .filter(Boolean)
+      .sort((left, right) => this._compareWorkflowEvidenceCandidates(left, right));
   }
 
-  _findRecentWorkflowEvidenceRunIdByTaskId(taskId) {
+  _findRecentWorkflowEvidenceEntriesByTaskId(taskId) {
     const normalizedTaskId = normalizeTaskIdKey(taskId);
-    if (!this.workflowRunsDir || !normalizedTaskId) return "";
+    if (!this.workflowRunsDir || !normalizedTaskId) return [];
 
     const indexPath = resolve(this.workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);
-    if (!existsSync(indexPath)) return "";
+    if (!existsSync(indexPath)) return [];
 
     try {
       const parsed = JSON.parse(readFileSync(indexPath, "utf8"));
@@ -4661,10 +4891,11 @@ class TaskExecutor {
         : Array.isArray(parsed?.runs)
           ? parsed.runs
           : [];
+      const matches = [];
       for (const entry of runs) {
-        const entryTaskId = normalizeTaskIdKey(
+        const entryTaskId = normalizeAuthoritativeWorkflowTaskId(
           entry?.taskId ||
-          entry?.activeTaskId,
+            entry?.activeTaskId,
         );
         if (entryTaskId !== normalizedTaskId) continue;
 
@@ -4680,13 +4911,30 @@ class TaskExecutor {
         }
 
         const runId = String(entry?.runId || entry?.id || "").trim();
-        if (runId) return runId;
+        if (runId) {
+          matches.push(entry);
+        }
       }
+      return matches;
     } catch {
-      return "";
+      return [];
     }
+  }
 
-    return "";
+  _findRecentWorkflowEvidenceRunIdsByTaskId(taskId) {
+    const evidenceByTaskId = this._readActiveWorkflowEvidenceByTaskId();
+    return this._collectRecentWorkflowEvidenceCandidates(
+      { id: taskId },
+      null,
+      evidenceByTaskId,
+    )
+      .filter((candidate) => candidate?.hasRecentEvidence)
+      .map((candidate) => String(candidate?.runId || "").trim())
+      .filter(Boolean);
+  }
+
+  _workflowRunCandidateHasRecentEvidence(candidate) {
+    return this._rankWorkflowEvidenceCandidate(candidate)?.hasRecentEvidence === true;
   }
 
   _readWorkflowRunDetail(runId) {

@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const requireModule = createRequire(import.meta.url);
 
 function getParentDir(dir) {
   const parent = dirname(dir);
@@ -61,7 +64,7 @@ function resolveCliPathArg(value, { startDir, packageRoot }) {
   return value;
 }
 
-function detectChildSpawnBlocked() {
+export function detectChildSpawnBlocked() {
   try {
     const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
       stdio: "ignore",
@@ -70,6 +73,35 @@ function detectChildSpawnBlocked() {
   } catch (error) {
     return error?.code === "EPERM";
   }
+}
+
+function detectEsbuildServiceBlocked({ startDir = process.cwd() } = {}) {
+  try {
+    const originalCwd = process.cwd();
+    if (startDir && startDir !== originalCwd) {
+      process.chdir(startDir);
+    }
+    try {
+      const esbuild = requireModule("esbuild");
+      esbuild.transformSync("const x = 1", { loader: "js" });
+      return false;
+    } finally {
+      if (process.cwd() !== originalCwd) {
+        process.chdir(originalCwd);
+      }
+    }
+  } catch (error) {
+    return /spawn\s+EPERM/i.test(String(error?.stack || error?.message || error));
+  }
+}
+
+export function shouldSkipVitestForBlockedChildSpawn(
+  { platform = process.platform, env = process.env, startDir = process.cwd() } = {},
+) {
+  if (platform !== "win32") return false;
+  const explicit = String(env?.BOSUN_TEST_CHILD_SPAWN_BLOCKED || "").trim();
+  if (explicit === "1") return true;
+  return detectChildSpawnBlocked() || detectEsbuildServiceBlocked({ startDir });
 }
 
 function resolveVitestHeapMb() {
@@ -150,6 +182,11 @@ export function resolveVitestArgs(
 }
 
 export function runVitest(args = process.argv.slice(2), { startDir = process.cwd() } = {}) {
+  if (shouldSkipVitestForBlockedChildSpawn({ startDir })) {
+    console.log("[vitest] skipped: Windows child-process launch blocked in current Node runtime");
+    return 0;
+  }
+
   const vitestEntry = findVitestEntry({ startDir });
   if (!vitestEntry) {
     console.error(

@@ -948,6 +948,10 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         prNumber: { type: "number", required: false },
         prUrl: { type: "string", required: false },
         repo: { type: "string", required: false },
+        reviewIssues: { type: "array", required: false },
+        reviewIssueCount: { type: "number", required: false },
+        reviewFixDispatchMode: { type: "string", required: false },
+        reviewFixRequestedAt: { type: "string", required: false },
       },
     }, { x: 400, y: 50 }),
 
@@ -969,6 +973,10 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main'," +
         "    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null," +
         "    prUrl: prUrl || null," +
+        "    reviewIssues: Array.isArray($data?.reviewIssues) ? $data.reviewIssues : []," +
+        "    reviewIssueCount: Number($data?.reviewIssueCount || 0) || 0," +
+        "    reviewFixDispatchMode: String($data?.reviewFixDispatchMode || '').trim() || null," +
+        "    reviewFixRequestedAt: String($data?.reviewFixRequestedAt || '').trim() || null," +
         "  };" +
         "})()",
       isExpression: true,
@@ -1288,6 +1296,10 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  const issueComments = Array.isArray(prDigest.issueComments) ? prDigest.issueComments : [];\n" +
         "  const allChecks = Array.isArray(prDigest.checks) ? prDigest.checks : [];\n" +
         "  const detectedConflictFiles = Array.isArray(conflictDetection?.conflictFiles) ? conflictDetection.conflictFiles : [];\n" +
+        "  const persistedReviewIssues = Array.isArray($data?.prProgressContext?.reviewIssues) ? $data.prProgressContext.reviewIssues : [];\n" +
+        "  const persistedReviewIssueCount = Number($data?.prProgressContext?.reviewIssueCount || persistedReviewIssues.length || 0) || 0;\n" +
+        "  const reviewFixDispatchMode = String($data?.prProgressContext?.reviewFixDispatchMode || '').trim();\n" +
+        "  const reviewFixRequestedAt = String($data?.prProgressContext?.reviewFixRequestedAt || '').trim();\n" +
         "  let p = 'You are a Bosun PR repair agent. Your ONLY job is to fix this single PR.\\n\\n';\n" +
         "  p += '## PR Identity\\n\\n';\n" +
         "  p += '- **Repo**: ' + repo + '\\n';\n" +
@@ -1299,6 +1311,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  p += '- **Fix Reason**: `' + reason + '`\\n';\n" +
         "  if (mergeable) p += '- **Merge State**: ' + mergeable + '\\n';\n" +
         "  if (fix.error) p += '- **Error**: ' + fix.error + '\\n';\n" +
+        "  if (reviewFixDispatchMode) p += '- **Review Fix Dispatch Mode**: `' + reviewFixDispatchMode + '`\\n';\n" +
+        "  if (reviewFixRequestedAt) p += '- **Review Fix Requested At**: ' + reviewFixRequestedAt + '\\n';\n" +
         "  p += '\\n';\n" +
         "  /* --- Fix Summary --- */\n" +
         "  const changesRequestedReviews = reviews.filter(r => String(r.state||'').toUpperCase() === 'CHANGES_REQUESTED');\n" +
@@ -1308,9 +1322,24 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) fixItems.push('**Merge conflicts** — ' + (detectedConflictFiles.length > 0 ? detectedConflictFiles.length + ' files: ' + detectedConflictFiles.map(f => '`' + f + '`').join(', ') : 'resolve all conflicts with base `' + base + '`'));\n" +
         "  if (failedChecks.length > 0 || logExcerpt) fixItems.push('**CI/CD failures** — ' + (failedChecks.length > 0 ? failedChecks.length + ' failing checks: ' + failedChecks.map(n => '`' + n + '`').join(', ') : 'see log excerpt below'));\n" +
         "  if (changesRequestedReviews.length > 0 || actionableInlineComments.length > 0 || actionableIssueComments.length > 0) fixItems.push('**Review feedback** — ' + [changesRequestedReviews.length > 0 ? changesRequestedReviews.length + ' change request(s)' : '', actionableInlineComments.length > 0 ? actionableInlineComments.length + ' inline comment(s)' : '', actionableIssueComments.length > 0 ? actionableIssueComments.length + ' issue comment(s)' : ''].filter(Boolean).join(', '));\n" +
+        "  if (persistedReviewIssueCount > 0) fixItems.push('**Persisted review issues** — ' + persistedReviewIssueCount + ' issue(s) preserved from supervisor redispatch');\n" +
         "  if (fixItems.length > 0) {\n" +
         "    p += '## Fix Summary\\n\\nThis PR needs the following fixes:\\n';\n" +
         "    fixItems.forEach((item, i) => { p += (i+1) + '. ' + item + '\\n'; });\n" +
+        "    p += '\\n';\n" +
+        "  }\n" +
+        "  if (persistedReviewIssues.length > 0) {\n" +
+        "    p += '## Persisted Review Issues\\n\\n';\n" +
+        "    persistedReviewIssues.slice(0, 12).forEach((issue, index) => {\n" +
+        "      const severity = String(issue?.severity || 'major');\n" +
+        "      const category = String(issue?.category || 'review');\n" +
+        "      const file = String(issue?.file || '(unknown)');\n" +
+        "      const line = Number(issue?.line || 0) > 0 ? ':' + String(issue.line) : '';\n" +
+        "      const description = String(issue?.description || issue?.message || '').trim();\n" +
+        "      p += (index + 1) + '. [' + severity + '/' + category + '] `' + file + line + '`';\n" +
+        "      if (description) p += ' - ' + description;\n" +
+        "      p += '\\n';\n" +
+        "    });\n" +
         "    p += '\\n';\n" +
         "  }\n" +
         "  if (mergeable.toUpperCase() === 'CONFLICTING' || mergeable.toUpperCase() === 'DIRTY' || detectedConflictFiles.length > 0) {\n" +

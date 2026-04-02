@@ -143,6 +143,60 @@ describe("action.create_pr base-branch resolution logic", () => {
     expect(result.base).toBe("main");
   });
 
+  it("rejects invalid repoSlug values before any gh invocation", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "main",
+      branch: "feat/add-thing",
+      repoSlug: "not-a-valid-slug",
+      cwd: fastFailCwd,
+    });
+    const result = await getNodeType("action.create_pr").execute(node, makeCtx());
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("invalid_repo_slug");
+    expect(result.blocking).toEqual(expect.objectContaining({
+      field: "repoSlug",
+      retryable: false,
+    }));
+  });
+
+  it("rejects unresolved placeholder branch names before any gh invocation", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "main",
+      branch: "fix/dep-audit-{{_runId}}",
+      cwd: fastFailCwd,
+    });
+    const result = await getNodeType("action.create_pr").execute(node, makeCtx());
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("unresolved_branch_placeholder");
+    expect(result.blocking).toEqual(expect.objectContaining({
+      field: "branch",
+      retryable: false,
+    }));
+  });
+
+  it("blocks PR creation when the workflow recorded no new commits", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "main",
+      branch: "feat/add-thing",
+      cwd: fastFailCwd,
+    });
+    const result = await getNodeType("action.create_pr").execute(node, makeCtx({
+      _hasNewCommits: false,
+    }));
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("no_new_commits");
+    expect(result.blocking).toEqual(expect.objectContaining({
+      field: "commits",
+      retryable: false,
+    }));
+  });
+
   it("waits for operator approval before creating a PR when risky approvals are enabled", async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "wf-create-pr-approval-"));
     const previousSetting = process.env.WORKFLOW_RISKY_ACTION_APPROVALS_ENABLED;
@@ -299,6 +353,9 @@ describe("dangerous shell payload containment", () => {
     expect(executeSrc).toContain("repoSlug");
     expect(executeSrc).toContain("args.push(\"--repo\", repoSlug)");
     expect(executeSrc).toContain("existingArgs.push(\"--repo\", repoSlug)");
+    expect(executeSrc).toContain("invalid_repo_slug");
+    expect(executeSrc).toContain("unresolved_branch_placeholder");
+    expect(executeSrc).toContain("no_new_commits");
   });
 
   it("action.run_command schema does not silently accept untrusted commands", () => {
