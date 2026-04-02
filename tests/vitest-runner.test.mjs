@@ -32,11 +32,11 @@ describe("vitest-runner", () => {
     const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
 
     expect(prePushHook).toContain('"workflow/|workflow-*|workflow-task-lifecycle*|workflow-write-file-encoding*|workflow-pipeline-primitives*|workflow-research-evidence-sidecar*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|state-ledger-sqlite*|webhook-gateway*|credential-store*|cron-scheduler*"');
-    expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"');
-    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*|provider-kernel-support*|tool-governance-support*"');
-    expect(prePushHook).toContain('"telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"');
+    expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*|session-telemetry*"');
+    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*|harness-runtime*|harness-surface-integration*|provider-kernel*|provider-kernel-support*|session-manager*|tool-governance-support*|tool-orchestrator*"');
+    expect(prePushHook).toContain('"telegram/|telegram-*|harness-surface-integration*|whatsapp-*|weekly-agent-work-report*|harness-surface-clients*"');
     expect(prePushHook).toContain('"task/|task-*|workflow-task-lifecycle*|kanban-*|state-ledger-sqlite*|ve-orchestrator*|vk-api*|ve-kanban*"');
-    expect(prePushHook).toContain('"lib/|logger*|log-tail*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*"');
+    expect(prePushHook).toContain('"lib/|logger*|log-tail*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*|hot-path-runtime*"');
   });
   it("finds vitest from an ancestor node_modules directory", () => {
     const root = createFixture();

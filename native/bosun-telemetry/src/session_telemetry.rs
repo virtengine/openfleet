@@ -24,8 +24,12 @@ fn filter_events(events: &[Value], filter: &Value) -> Vec<Value> {
         .filter(|event| {
             (task_id.is_empty() || text(event.get("taskId")) == task_id)
                 && (session_id.is_empty() || text(event.get("sessionId")) == session_id)
-                && (run_id.is_empty() || text(event.get("runId")) == run_id || text(event.get("rootRunId")) == run_id)
-                && (event_type.is_empty() || text(event.get("eventType")) == event_type || text(event.get("type")) == event_type)
+                && (run_id.is_empty()
+                    || text(event.get("runId")) == run_id
+                    || text(event.get("rootRunId")) == run_id)
+                && (event_type.is_empty()
+                    || text(event.get("eventType")) == event_type
+                    || text(event.get("type")) == event_type)
                 && (category.is_empty() || text(event.get("category")) == category)
                 && (source.is_empty() || text(event.get("source")) == source)
         })
@@ -33,9 +37,33 @@ fn filter_events(events: &[Value], filter: &Value) -> Vec<Value> {
         .collect()
 }
 
+#[derive(Debug, Clone)]
+struct TelemetryCounters {
+    total_appended: usize,
+    total_dropped: usize,
+    export_ops: usize,
+    reset_ops: usize,
+    last_export_count: usize,
+    last_filter: Option<Value>,
+}
+
+impl Default for TelemetryCounters {
+    fn default() -> Self {
+        Self {
+            total_appended: 0,
+            total_dropped: 0,
+            export_ops: 0,
+            reset_ops: 0,
+            last_export_count: 0,
+            last_filter: None,
+        }
+    }
+}
+
 pub struct TelemetryService {
     events: Vec<Value>,
     max_in_memory_events: usize,
+    counters: TelemetryCounters,
 }
 
 impl TelemetryService {
@@ -43,6 +71,7 @@ impl TelemetryService {
         Self {
             events: Vec::new(),
             max_in_memory_events: 20_000,
+            counters: TelemetryCounters::default(),
         }
     }
 
@@ -50,16 +79,32 @@ impl TelemetryService {
         if let Some(limit) = requested_max {
             self.max_in_memory_events = limit.max(100);
         }
+        self.counters.total_appended += incoming.len();
         self.events.extend(incoming.iter().cloned());
         if self.events.len() > self.max_in_memory_events {
             let overflow = self.events.len() - self.max_in_memory_events;
             self.events.drain(0..overflow);
+            self.counters.total_dropped += overflow;
         }
         json!({
             "service": "bosun-telemetry",
             "version": env!("CARGO_PKG_VERSION"),
             "accepted": incoming.len(),
             "eventCount": self.events.len(),
+            "droppedEvents": self.counters.total_dropped,
+            "maxInMemoryEvents": self.max_in_memory_events,
+        })
+    }
+
+    fn export_trace(&mut self, filter: &Value) -> Value {
+        let filtered = filter_events(&self.events, filter);
+        self.counters.export_ops += 1;
+        self.counters.last_export_count = filtered.len();
+        self.counters.last_filter = Some(filter.clone());
+        json!({
+            "service": "bosun-telemetry",
+            "version": env!("CARGO_PKG_VERSION"),
+            "trace": export::export_trace(&filtered),
         })
     }
 
@@ -76,6 +121,10 @@ impl TelemetryService {
                 "protocolVersion": 1,
                 "eventCount": self.events.len(),
                 "maxInMemoryEvents": self.max_in_memory_events,
+                "totalAppended": self.counters.total_appended,
+                "droppedEvents": self.counters.total_dropped,
+                "exportOps": self.counters.export_ops,
+                "lastExportCount": self.counters.last_export_count,
             })),
             "append_events" => {
                 let events = request
@@ -105,17 +154,21 @@ impl TelemetryService {
                 "service": "bosun-telemetry",
                 "providers": metrics::provider_usage(&self.events),
             })),
-            "export_trace" => {
-                let filtered = filter_events(&self.events, request.get("filter").unwrap_or(&Value::Null));
-                Ok(json!({
-                    "service": "bosun-telemetry",
-                    "trace": export::export_trace(&filtered),
-                }))
-            }
+            "export_trace" => Ok(self.export_trace(request.get("filter").unwrap_or(&Value::Null))),
+            "flush" => Ok(json!({
+                "service": "bosun-telemetry",
+                "version": env!("CARGO_PKG_VERSION"),
+                "flushed": true,
+                "eventCount": self.events.len(),
+            })),
             "reset" => {
                 self.events.clear();
+                self.counters.reset_ops += 1;
+                self.counters.last_export_count = 0;
+                self.counters.last_filter = None;
                 Ok(json!({
                     "service": "bosun-telemetry",
+                    "version": env!("CARGO_PKG_VERSION"),
                     "reset": true,
                 }))
             }

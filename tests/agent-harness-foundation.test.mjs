@@ -21,6 +21,11 @@ import {
   createHarnessSessionManager,
 } from "../agent/session-manager.mjs";
 import {
+  createHarnessFailoverController,
+  createHarnessProviderSessionRuntime,
+  planPersistentThreadExecution,
+} from "../agent/internal-harness-control-plane.mjs";
+import {
   buildProviderKernelSettings,
   createProviderKernel,
 } from "../agent/provider-kernel.mjs";
@@ -374,7 +379,6 @@ describe("tool orchestrator foundation", () => {
       "tool_execution_update",
       "tool_execution_retry",
       "tool_execution_update",
-      "tool_execution_update",
       "tool_execution_end",
     ]);
     expect(events[2]).toEqual(expect.objectContaining({
@@ -383,7 +387,7 @@ describe("tool orchestrator foundation", () => {
       nextAttempt: 2,
       error: "transient failure",
     }));
-    expect(events[5]).toEqual(expect.objectContaining({
+    expect(events[4]).toEqual(expect.objectContaining({
       toolName: "retryable_tool",
       attempt: 2,
       attemptCount: 2,
@@ -673,6 +677,78 @@ describe("session manager foundation", () => {
     }
   });
 
+  it("routes external continue, retry, resume, and cancel through a bound compatibility controller", async () => {
+    const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-session-manager-controller-"));
+    vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
+    try {
+      const manager = createBosunSessionManager();
+      const run = vi.fn(async (input = {}) => ({
+        success: true,
+        status: input.lifecycleState || "completed",
+        echoedPrompt: input.prompt,
+      }));
+      const abort = vi.fn();
+
+      manager.beginExternalSession({
+        sessionId: "external-controller-session",
+        scope: "workflow-task",
+        sessionType: "task",
+        taskKey: "external-controller-task",
+        cwd: "C:/repo",
+        source: "workflow",
+      });
+      manager.bindExternalController("external-controller-session", {
+        run,
+        abort,
+      });
+
+      await expect(manager.continueSession("external-controller-session", {
+        action: "continue",
+        runRequest: { prompt: "continue this task" },
+      })).resolves.toEqual(expect.objectContaining({
+        echoedPrompt: "continue this task",
+        status: "running",
+      }));
+      await expect(manager.retrySession("external-controller-session", {
+        runRequest: { prompt: "retry this task" },
+      })).resolves.toEqual(expect.objectContaining({
+        echoedPrompt: "retry this task",
+        status: "retrying",
+      }));
+      await expect(manager.resumeSession("external-controller-session", {
+        runRequest: { prompt: "resume this task" },
+      })).resolves.toEqual(expect.objectContaining({
+        echoedPrompt: "resume this task",
+        status: "resuming",
+      }));
+
+      manager.cancelSession("external-controller-session", "operator_stop");
+
+      expect(run).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        sessionId: "external-controller-session",
+        action: "continue",
+        lifecycleState: "running",
+        prompt: "continue this task",
+      }));
+      expect(run).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        sessionId: "external-controller-session",
+        action: "retry",
+        lifecycleState: "retrying",
+        prompt: "retry this task",
+      }));
+      expect(run).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        sessionId: "external-controller-session",
+        action: "resume",
+        lifecycleState: "resuming",
+        prompt: "resume this task",
+      }));
+      expect(abort).toHaveBeenCalledWith("operator_stop");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(testCacheDir, { recursive: true, force: true });
+    }
+  });
+
   it("projects parent-child lineage, thread ancestry, and subagent completion through canonical owners", async () => {
     const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-lineage-graph-"));
     vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
@@ -842,6 +918,160 @@ describe("session manager foundation", () => {
   });
 });
 
+describe("harness control-plane foundation", () => {
+  it("routes failover execution through the canonical harness failover controller", async () => {
+    const queryEngine = {
+      policy: { recoveryRetryAttempts: 2 },
+      clearAdapterFailureState: vi.fn(),
+      noteAdapterFailure: vi.fn(() => ({ allowFailover: true })),
+      executeTurn: vi.fn(async (request) => ({
+        ok: true,
+        adapterName: request.initialAdapterName,
+        result: { success: true, output: "done" },
+      })),
+    };
+    const controller = createHarnessFailoverController({ queryEngine });
+    const result = await controller.executeTurn({
+      adapters: { "codex-sdk": { name: "codex-sdk" } },
+      initialAdapterName: "codex-sdk",
+      executeAdapterTurn: async () => ({ success: true }),
+    });
+
+    expect(controller.policy).toEqual({ recoveryRetryAttempts: 2 });
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      adapterName: "codex-sdk",
+    }));
+    expect(queryEngine.executeTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("plans persistent thread execution through the canonical control-plane policy", () => {
+    expect(planPersistentThreadExecution({
+      taskKey: "monitor-monitor",
+      requestedSdk: "codex",
+      existingRecord: {
+        sdk: "codex",
+        threadId: "thread-1",
+        turnCount: 78,
+        createdAt: Date.now(),
+        alive: true,
+      },
+      maxThreadTurns: 80,
+      warningThreshold: 64,
+      absoluteAgeMs: 60_000,
+      monitorTaskKey: "monitor-monitor",
+      monitorRefreshTurnsRemaining: 2,
+    })).toEqual(expect.objectContaining({
+      action: "launch_fresh",
+      reason: "monitor_refresh_threshold",
+      invalidateRecord: true,
+      markRecordDead: true,
+    }));
+
+    expect(planPersistentThreadExecution({
+      taskKey: "task-1",
+      requestedSdk: "claude",
+      existingRecord: {
+        sdk: "claude",
+        threadId: "thread-2",
+        turnCount: 12,
+        createdAt: Date.now(),
+        alive: true,
+      },
+      maxThreadTurns: 80,
+      warningThreshold: 64,
+      absoluteAgeMs: 60_000,
+    })).toEqual(expect.objectContaining({
+      action: "resume_existing",
+      strategy: "resume_claude",
+      reason: "resume_existing",
+    }));
+
+    expect(planPersistentThreadExecution({
+      taskKey: "task-2",
+      requestedSdk: "copilot",
+      existingRecord: {
+        sdk: "codex",
+        threadId: "thread-3",
+        turnCount: 2,
+        createdAt: Date.now(),
+        alive: true,
+      },
+      maxThreadTurns: 80,
+      warningThreshold: 64,
+      absoluteAgeMs: 60_000,
+    })).toEqual(expect.objectContaining({
+      action: "launch_fresh",
+      reason: "sdk_changed",
+      invalidateRecord: true,
+      markRecordDead: true,
+    }));
+  });
+
+  it("routes launch, resume, and recover executors through the canonical provider session runtime interface", async () => {
+    const launchCodex = vi.fn(async (...args) => ({ kind: "launch", args }));
+    const resumeClaude = vi.fn(async (...args) => ({ kind: "resume", args }));
+    const recoverCodex = vi.fn(async (input) => ({ kind: "recover", input }));
+    const runtime = createHarnessProviderSessionRuntime({
+      launchers: {
+        codex: launchCodex,
+      },
+      resumers: {
+        resume_claude: resumeClaude,
+      },
+      recoverers: {
+        "codex-sdk": recoverCodex,
+      },
+    });
+
+    const launchResult = await runtime.launchSession({
+      sdkName: "codex",
+      prompt: "launch prompt",
+      cwd: "C:/repo",
+      timeoutMs: 1000,
+      extra: { sessionId: "launch-1" },
+    });
+    const resumeResult = await runtime.resumeSession({
+      strategy: "resume_claude",
+      sdkName: "claude",
+      threadId: "thread-1",
+      prompt: "resume prompt",
+      cwd: "C:/repo",
+      timeoutMs: 1000,
+      extra: { sessionId: "resume-1" },
+    });
+    const recoverResult = await runtime.recoverSession({
+      adapterName: "codex-sdk",
+      adapter: { name: "codex-sdk" },
+      retry: 1,
+      maxRetries: 2,
+    });
+
+    expect(launchCodex).toHaveBeenCalledWith(
+      "launch prompt",
+      "C:/repo",
+      1000,
+      { sessionId: "launch-1" },
+    );
+    expect(resumeClaude).toHaveBeenCalledWith(
+      "thread-1",
+      "resume prompt",
+      "C:/repo",
+      1000,
+      { sessionId: "resume-1" },
+      "claude",
+    );
+    expect(recoverCodex).toHaveBeenCalledWith(expect.objectContaining({
+      adapterName: "codex-sdk",
+      retry: 1,
+      maxRetries: 2,
+    }));
+    expect(launchResult.kind).toBe("launch");
+    expect(resumeResult.kind).toBe("resume");
+    expect(recoverResult.kind).toBe("recover");
+  });
+});
+
 describe("provider kernel foundation", () => {
   it("flattens provider settings and resolves runtime config from the shared kernel", () => {
     const config = {
@@ -926,7 +1156,7 @@ describe("provider kernel foundation", () => {
     });
 
     expect(exec).toHaveBeenCalledWith(
-      "route through kernel",
+      "USER: route through kernel",
       expect.objectContaining({
         provider: "openai-compatible",
         providerConfig: expect.objectContaining({
@@ -990,7 +1220,7 @@ describe("provider kernel foundation", () => {
     });
 
     expect(exec).toHaveBeenCalledWith(
-      "use overrides",
+      "USER: use overrides",
       expect.objectContaining({
         provider: "openrouter",
         providerConfig: expect.objectContaining({

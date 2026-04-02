@@ -1,5 +1,14 @@
+/**
+ * Canonical architecture note:
+ * Provider resolution, provider runtime normalization, and execution-session
+ * creation are owned here. Transitional shells and legacy entrypoints may call
+ * into this module, but they must not define parallel provider-selection or
+ * provider-lifecycle semantics outside the provider kernel contract.
+ */
+
 import { createProviderRegistry } from "./provider-registry.mjs";
 import { createProviderSession } from "./provider-session.mjs";
+import { createToolOrchestrator } from "./tool-orchestrator.mjs";
 import { getBuiltInProviderDriver, normalizeProviderDefinitionId } from "./providers/index.mjs";
 import { ProviderConfigurationError } from "./providers/provider-errors.mjs";
 import {
@@ -121,6 +130,25 @@ function createRegistryFactory(options = {}) {
   };
 }
 
+function createSessionToolOrchestrator(input = {}, options = {}) {
+  if (input.toolOrchestrator && typeof input.toolOrchestrator === "object") {
+    return input.toolOrchestrator;
+  }
+  if (options.toolOrchestrator && typeof options.toolOrchestrator === "object") {
+    return options.toolOrchestrator;
+  }
+  return createToolOrchestrator({
+    cwd: input.cwd || options.cwd || process.cwd(),
+    repoRoot: input.repoRoot || options.repoRoot || input.cwd || options.cwd || process.cwd(),
+    agentProfileId: input.agentProfileId || options.agentProfileId || null,
+    sessionManager: input.sessionManager || options.sessionManager || null,
+    onEvent: input.onEvent || options.onEvent,
+    includeBuiltinBosunTools: input.includeBuiltinBosunTools ?? options.includeBuiltinBosunTools,
+    toolSources: input.toolSources || options.toolSources,
+    registry: input.toolRegistry || options.toolRegistry,
+  });
+}
+
 export function createProviderKernel(options = {}) {
   const createRegistryInstance = createRegistryFactory(options);
 
@@ -230,6 +258,7 @@ export function createProviderKernel(options = {}) {
       input.providerConfig && typeof input.providerConfig === "object" && !Array.isArray(input.providerConfig)
         ? { ...input.providerConfig }
         : null;
+    const toolOrchestrator = createSessionToolOrchestrator(input, options);
     return createProviderSession(runtime.providerId, {
       providerRegistry: runtime.registry,
       adapter: targetAdapter,
@@ -237,6 +266,16 @@ export function createProviderKernel(options = {}) {
       threadId: normalizedInput.threadId,
       model: normalizedInput.model,
       metadata: normalizedInput.metadata,
+      cwd: input.cwd || options.cwd || null,
+      repoRoot: input.repoRoot || options.repoRoot || input.cwd || options.cwd || null,
+      agentProfileId: input.agentProfileId || options.agentProfileId || null,
+      sessionManager: input.sessionManager || options.sessionManager || null,
+      onEvent: input.onEvent || options.onEvent,
+      toolOrchestrator,
+      executeTool: input.executeTool || options.executeTool || null,
+      toolRunner: input.toolRunner || options.toolRunner || null,
+      maxToolRounds: input.maxToolRounds ?? options.maxToolRounds,
+      subagentMaxParallel: input.subagentMaxParallel ?? options.subagentMaxParallel,
       getProviderRunner:
         typeof options.getProviderRunner === "function"
           ? options.getProviderRunner

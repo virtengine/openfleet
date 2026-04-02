@@ -147,6 +147,8 @@ const MAX_FETCH_RETRIES = 2;
 const FETCH_RETRY_BASE_MS = 800;
 const NETWORK_ERROR_COOLDOWN_MS = 4000;
 const API_ERROR_DEDUPE_MS = 4000;
+const DEFAULT_GET_TIMEOUT_MS = 12000;
+const DEFAULT_MUTATION_TIMEOUT_MS = 25000;
 let _sessionRecoveryPromise = null;
 let _backendUnavailableUntil = 0;
 let _lastApiErrorAt = 0;
@@ -217,6 +219,16 @@ function createBackendUnavailableError(retryInMs = getBackendCooldownRemainingMs
   return error;
 }
 
+function createRequestTimeoutError(timeoutMs) {
+  const seconds = Math.max(1, Math.ceil(Math.max(0, Number(timeoutMs) || 0) / 1000));
+  const error = new Error(`Bosun backend timed out after about ${seconds}s.`);
+  error.name = "AbortError";
+  error.status = 0;
+  error.isNetworkError = true;
+  error.isTimeout = true;
+  return error;
+}
+
 function shouldDispatchApiError(message) {
   const now = Date.now();
   if (
@@ -260,6 +272,7 @@ export function apiFetch(path, options = {}) {
     _silent: silentOption = false,
     _trackLoading: trackLoadingOption,
     _sessionRecoveryAttempted: sessionRecoveryAttempted = false,
+    _timeoutMs: timeoutOverrideMs,
     ...requestInit
   } = options || {};
   const headers = { ...requestInit.headers };
@@ -275,6 +288,12 @@ export function apiFetch(path, options = {}) {
 
   const silent = Boolean(silentOption);
   const method = String(requestInit.method || "GET").toUpperCase();
+  const timeoutMs = Math.max(
+    1000,
+    Number(timeoutOverrideMs)
+      || Number(requestInit.timeoutMs)
+      || (method === "GET" ? DEFAULT_GET_TIMEOUT_MS : DEFAULT_MUTATION_TIMEOUT_MS),
+  );
 
   const forceLoading = trackLoadingOption === true || _loadingForceDepth > 0;
   const suppressLoading = trackLoadingOption === false || _loadingSuppressionDepth > 0;
@@ -302,20 +321,48 @@ export function apiFetch(path, options = {}) {
         let response;
         let fetchAttempt = 0;
         while (fetchAttempt <= MAX_FETCH_RETRIES) {
+          const timeoutController = typeof AbortController !== "undefined"
+            ? new AbortController()
+            : null;
+          const requestSignal = requestOptions.signal;
+          const signal = timeoutController?.signal || requestSignal;
+          let timeoutId = null;
+          let cleanupTimeout = null;
           try {
-            response = await fetch(path, requestOptions);
+            if (timeoutController && requestSignal) {
+              const abortFromCaller = () => timeoutController.abort(requestSignal.reason);
+              if (requestSignal.aborted) {
+                abortFromCaller();
+              } else {
+                requestSignal.addEventListener("abort", abortFromCaller, { once: true });
+                cleanupTimeout = () => requestSignal.removeEventListener("abort", abortFromCaller);
+              }
+            }
+            if (timeoutController) {
+              timeoutId = setTimeout(() => {
+                timeoutController.abort(createRequestTimeoutError(timeoutMs));
+              }, timeoutMs);
+            }
+            response = await fetch(path, { ...requestOptions, signal });
             clearBackendUnavailable();
             break;
           } catch (networkErr) {
             fetchAttempt += 1;
-            if (isNetworkConnectivityError(networkErr)) {
+            const isTimeout = networkErr?.name === "AbortError"
+              && timeoutController?.signal?.aborted === true;
+            if (isTimeout || isNetworkConnectivityError(networkErr)) {
               markBackendUnavailable();
               if (isGet || fetchAttempt > MAX_FETCH_RETRIES || silent) {
-                throw createBackendUnavailableError();
+                throw isTimeout
+                  ? createRequestTimeoutError(timeoutMs)
+                  : createBackendUnavailableError();
               }
             }
             if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
             await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
+          } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+            cleanupTimeout?.();
           }
         }
         if (!response.ok) {

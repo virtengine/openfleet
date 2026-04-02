@@ -75,6 +75,10 @@ import {
 } from "../workspace/context-cache.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import {
+  createHarnessProviderSessionRuntime,
+  planPersistentThreadExecution,
+} from "./internal-harness-control-plane.mjs";
+import {
   buildInternalHarnessTurnExecutor,
   createInternalHarnessSession as createHarnessRuntimeSession,
 } from "./internal-harness-runtime.mjs";
@@ -3203,6 +3207,27 @@ async function loadOpencodeAdapter() {
   return launchOpencodeThread;
 }
 
+const poolProviderSessionRuntime = createHarnessProviderSessionRuntime({
+  launchers: {
+    codex: launchCodexThread,
+    copilot: launchCopilotThread,
+    claude: launchClaudeThread,
+    opencode: launchOpencodeThread,
+  },
+  resumers: {
+    resume_codex: resumeCodexThread,
+    resume_copilot: resumeCopilotThread,
+    resume_claude: resumeClaudeThread,
+    resume_opencode: async (threadId, prompt, cwd, timeoutMs, extra = {}) =>
+      await launchOpencodeThread(prompt, cwd, timeoutMs, {
+        ...extra,
+        resumeThreadId: threadId,
+        taskKey: extra.taskKey,
+      }),
+    resume_generic: resumeGenericThread,
+  },
+});
+
 function isOpencodeFailureMessage(message) {
   const normalized = String(message || "").trim().toLowerCase();
   return normalized.startsWith(":close:") || normalized.startsWith(":clock:");
@@ -3307,6 +3332,8 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
       },
       getConfig: () => loadConfig() || {},
       env: runtimeSessionEnv,
+      sessionManager: getBosunSessionManager(),
+      onEvent,
     });
     const providerSession = providerKernel.createExecutionSession({
       adapterName: "opencode-sdk",
@@ -3316,6 +3343,13 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
       sessionId: logicalSessionId,
       threadId: logicalSessionId,
       model: trimmedModel || providerConfig?.model || null,
+      cwd,
+      repoRoot: cwd,
+      taskKey: extra.taskKey || logicalSessionId,
+      sessionType: extra.sessionType || "task",
+      sessionManager: getBosunSessionManager(),
+      onEvent,
+      subagentMaxParallel: extra.subagentMaxParallel,
     });
     const result = await providerSession.runTurn(prompt, {
       onEvent,
@@ -3324,6 +3358,12 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: logicalSessionId,
       abortController,
       model: trimmedModel || providerConfig?.model || null,
+      cwd,
+      repoRoot: cwd,
+      taskKey: extra.taskKey || logicalSessionId,
+      sessionType: extra.sessionType || "task",
+      sessionManager: getBosunSessionManager(),
+      subagentMaxParallel: extra.subagentMaxParallel,
     });
     const finalResponse = String(
       result?.output || result?.text || result?.raw?.finalResponse || "",
@@ -3503,8 +3543,13 @@ export async function launchEphemeralThread(
     }
 
     triedSdkNames.push(name);
-    const launcher = await adapter.load();
-    const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+    const result = await poolProviderSessionRuntime.launchSession({
+      sdkName: name,
+      prompt,
+      cwd,
+      timeoutMs,
+      extra: launchExtra,
+    });
     lastAttemptResult = result;
 
     if (result.success) {
@@ -3582,8 +3627,13 @@ export async function launchEphemeralThread(
       );
 
       triedSdkNames.push(name);
-      const launcher = await SDK_ADAPTERS[name].load();
-      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      const result = await poolProviderSessionRuntime.launchSession({
+        sdkName: name,
+        prompt,
+        cwd,
+        timeoutMs,
+        extra: launchExtra,
+      });
       lastAttemptResult = result;
 
       if (result.success) {
@@ -3634,8 +3684,13 @@ export async function launchEphemeralThread(
       );
     }
     triedSdkNames.push(forcedSdkName);
-    const launcher = await SDK_ADAPTERS[forcedSdkName].load();
-    const forcedResult = await launcher(prompt, cwd, timeoutMs, launchExtra);
+    const forcedResult = await poolProviderSessionRuntime.launchSession({
+      sdkName: forcedSdkName,
+      prompt,
+      cwd,
+      timeoutMs,
+      extra: launchExtra,
+    });
     if (forcedResult.success) {
       return forcedResult;
     }
@@ -3666,8 +3721,13 @@ export async function launchEphemeralThread(
       );
 
       triedSdkNames.push(name);
-      const launcher = await SDK_ADAPTERS[name].load();
-      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      const result = await poolProviderSessionRuntime.launchSession({
+        sdkName: name,
+        prompt,
+        cwd,
+        timeoutMs,
+        extra: launchExtra,
+      });
       lastAttemptResult = result;
 
       if (result.success) {
@@ -3883,6 +3943,83 @@ function registerManagedExternalExecution(sessionManager, sessionId, input = {})
 function finalizeManagedExternalExecution(sessionManager, sessionId, input = {}) {
   if (!sessionId) return null;
   return sessionManager.finalizeExternalExecution(sessionId, input);
+}
+
+const managedExternalAbortControllers = new Map();
+
+function setManagedExternalAbortController(sessionId, controller = null) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) return null;
+  if (!controller) {
+    managedExternalAbortControllers.delete(normalizedSessionId);
+    return null;
+  }
+  managedExternalAbortControllers.set(normalizedSessionId, controller);
+  return controller;
+}
+
+function getManagedExternalAbortController(sessionId) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  return normalizedSessionId ? (managedExternalAbortControllers.get(normalizedSessionId) || null) : null;
+}
+
+function normalizeManagedExternalPrompt(runRequest = {}) {
+  return String(
+    runRequest.prompt
+    || runRequest.message
+    || runRequest.userMessage
+    || "",
+  ).trim();
+}
+
+function bindManagedExternalSessionController(sessionManager, sessionId, defaults = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!sessionManager || !normalizedSessionId || typeof sessionManager.bindExternalController !== "function") {
+    return null;
+  }
+  return sessionManager.bindExternalController(normalizedSessionId, {
+    abort(reason = "aborted") {
+      const abortController = getManagedExternalAbortController(normalizedSessionId);
+      if (abortController && !abortController.signal.aborted) {
+        try {
+          abortController.abort(reason);
+        } catch {
+          /* best effort */
+        }
+      }
+    },
+    async run(runRequest = {}) {
+      const prompt = normalizeManagedExternalPrompt(runRequest);
+      if (!prompt) {
+        throw new Error(`Managed session "${normalizedSessionId}" continuation requires a prompt`);
+      }
+      const cwd = runRequest.cwd || defaults.cwd || process.cwd();
+      const timeoutMs = Number(runRequest.timeoutMs || runRequest.timeout || defaults.timeoutMs) || DEFAULT_TIMEOUT_MS;
+      const abortController =
+        runRequest.abortController instanceof AbortController
+          ? runRequest.abortController
+          : new AbortController();
+      setManagedExternalAbortController(normalizedSessionId, abortController);
+      try {
+        return await launchOrResumeThread(prompt, cwd, timeoutMs, {
+          ...defaults,
+          ...runRequest,
+          cwd,
+          timeoutMs,
+          sessionId: normalizedSessionId,
+          abortController,
+          metadata: {
+            ...toPlainObject(defaults.metadata),
+            ...toPlainObject(runRequest.metadata),
+          },
+        });
+      } finally {
+        if (getManagedExternalAbortController(normalizedSessionId) === abortController) {
+          setManagedExternalAbortController(normalizedSessionId, null);
+        }
+      }
+    },
+  });
 }
 
 export async function ensureThreadRegistryLoaded() {
@@ -4242,6 +4379,18 @@ export async function launchOrResumeThread(
   };
   const managedSessionId = String(restExtra.sessionId || taskKey || "").trim() || null;
   if (managedSessionId) {
+    bindManagedExternalSessionController(sessionManager, managedSessionId, {
+      ...restExtra,
+      sessionId: managedSessionId,
+      taskKey,
+      cwd,
+      timeoutMs,
+      sessionScope: restExtra.sessionScope || "task",
+      sessionType: restExtra.sessionType || "task",
+      parentSessionId: restExtra.parentSessionId,
+      rootSessionId: restExtra.rootSessionId,
+      metadata: managedSessionMetadata,
+    });
     beginManagedExternalSession(sessionManager, managedSessionId, {
       parentSessionId: restExtra.parentSessionId,
       rootSessionId: restExtra.rootSessionId,
@@ -4289,264 +4438,121 @@ export async function launchOrResumeThread(
     return { ...result, threadId: result.threadId || null, resumed: false };
   }
 
-  // Check registry for existing thread
+  // Check registry for existing thread through the canonical control-plane plan.
   const existing = getPersistentThreadRecord(taskKey);
-  if (existing && existing.alive && existing.threadId) {
-    const turnsRemaining = MAX_THREAD_TURNS - existing.turnCount;
-    const shouldForceRefreshMonitorMonitorThread =
-      String(taskKey || "").trim() === MONITOR_MONITOR_TASK_KEY &&
-      turnsRemaining <= MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING;
-    if (shouldForceRefreshMonitorMonitorThread) {
+  const requestedSdkName = restExtra.sdk || existing?.sdk || resolvePoolSdkName();
+  const persistentPlan = planPersistentThreadExecution({
+    taskKey,
+    requestedSdk: requestedSdkName,
+    existingRecord: existing,
+    maxThreadTurns: MAX_THREAD_TURNS,
+    warningThreshold: THREAD_EXHAUSTION_WARNING_THRESHOLD,
+    absoluteAgeMs: THREAD_MAX_ABSOLUTE_AGE_MS,
+    monitorTaskKey: MONITOR_MONITOR_TASK_KEY,
+    monitorRefreshTurnsRemaining: MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING,
+  });
+  for (const warning of persistentPlan.warnings || []) {
+    console.warn(`${TAG} :alert: ${warning}`);
+  }
+  if (existing && persistentPlan.invalidateRecord) {
+    if (persistentPlan.reason === "sdk_changed") {
       console.log(
-        `${TAG} proactively refreshing monitor-monitor thread with ${turnsRemaining} turns remaining (threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
+        `${TAG} SDK changed from ${existing.sdk} to ${requestedSdkName} for task "${taskKey}", starting fresh`,
       );
-      existing.alive = false;
-      setPersistentThreadRecord(taskKey, existing);
-    }
-
-    // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
-    if (
-      existing.turnCount >= THREAD_EXHAUSTION_WARNING_THRESHOLD &&
-      existing.turnCount < MAX_THREAD_TURNS &&
-      existing.alive
-    ) {
-      console.warn(
-        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${turnsRemaining} remaining)`,
+    } else if (persistentPlan.reason === "monitor_refresh_threshold") {
+      console.log(
+        `${TAG} proactively refreshing monitor-monitor thread with ${persistentPlan.turnsRemaining} turns remaining (threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
       );
-    }
-
-    // Check if thread has exceeded max turns — force fresh start
-    if (existing.alive && existing.turnCount >= MAX_THREAD_TURNS) {
+    } else if (persistentPlan.reason === "turn_limit_exceeded") {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded ${MAX_THREAD_TURNS} turns (has ${existing.turnCount}) — invalidating and starting fresh`,
       );
-      existing.alive = false;
-      setPersistentThreadRecord(taskKey, existing);
-      // Fall through to fresh launch below
-    } else if (
-      existing.alive &&
-      Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS
-    ) {
+    } else if (persistentPlan.reason === "absolute_age_exceeded") {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded absolute age limit — invalidating and starting fresh`,
       );
+    }
+    if (persistentPlan.deleteRecord) {
+      deletePersistentThreadRecord(taskKey);
+    } else {
       existing.alive = false;
       setPersistentThreadRecord(taskKey, existing);
-      // Fall through to fresh launch below
+    }
+  }
+  if (existing && existing.alive && existing.threadId && persistentPlan.action === "resume_existing") {
+    if (persistentPlan.strategy === "resume_generic") {
+      console.log(
+        `${TAG} context-carry resume for ${requestedSdkName} thread, task "${taskKey}"`,
+      );
     } else {
-      const sdkName = restExtra.sdk || existing.sdk || resolvePoolSdkName();
+      const label =
+        persistentPlan.strategy === "resume_codex"
+          ? "Codex thread"
+          : persistentPlan.strategy === "resume_copilot"
+            ? "Copilot session"
+            : persistentPlan.strategy === "resume_claude"
+              ? "Claude session"
+              : "OpenCode session";
+      console.log(
+        `${TAG} resuming ${label} ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
+      );
+    }
+    const result = await poolProviderSessionRuntime.resumeSession({
+      strategy: persistentPlan.strategy,
+      sdkName: requestedSdkName,
+      threadId: existing.threadId,
+      prompt,
+      cwd,
+      timeoutMs,
+      extra: {
+        ...restExtra,
+        taskKey,
+      },
+    });
 
-      // Native resume for Codex threads
-      if (sdkName === "codex" && existing.sdk === "codex") {
-        console.log(
-          `${TAG} resuming Codex thread ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
-        );
-        const result = await resumeCodexThread(
-          existing.threadId,
-          prompt,
-          cwd,
-          timeoutMs,
-          restExtra,
-        );
-
-        if (result.success) {
-          // Update registry
-          existing.turnCount += 1;
-          existing.lastUsedAt = Date.now();
-          existing.lastError = null;
-          if (result.threadId) existing.threadId = result.threadId;
-          setPersistentThreadRecord(taskKey, existing);
-          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
-            success: true,
-            status: "completed",
-            threadId: existing.threadId,
-            result: {
-              ...result,
-              resumed: true,
-            },
-          });
-          return { ...result, resumed: true };
-        }
-
-        // Resume failed — fall through to fresh launch
-        if (
-          result.poisonedResumeState ||
-          result.staleResumeState ||
-          isPoisonedCodexResumeError(result.error) ||
-          isCodexResumeTimeoutError(result.error)
-        ) {
-          console.warn(
-            `${TAG} resume failed for task "${taskKey}" with stale or corrupted state: ${result.error}. Dropping cached thread metadata and starting fresh.`,
-          );
-          deletePersistentThreadRecord(taskKey);
-        } else {
-          console.warn(
-            `${TAG} resume failed for task "${taskKey}": ${result.error}. Starting fresh.`,
-          );
-          existing.alive = false;
-          existing.lastError = result.error || existing.lastError || null;
-          setPersistentThreadRecord(taskKey, existing);
-        }
-      } else if (sdkName === "copilot" && existing.sdk === "copilot") {
-        console.log(
-          `${TAG} resuming Copilot session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
-        );
-        const result = await resumeCopilotThread(
-          existing.threadId,
-          prompt,
-          cwd,
-          timeoutMs,
-          restExtra,
-        );
-
-        if (result.success) {
-          existing.turnCount += 1;
-          existing.lastUsedAt = Date.now();
-          existing.lastError = null;
-          if (result.threadId) existing.threadId = result.threadId;
-          existing.alive = !!existing.threadId;
-          setPersistentThreadRecord(taskKey, existing);
-          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
-            success: true,
-            status: "completed",
-            threadId: existing.threadId,
-            result: {
-              ...result,
-              resumed: true,
-            },
-          });
-          return { ...result, resumed: true };
-        }
-
-        console.warn(
-          `${TAG} resume failed for task "${taskKey}": ${result.error}. Starting fresh.`,
-        );
-        existing.alive = false;
-        existing.lastError = result.error || existing.lastError || null;
-        setPersistentThreadRecord(taskKey, existing);
-      } else if (sdkName === "claude" && existing.sdk === "claude") {
-        console.log(
-          `${TAG} resuming Claude session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
-        );
-        const result = await resumeClaudeThread(
-          existing.threadId,
-          prompt,
-          cwd,
-          timeoutMs,
-          restExtra,
-        );
-
-        if (result.success) {
-          existing.turnCount += 1;
-          existing.lastUsedAt = Date.now();
-          existing.lastError = null;
-          if (result.threadId) existing.threadId = result.threadId;
-          existing.alive = !!existing.threadId;
-          setPersistentThreadRecord(taskKey, existing);
-          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
-            success: true,
-            status: "completed",
-            threadId: existing.threadId,
-            result: {
-              ...result,
-              resumed: true,
-            },
-          });
-          return { ...result, resumed: true };
-        }
-
-        console.warn(
-          `${TAG} resume failed for task "${taskKey}": ${result.error}. Starting fresh.`,
-        );
-        existing.alive = false;
-        existing.lastError = result.error || existing.lastError || null;
-        setPersistentThreadRecord(taskKey, existing);
-      } else if (sdkName === "opencode" && existing.sdk === "opencode") {
-        console.log(
-          `${TAG} resuming OpenCode session ${existing.threadId} for task "${taskKey}" (turn ${existing.turnCount + 1})`,
-        );
-        const result = await launchOpencodeThread(
-          prompt,
-          cwd,
-          timeoutMs,
-          {
-            ...restExtra,
-            resumeThreadId: existing.threadId,
-            taskKey,
-          },
-        );
-
-        if (result.success) {
-          existing.turnCount += 1;
-          existing.lastUsedAt = Date.now();
-          existing.lastError = null;
-          if (result.threadId) existing.threadId = result.threadId;
-          existing.alive = !!existing.threadId;
-          setPersistentThreadRecord(taskKey, existing);
-          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
-            success: true,
-            status: "completed",
-            threadId: existing.threadId,
-            result: {
-              ...result,
-              resumed: true,
-            },
-          });
-          return { ...result, resumed: true };
-        }
-
-        console.warn(
-          `${TAG} resume failed for task "${taskKey}": ${result.error}. Starting fresh.`,
-        );
-        existing.alive = false;
-        existing.lastError = result.error || existing.lastError || null;
-        setPersistentThreadRecord(taskKey, existing);
-      } else if (existing.sdk !== sdkName) {
-        // SDK changed — invalidate old thread
-        console.log(
-          `${TAG} SDK changed from ${existing.sdk} to ${sdkName} for task "${taskKey}", starting fresh`,
-        );
-        existing.alive = false;
-        setPersistentThreadRecord(taskKey, existing);
-      } else {
-        // Non-Codex SDK: use context-carry resume
-        console.log(
-          `${TAG} context-carry resume for ${sdkName} thread, task "${taskKey}"`,
-        );
-        const result = await resumeGenericThread(
-          existing.threadId,
-          prompt,
-          cwd,
-          timeoutMs,
-          restExtra,
-          sdkName,
-        );
-
-        if (result.success) {
-          existing.turnCount += 1;
-          existing.lastUsedAt = Date.now();
-          existing.lastError = null;
-          setPersistentThreadRecord(taskKey, existing);
-          finalizeManagedExternalExecution(sessionManager, managedSessionId, {
-            success: true,
-            status: "completed",
-            threadId: existing.threadId,
-            result: {
-              ...result,
-              resumed: true,
-            },
-          });
-          return { ...result, resumed: true };
-        }
-
-        console.warn(
-          `${TAG} context-carry resume failed for task "${taskKey}": ${result.error}`,
-        );
-        existing.alive = false;
-        existing.lastError = result.error || existing.lastError || null;
-        setPersistentThreadRecord(taskKey, existing);
+    if (result?.success) {
+      existing.turnCount += 1;
+      existing.lastUsedAt = Date.now();
+      existing.lastError = null;
+      if (result.threadId) existing.threadId = result.threadId;
+      if (persistentPlan.strategy !== "resume_codex") {
+        existing.alive = !!existing.threadId;
       }
-    } // close else for turn-count / absolute-age guard
+      setPersistentThreadRecord(taskKey, existing);
+      finalizeManagedExternalExecution(sessionManager, managedSessionId, {
+        success: true,
+        status: "completed",
+        threadId: existing.threadId,
+        result: {
+          ...result,
+          resumed: true,
+        },
+      });
+      return { ...result, resumed: true };
+    }
+
+    const poisonedResumeState =
+      persistentPlan.strategy === "resume_codex"
+      && (
+        result?.poisonedResumeState
+        || result?.staleResumeState
+        || isPoisonedCodexResumeError(result?.error)
+        || isCodexResumeTimeoutError(result?.error)
+      );
+    if (poisonedResumeState) {
+      console.warn(
+        `${TAG} resume failed for task "${taskKey}" with stale or corrupted state: ${result?.error}. Dropping cached thread metadata and starting fresh.`,
+      );
+      deletePersistentThreadRecord(taskKey);
+    } else {
+      const failurePrefix = persistentPlan.strategy === "resume_generic"
+        ? `${TAG} context-carry resume failed for task "${taskKey}": ${result?.error}`
+        : `${TAG} resume failed for task "${taskKey}": ${result?.error}. Starting fresh.`;
+      console.warn(failurePrefix);
+      existing.alive = false;
+      existing.lastError = result?.error || existing.lastError || null;
+      setPersistentThreadRecord(taskKey, existing);
+    }
   }
 
   // Fresh launch — pre-register a thread as soon as the SDK exposes one.
@@ -4713,8 +4719,7 @@ export async function continueSession(sessionId, prompt, options = {}) {
     managedMetadata.providerSelection ||
     managedMetadata.adapterName ||
     undefined;
-
-  return await launchOrResumeThread(prompt, cwd, timeoutMs, {
+  bindManagedExternalSessionController(sessionManager, normalizedSessionId, {
     ...options,
     taskKey: resolvedTaskKey,
     sessionId: managedSession?.sessionId || normalizedSessionId,
@@ -4724,11 +4729,37 @@ export async function continueSession(sessionId, prompt, options = {}) {
     rootSessionId: options.rootSessionId || managedSession?.rootSessionId || undefined,
     resumeThreadId: resolvedThreadId,
     sdk: resolvedSdk,
+    cwd,
+    timeoutMs,
     metadata: {
       ...managedMetadata,
       ...toPlainObject(options.metadata),
       source: "agent-pool-continue",
       resumedFromSessionId: normalizedSessionId,
+    },
+  });
+  return await sessionManager.continueSession(normalizedSessionId, {
+    lifecycleState: "running",
+    action: "continue",
+    runRequest: {
+      ...options,
+      prompt,
+      timeoutMs,
+      cwd,
+      taskKey: resolvedTaskKey,
+      sessionId: managedSession?.sessionId || normalizedSessionId,
+      sessionScope: resolvedScope,
+      sessionType: resolvedSessionType,
+      parentSessionId: options.parentSessionId || managedSession?.parentSessionId || undefined,
+      rootSessionId: options.rootSessionId || managedSession?.rootSessionId || undefined,
+      resumeThreadId: resolvedThreadId,
+      sdk: resolvedSdk,
+      metadata: {
+        ...managedMetadata,
+        ...toPlainObject(options.metadata),
+        source: "agent-pool-continue",
+        resumedFromSessionId: normalizedSessionId,
+      },
     },
   });
 }

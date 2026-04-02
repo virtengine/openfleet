@@ -31,6 +31,12 @@ import {
 } from "../workflow/workflow-templates.mjs";
 import { discoverTelegramChats } from "../telegram/get-telegram-chat-id.mjs";
 import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
+import {
+  buildLocalConnectionEntry,
+  readRemoteConnectionConfig,
+  saveRemoteConnectionConfig,
+  setLocalConnectionConfig,
+} from "../tui/lib/connection-target.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -2625,6 +2631,22 @@ function handleApply(body) {
           : {}),
       },
     };
+
+    const localProtocol = toBooleanEnvString(envMap.TELEGRAM_UI_TLS_DISABLE, false) === "true" ? "http" : "https";
+    const localHost = String(envMap.TELEGRAM_UI_DESKTOP_HOST || envMap.TELEGRAM_UI_HOST || "127.0.0.1").trim() || "127.0.0.1";
+    const localConnection = buildLocalConnectionEntry({
+      name: "Local Backend",
+      host: localHost,
+      port: Number(envMap.TELEGRAM_UI_PORT || DEFAULT_TELEGRAM_UI_PORT),
+      protocol: localProtocol,
+    });
+    if (localConnection) {
+      const remoteConfig = setLocalConnectionConfig(
+        readRemoteConnectionConfig(bosunHome),
+        localConnection,
+      );
+      saveRemoteConnectionConfig(remoteConfig, bosunHome);
+    }
     config.workflowEngine = workflowEngineConfig;
 
     if (configJson.executorMode)               config.executorMode               = configJson.executorMode;

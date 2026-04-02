@@ -569,10 +569,34 @@ describeUiServer("ui-server mini app", () => {
     expect(await third.text()).toContain("buildSessionInsights");
   });
 
-  it("does not auto-bootstrap local static requests when BOSUN_UI_LOCAL_BOOTSTRAP is unset", async () => {
+  it("auto-bootstraps local static requests by default when BOSUN_UI_LOCAL_BOOTSTRAP is unset", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     delete process.env.BOSUN_UI_LOCAL_BOOTSTRAP;
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/app.js?native=1`, {
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(302);
+    const setCookie = response.headers.get("set-cookie") || "";
+    expect(setCookie).toContain("ve_session=");
+    const location = response.headers.get("location") || "";
+    expect(location).toContain("localBootstrap=1");
+  }, 30000);
+
+  it("allows explicitly disabling local bootstrap with BOSUN_UI_LOCAL_BOOTSTRAP=false", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_LOCAL_BOOTSTRAP = "false";
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -877,6 +901,37 @@ describeUiServer("ui-server mini app", () => {
     expect(json.providers.items.some((entry) => entry.providerId === "openai-responses")).toBe(true);
 
     rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("serves agent event monitor endpoints for the fleet tab", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const [events, status, liveness, errors] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/agents/events?limit=5`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/agents/events/status`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/agents/events/liveness`).then((r) => r.json()),
+        fetch(`http://127.0.0.1:${port}/api/agents/events/errors`).then((r) => r.json()),
+      ]);
+
+      expect(events.ok).toBe(true);
+      expect(Array.isArray(events.events)).toBe(true);
+      expect(status.ok).toBe(true);
+      expect(status).toHaveProperty("started");
+      expect(liveness.ok).toBe(true);
+      expect(Array.isArray(liveness.agents)).toBe(true);
+      expect(errors.ok).toBe(true);
+      expect(Array.isArray(errors.patterns)).toBe(true);
+    } finally {
+      mod.stopTelegramUiServer();
+    }
   }, 15000);
 
   it("returns provider inventory with auth state, capabilities, and model catalogs", async () => {

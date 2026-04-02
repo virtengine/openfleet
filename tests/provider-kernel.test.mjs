@@ -128,8 +128,8 @@ describe("provider kernel cutover", () => {
       }),
     );
     expect(result).toMatchObject({
-      output: "provider:Normalize provider runtime.",
-      finalResponse: "provider:Normalize provider runtime.",
+      output: "provider:USER: Normalize provider runtime.",
+      finalResponse: "provider:USER: Normalize provider runtime.",
       providerId: "openai-compatible",
       sessionId: "cutover-provider-session",
       threadId: "cutover-provider-thread",

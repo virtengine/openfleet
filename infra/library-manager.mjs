@@ -21,6 +21,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { nowISO, toStringArray, uniqueStrings } from "./library-manager-utils.mjs";
+import { evaluateMarkdownSafety, recordMarkdownSafetyAuditEvent } from "../lib/skill-markdown-safety.mjs";
 import {
   WELL_KNOWN_AGENT_SOURCES,
   computeWellKnownSourceTrust,
@@ -1278,15 +1279,23 @@ export function getEntry(rootDir, id) {
   return entries.find((e) => e.id === id) || null;
 }
 
+function resolveEntryFilePath(rootDir, entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const filename = typeof entry.filename === "string" ? entry.filename.trim() : "";
+  if (!filename) return "";
+  const dir = dirForType(rootDir, entry.type);
+  const filePath = resolve(dir, filename);
+  if (!filePath.startsWith(dir + sep) && filePath !== dir) return "";
+  return filePath;
+}
+
 /**
  * Get the content (file body) for an entry.
  */
 export function getEntryContent(rootDir, entry) {
   if (!entry) return null;
-  const dir = dirForType(rootDir, entry.type);
-  const filePath = resolve(dir, entry.filename);
-  // Prevent path traversal — resolved path must stay within the type directory
-  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
+  const filePath = resolveEntryFilePath(rootDir, entry);
+  if (!filePath) return null;
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
@@ -1367,18 +1376,56 @@ export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = tru
   if (idx < 0) return false;
 
   const entry = manifest.entries[idx];
-  manifest.entries.splice(idx, 1);
+  const deleteIds = new Set([entry.id]);
+  const deletedSkillId = entry.type === "skill" ? String(entry.id || "").trim() : "";
+  const sourceId = String(entry?.meta?.sourceId || "").trim();
+
+  if (deletedSkillId) {
+    for (const candidate of manifest.entries) {
+      if (!candidate || candidate.id === entry.id || candidate.type !== "agent") continue;
+      const profile = getEntryContent(rootDir, candidate);
+      if (!profile || !Array.isArray(profile.skills) || !profile.skills.includes(deletedSkillId)) continue;
+      const nextSkills = profile.skills.filter((skillId) => String(skillId || "").trim() !== deletedSkillId);
+      if (nextSkills.length === profile.skills.length) continue;
+      const filePath = resolveEntryFilePath(rootDir, candidate);
+      if (!filePath) continue;
+      writeFileSync(filePath, JSON.stringify({
+        ...profile,
+        skills: nextSkills,
+      }, null, 2) + "\n", "utf8");
+      candidate.updatedAt = nowISO();
+    }
+  }
+
+  if (deletedSkillId && sourceId) {
+    for (const candidate of manifest.entries) {
+      if (!candidate || candidate.id === entry.id) continue;
+      const candidateSourceId = String(candidate?.meta?.sourceId || "").trim();
+      const candidateTags = Array.isArray(candidate?.tags) ? candidate.tags : [];
+      if (!candidateSourceId || candidateSourceId !== sourceId) continue;
+      if (!candidateTags.includes("imported")) continue;
+      if (candidate.type === "agent" || candidate.type === "prompt" || candidate.type === "skill") {
+        deleteIds.add(candidate.id);
+      }
+    }
+  }
+
+  const deletedEntries = manifest.entries.filter((candidate) => deleteIds.has(candidate.id));
+  manifest.entries = manifest.entries.filter((candidate) => !deleteIds.has(candidate.id));
   saveManifest(rootDir, manifest);
   if (syncIndexes !== false) {
-    if (entry.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
-    if (entry.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
+    rebuildAgentProfileIndex(rootDir, manifest);
+    rebuildSkillEntryIndex(rootDir, manifest);
   }
 
   if (deleteFile) {
-    const filePath = resolve(dirForType(rootDir, entry.type), entry.filename);
-    try {
-      unlinkSync(filePath);
-    } catch { /* file may not exist */ }
+    for (const deletedEntry of deletedEntries) {
+      const filePath = resolveEntryFilePath(rootDir, deletedEntry);
+      if (!filePath) continue;
+      try {
+        unlinkSync(filePath);
+      } catch { /* file may not exist */ }
+    }
   }
   return true;
 }
@@ -2246,6 +2293,66 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
   return { files, candidates };
 }
 
+function evaluateRepositoryImportCandidateSafety(candidate, context = {}) {
+  const evaluation = evaluateMarkdownSafety(
+    candidate?.raw || candidate?.body || "",
+    {
+      sourcePath: candidate?.relPath || "",
+      repoUrl: context.repoUrl || "",
+      repo: context.repoUrl || "",
+      sourceRoot: context.checkoutDir || "",
+      documentationContext: false,
+    },
+    context.configData || {},
+  );
+  return {
+    blocked: evaluation?.blocked === true,
+    reasons: Array.isArray(evaluation?.safety?.reasons) ? evaluation.safety.reasons : [],
+    score: Number(evaluation?.safety?.score || 0),
+  };
+}
+
+function filterRepositoryImportCandidates(candidates = [], context = {}) {
+  const allowedCandidates = [];
+  const blockedCandidates = [];
+  const blockedCandidatesByType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
+
+  for (const candidate of candidates) {
+    if (!candidate || candidate.kind === "mcp") {
+      allowedCandidates.push(candidate);
+      continue;
+    }
+    const safety = evaluateRepositoryImportCandidateSafety(candidate, context);
+    if (!safety.blocked) {
+      allowedCandidates.push(candidate);
+      continue;
+    }
+    const blockedCandidate = {
+      ...candidate,
+      reasons: safety.reasons,
+      score: safety.score,
+    };
+    blockedCandidates.push(blockedCandidate);
+    blockedCandidatesByType[candidate.kind] = (blockedCandidatesByType[candidate.kind] || 0) + 1;
+    recordMarkdownSafetyAuditEvent({
+      channel: context.auditChannel || "library-import-preview",
+      sourcePath: candidate.relPath,
+      repoUrl: context.repoUrl || "",
+      reasons: safety.reasons,
+      score: safety.score,
+    }, {
+      rootDir: context.rootDir || process.cwd(),
+      policy: context.configData || {},
+    });
+  }
+
+  return {
+    candidates: allowedCandidates,
+    blockedCandidates,
+    blockedCandidatesByType,
+  };
+}
+
 function listRepositoryMcpConfigFiles(checkoutDir, { includeLegacy = false } = {}) {
   const configFiles = [
     { path: resolve(checkoutDir, ".codex", "config.toml"), format: "toml" },
@@ -2374,7 +2481,15 @@ export function scanRepositoryForImport(options = {}) {
   const checkoutDir = createRepositoryImportCheckoutDir("scan", repoUrl, branch);
 
   try {
-    const { files, candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
+    const { files, candidates: rawCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
+    const filtered = filterRepositoryImportCandidates(rawCandidates, {
+      rootDir: options?.rootDir || process.cwd(),
+      repoUrl,
+      checkoutDir,
+      configData: options?.configData || {},
+      auditChannel: "library-import-preview",
+    });
+    const candidates = [...filtered.candidates];
 
     const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
     for (const candidate of candidates) {
@@ -2411,6 +2526,8 @@ export function scanRepositoryForImport(options = {}) {
       totalCandidates: candidates.length,
       candidatesByType: byType,
       candidates,
+      blockedCandidates: filtered.blockedCandidates,
+      blockedCandidatesByType: filtered.blockedCandidatesByType,
       duplicates: duplicateMap,
       intraDuplicates: intraDuplicateMap,
     };
@@ -2617,7 +2734,15 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   );
 
   const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
-  const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
+  const { candidates: rawCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
+  const filtered = filterRepositoryImportCandidates(rawCandidates, {
+    rootDir,
+    repoUrl,
+    checkoutDir,
+    configData: options?.configData || {},
+    auditChannel: "library-import-import",
+  });
+  const candidates = filtered.candidates;
 
   const takenIds = new Set(
     listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),
@@ -2672,6 +2797,8 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     importedCount: imported.length,
     importedByType,
     imported,
+    blockedCandidates: filtered.blockedCandidates,
+    blockedCandidatesByType: filtered.blockedCandidatesByType,
   };
 }
 

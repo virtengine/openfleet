@@ -892,3 +892,31 @@
     - `node --test tests/maintenance-helper-reaper.node.test.mjs tests/monitor-self-watcher-lib.node.test.mjs`
   - live cleanup re-check passed:
     - `node -e "import('./infra/maintenance.mjs').then(async (m) => { const result = m.reapStaleBosunHelperProcesses(60 * 1000); console.log(JSON.stringify({ result }, null, 2)); })"` returned `{ "result": 0 }` after remediation.
+
+## 2026-04-03 - same-machine browser bootstrap default + bounded UI request timeouts
+
+- Goal:
+  - reduce the “half-loaded browser” failure mode where local direct browser access depends on a previously-issued hidden session token/cookie, and stop API requests from sitting pending indefinitely when the backend stalls.
+- Source changes:
+  - `server/ui-server.mjs`
+  - `ui/modules/api.js`
+  - `site/ui/modules/api.js`
+  - `tests/ui-server.test.mjs`
+- Findings:
+  - direct unauthenticated same-machine requests to `/` and `/styles/variables.css` were returning `401` when `BOSUN_UI_LOCAL_BOOTSTRAP` was unset, so local browser access could degrade into partial-auth state instead of silently re-bootstrapping a session cookie.
+  - raw Node HTTPS probes against the live server were fast (`/api/health` ~33ms on loopback, ~1ms on LAN IP), which means the “pending forever” browser symptom was not explained by a globally dead socket alone.
+  - PowerShell / curl Schannel probes to the Bosun HTTPS endpoint still failed locally while Node/OpenSSL requests succeeded, which remains a separate Windows TLS compatibility lead to investigate further.
+- Behavioral change:
+  - same-machine local static/browser requests now auto-bootstrap a session cookie by default; explicit `BOSUN_UI_LOCAL_BOOTSTRAP=false` still disables that behavior.
+  - shared UI API fetch helpers now use bounded timeouts (`12s` GET, `25s` mutation by default) so stalled requests fail into visible offline/error handling instead of remaining pending forever.
+- Validation:
+  - syntax checks passed:
+    - `node --check server/ui-server.mjs`
+    - `node --check ui/modules/api.js`
+    - `node --check site/ui/modules/api.js`
+    - `node --check tests/ui-server.test.mjs`
+  - direct route probes passed via inline Node scripts:
+    - default same-machine bootstrap now returned `302` with `Set-Cookie: ve_session=...` and `location=/app.js?native=1&localBootstrap=1`
+    - explicit `BOSUN_UI_LOCAL_BOOTSTRAP=false` returned `401` with no bootstrap cookie
+  - focused Vitest status:
+    - `npx vitest run tests/ui-server.test.mjs ...` was blocked in this environment by `failed to load config ... Error: spawn EPERM` from the esbuild startup path, so the regression intent was validated with direct runtime probes instead.

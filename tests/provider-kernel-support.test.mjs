@@ -6,6 +6,7 @@ import {
   normalizeProviderStreamEvent,
   normalizeProviderUsage,
 } from "../agent/provider-message-transform.mjs";
+import { createProviderKernel } from "../agent/provider-kernel.mjs";
 import { normalizeProviderStreamEnvelope } from "../agent/providers/provider-stream-normalizer.mjs";
 import { normalizeProviderUsageMetadata } from "../agent/providers/provider-usage-normalizer.mjs";
 import { createTurnRunner } from "../agent/harness/turn-runner.mjs";
@@ -306,6 +307,132 @@ describe("provider kernel support", () => {
     });
   });
 
+  it("creates execution sessions that expose built-in Bosun tools by default and route tool calls through the session manager", async () => {
+    const exec = vi.fn(async (message, options) => {
+      if (!String(message || "").includes("TOOL_RESULT list_subagents")) {
+        return {
+          sessionId: options.sessionId || "kernel-tool-session",
+          threadId: options.threadId || "kernel-tool-thread",
+          status: "in_progress",
+          finish_reason: "tool_calls",
+          toolCalls: [
+            {
+              id: "subagent-list-1",
+              name: "list_subagents",
+              input: {},
+            },
+          ],
+        };
+      }
+      return {
+        sessionId: options.sessionId || "kernel-tool-session",
+        threadId: options.threadId || "kernel-tool-thread",
+        status: "completed",
+        finish_reason: "stop",
+        finalResponse: "Kernel tool loop complete.",
+      };
+    });
+    const kernel = createProviderKernel({
+      providerRegistry: {
+        listProviders: () => [{
+          id: "openai-compatible",
+          providerId: "openai-compatible",
+          adapterId: "opencode-sdk",
+          defaultModel: "qwen2.5-coder:latest",
+          auth: { settings: { defaultModel: "qwen2.5-coder:latest" } },
+        }],
+        listEnabledProviders: () => [{
+          id: "openai-compatible",
+          providerId: "openai-compatible",
+          adapterId: "opencode-sdk",
+          defaultModel: "qwen2.5-coder:latest",
+          auth: { settings: { defaultModel: "qwen2.5-coder:latest" } },
+        }],
+        resolveSelection: () => ({
+          providerId: "openai-compatible",
+          selectionId: "openai-compatible",
+          adapterName: "opencode-sdk",
+          model: "qwen2.5-coder:latest",
+        }),
+        resolveProviderRuntime: () => ({
+          selection: {
+            providerId: "openai-compatible",
+            selectionId: "openai-compatible",
+            adapterName: "opencode-sdk",
+            model: "qwen2.5-coder:latest",
+          },
+          provider: {
+            id: "openai-compatible",
+            providerId: "openai-compatible",
+            adapterId: "opencode-sdk",
+            defaultModel: "qwen2.5-coder:latest",
+            auth: { settings: { defaultModel: "qwen2.5-coder:latest" } },
+          },
+        }),
+        getProvider: () => ({
+          id: "openai-compatible",
+          providerId: "openai-compatible",
+          adapterId: "opencode-sdk",
+          defaultModel: "qwen2.5-coder:latest",
+          auth: { settings: { defaultModel: "qwen2.5-coder:latest" } },
+        }),
+        getDefaultProvider: () => ({
+          id: "openai-compatible",
+          providerId: "openai-compatible",
+          adapterId: "opencode-sdk",
+          defaultModel: "qwen2.5-coder:latest",
+          auth: { settings: { defaultModel: "qwen2.5-coder:latest" } },
+        }),
+      },
+      adapters: {
+        "opencode-sdk": {
+          name: "opencode-sdk",
+          provider: "OPENCODE",
+          exec,
+        },
+      },
+      env: {},
+    });
+    const sessionManager = {
+      getSubagentControl: () => ({
+        listChildren: () => [{ childSessionId: "child-1", status: "running" }],
+      }),
+    };
+    const session = kernel.createExecutionSession({
+      selectionId: "openai-compatible",
+      provider: "openai-compatible",
+      adapterName: "opencode-sdk",
+      sessionId: "kernel-tool-session",
+      threadId: "kernel-tool-thread",
+      sessionManager,
+      cwd: process.cwd(),
+    });
+
+    const result = await session.runTurn("Use the default Bosun tool set.");
+
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(exec.mock.calls[0][1]).toMatchObject({
+      sessionId: "kernel-tool-session",
+      threadId: "kernel-tool-thread",
+      provider: "openai-compatible",
+    });
+    expect(exec.mock.calls[1][0]).toContain("TOOL_RESULT list_subagents");
+    expect(result).toMatchObject({
+      finalResponse: "Kernel tool loop complete.",
+      toolCalls: [
+        expect.objectContaining({
+          id: "subagent-list-1",
+          name: "list_subagents",
+        }),
+      ],
+      toolResults: [
+        expect.objectContaining({
+          toolCallId: "subagent-list-1",
+        }),
+      ],
+    });
+  });
+
   it("routes harness stage turns through the provider kernel instead of constructing provider sessions directly", async () => {
     const exec = vi.fn(async (message, options) => ({
       finalResponse: `kernel:${message}`,
@@ -420,7 +547,7 @@ describe("provider kernel support", () => {
     });
 
     expect(exec).toHaveBeenCalledWith(
-      "Use kernel routing",
+      expect.stringContaining("Use kernel routing"),
       expect.objectContaining({
         provider: "openai-compatible",
         providerConfig: expect.objectContaining({
@@ -430,7 +557,7 @@ describe("provider kernel support", () => {
       }),
     );
     expect(result).toMatchObject({
-      output: "kernel:Use kernel routing",
+      output: expect.stringContaining("Use kernel routing"),
       providerId: "openai-compatible",
     });
   });

@@ -11,6 +11,7 @@ import {
   getWorkflowEngine,
   resetWorkflowEngine,
 } from "../workflow/workflow-engine.mjs";
+import { getBosunSessionManager } from "../agent/session-manager.mjs";
 import {
   registerNodeType,
   getNodeType,
@@ -8428,6 +8429,40 @@ describe("Concurrency limiter", () => {
     expect(stats.queuedRuns).toBe(0);
     expect(stats.maxConcurrentRuns).toBeGreaterThanOrEqual(1);
     expect(stats.maxConcurrentBranches).toBeGreaterThanOrEqual(1);
+  });
+
+  it("getConcurrencyStats reports harness subagent pool occupancy", async () => {
+    const pool = getBosunSessionManager().getSubagentPool();
+    const lease = await pool.acquire({
+      poolId: "workflow-test-pool",
+      sessionId: "workflow-test-session",
+      maxConcurrent: 2,
+    });
+    let queuedPromise = null;
+    let queuedLease = null;
+    try {
+      queuedPromise = pool.acquire({
+        poolId: "workflow-test-pool",
+        sessionId: "workflow-test-session-2",
+        maxConcurrent: 1,
+      });
+      const stats = engine.getConcurrencyStats();
+      expect(stats.agentSlots).toEqual({
+        active: 1,
+        max: 1,
+        queued: 1,
+      });
+      pool.release(lease, { status: "completed" });
+      queuedLease = await queuedPromise;
+    } finally {
+      pool.release(lease, { status: "completed" });
+      if (!queuedLease && queuedPromise) {
+        queuedLease = await queuedPromise;
+      }
+      if (queuedLease) {
+        pool.release(queuedLease, { status: "completed" });
+      }
+    }
   });
 
   it("tracks activeRuns count during execution", async () => {

@@ -19,8 +19,10 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir, tmpdir } from "node:os";
 import {
+  ensureLocalBosunBackendRunning,
   normalizeRemoteConnectionConfig,
   setActiveRemoteConnection,
+  setLocalConnectionConfig,
   upsertRemoteConnection,
 } from "../tui/lib/connection-target.mjs";
 
@@ -432,6 +434,15 @@ function saveActiveRemoteConnectionEntry(entry = {}) {
     endpoint: entry?.endpoint,
     apiKey: entry?.apiKey,
     enabled: true,
+  });
+  return saveRemoteConnectionConfig(next);
+}
+
+function saveDesktopLocalConnectionEntry(entry = {}) {
+  const current = readRemoteConnectionConfig();
+  const next = setLocalConnectionConfig(current, {
+    name: "Local Backend",
+    ...entry,
   });
   return saveRemoteConnectionConfig(next);
 }
@@ -1176,7 +1187,36 @@ async function activateDesktopRemoteConnection(connectionId) {
   await reconnectMainWindowToActiveConnection();
 }
 
-async function activateDesktopLocalConnection() {
+async function launchDesktopLocalBackend() {
+  const result = await ensureLocalBosunBackendRunning({
+    configDir: resolveDesktopConfigDir(),
+    env: process.env,
+    timeoutMs: 20000,
+  });
+  if (!result?.ok || !result?.target) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "Local Backend Launch Failed",
+      message: "Bosun could not launch the configured local backend.",
+      detail: result?.error || "Local backend did not become reachable.",
+      buttons: ["OK"],
+    });
+    return null;
+  }
+  saveDesktopLocalConnectionEntry(result.target);
+  return result.target;
+}
+
+async function activateDesktopLocalConnection(options = {}) {
+  if (options.launch === true) {
+    const launchedTarget = await launchDesktopLocalBackend();
+    if (!launchedTarget) return;
+  } else {
+    const daemonUrl = await resolveDaemonUiUrl();
+    if (daemonUrl) {
+      saveDesktopLocalConnectionEntry({ endpoint: daemonUrl });
+    }
+  }
   const current = readRemoteConnectionConfig();
   saveRemoteConnectionConfig({
     ...current,
@@ -1194,6 +1234,14 @@ function buildConnectionSubmenu() {
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const items = [];
 
+  items.push({
+    label: "Launch Local Backend",
+    click: () => {
+      activateDesktopLocalConnection({ launch: true }).catch((err) =>
+        console.warn("[desktop] local backend launch failed:", err?.message || err),
+      );
+    },
+  });
   items.push({
     label: current.enabled ? "Use Local Backend" : "✓ Use Local Backend",
     enabled: current.enabled,
@@ -1544,6 +1592,7 @@ async function loadUiServerModule() {
 }
 
 function buildDaemonUiBaseUrl() {
+  const savedLocal = readRemoteConnectionConfig().localConnection || null;
   let rawPort = Number(process.env.TELEGRAM_UI_PORT || "");
   // If TELEGRAM_UI_PORT isn't in the process env, try reading it from the
   // bosun module's .env so the desktop detects the daemon's actual port even
@@ -1568,12 +1617,17 @@ function buildDaemonUiBaseUrl() {
   }
   const port = Number.isFinite(rawPort) && rawPort > 0
     ? rawPort
-    : DEFAULT_TELEGRAM_UI_PORT;
+    : Number(savedLocal?.port || 0) > 0
+      ? Number(savedLocal.port)
+      : DEFAULT_TELEGRAM_UI_PORT;
   const tlsDisabled = parseBoolEnv(process.env.TELEGRAM_UI_TLS_DISABLE, false);
-  const protocol = tlsDisabled ? "http" : "https";
+  const protocol = tlsDisabled
+    ? "http"
+    : String(savedLocal?.httpProtocol || "").trim() || "https";
   const host =
     process.env.TELEGRAM_UI_DESKTOP_HOST ||
     process.env.TELEGRAM_UI_HOST ||
+    savedLocal?.host ||
     "127.0.0.1";
   return `${protocol}://${host}:${port}`;
 }
@@ -1832,11 +1886,11 @@ async function showConnectionChoiceDialog() {
     title: "Bosun — No Running Instance Detected",
     message: "Bosun couldn't find a running daemon.\nHow would you like to proceed?",
     detail: [
-      "• Start Local — launch Bosun in this process (default)",
+      "• Launch Local Backend — start or reconnect the configured Bosun daemon",
       "• Connect to Remote — connect to an external Bosun instance (Docker, VM, cloud)",
       "• Continue Offline — open the portal in offline mode",
     ].join("\n"),
-    buttons: ["Start Local", "Connect to Remote", "Continue Offline"],
+    buttons: ["Launch Local Backend", "Connect to Remote", "Continue Offline"],
     defaultId: 0,
     cancelId: 2,
     noLink: true,
@@ -2160,13 +2214,14 @@ async function createMainWindow() {
     if (!remoteReachable && !(remote.enabled && remote.endpoint)) {
       await setLoadingMessage("No running Bosun instance detected...");
       const choice = await showConnectionChoiceDialog();
-      if (choice === "remote") {
+      if (choice === "local") {
+        await activateDesktopLocalConnection({ launch: true });
+      } else if (choice === "remote") {
         const config = await showRemoteConnectionInputDialog();
         if (config) {
           saveActiveRemoteConnectionEntry(config);
         }
       }
-      // "local" choice: we already tried; buildUiUrl will fall back to in-process server
       // "offline" choice: continue with in-process server
     }
   }

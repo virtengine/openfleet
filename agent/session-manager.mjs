@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
 
+/**
+ * Canonical architecture note:
+ * Session lifecycle, lineage, replay/resume state, and subagent-linked session
+ * ownership are centralized here. Legacy entrypoints may delegate into this
+ * manager, but they must not retain hidden lifecycle rules outside the session
+ * manager, thread registry, and subagent-control control plane.
+ */
+
 import { createAgentLoop } from "./harness/agent-loop.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import { createInternalHarnessRuntime } from "./internal-harness-runtime.mjs";
@@ -979,7 +987,12 @@ function createInternalSessionManager(defaultOptions = {}) {
       });
       const controller = getSessionController(normalizedSessionId);
       if (controller?.run) {
-        return controller.run(input.runRequest || {});
+        return controller.run({
+          ...(toPlainObject(input.runRequest)),
+          sessionId: normalizedSessionId,
+          action: input.action || "continue",
+          lifecycleState,
+        });
       }
       return next || cloneValue(managed);
     },
@@ -1038,6 +1051,43 @@ function createInternalSessionManager(defaultOptions = {}) {
     },
     getSessionController(sessionId) {
       return getSessionController(sessionId);
+    },
+    bindExternalController(sessionId, controller = {}) {
+      const normalizedSessionId = toTrimmedString(sessionId);
+      if (!normalizedSessionId) return null;
+      const normalizedController = {
+        ...(typeof controller === "object" && controller !== null ? controller : {}),
+      };
+      if (
+        typeof normalizedController.run !== "function"
+        && typeof normalizedController.abort !== "function"
+        && typeof normalizedController.steer !== "function"
+      ) {
+        throw new Error("bindExternalController requires at least one run, abort, or steer function");
+      }
+      setSessionController(normalizedSessionId, normalizedController);
+      const managed = sessions.get(normalizedSessionId);
+      if (!managed) {
+        return normalizedController;
+      }
+      const next = captureLifecycleReplay(managed, "external_controller_bound", {
+        status: managed.status,
+        threadId: managed.activeThreadId,
+        meta: {
+          capabilities: {
+            run: typeof normalizedController.run === "function",
+            abort: typeof normalizedController.abort === "function",
+            steer: typeof normalizedController.steer === "function",
+          },
+        },
+      });
+      return cloneValue(next);
+    },
+    clearSessionController(sessionId) {
+      const normalizedSessionId = toTrimmedString(sessionId);
+      if (!normalizedSessionId) return false;
+      setSessionController(normalizedSessionId, null);
+      return true;
     },
     spawnSubagent(profileSourceOrCompiled, options = {}) {
       return this.createSubagentSession(profileSourceOrCompiled, options);

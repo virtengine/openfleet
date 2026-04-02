@@ -2,6 +2,83 @@ function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
 
+function isTruthyQueryValue(value) {
+  return /^(1|true|yes)$/i.test(toTrimmedString(value));
+}
+
+function trimText(value, maxLength = 400) {
+  const text = value == null ? "" : String(value);
+  if (!text) return text;
+  if (!Number.isFinite(Number(maxLength)) || maxLength <= 0) return text;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function compactSessionMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== "object") return {};
+  const compact = {};
+  const keys = [
+    "agent",
+    "mode",
+    "model",
+    "agentProfileId",
+    "workspaceId",
+    "workspaceDir",
+    "workspaceRoot",
+    "source",
+    "visibility",
+    "hidden",
+    "hiddenInLists",
+  ];
+  for (const key of keys) {
+    if (metadata[key] !== undefined) compact[key] = metadata[key];
+  }
+  return compact;
+}
+
+function compactSessionInsights(insights = {}) {
+  if (!insights || typeof insights !== "object") return {};
+  const compact = {};
+  const keys = [
+    "totals",
+    "fileCounts",
+    "contextWindow",
+    "contextBreakdown",
+    "tokenUsage",
+    "runtimeHealth",
+    "lastActionAt",
+  ];
+  for (const key of keys) {
+    if (insights[key] !== undefined) compact[key] = insights[key];
+  }
+  if (Array.isArray(insights.topTools)) compact.topTools = insights.topTools.slice(0, 5);
+  if (Array.isArray(insights.recentActions)) compact.recentActions = insights.recentActions.slice(0, 6);
+  return compact;
+}
+
+function compactSessionListItem(session = {}) {
+  if (!session || typeof session !== "object") return session;
+  const compact = { ...session };
+  const messageCount = Array.isArray(compact.messages) ? compact.messages.length : undefined;
+  const turnCountFromRows = Array.isArray(compact.turns) ? compact.turns.length : 0;
+  if (messageCount != null) compact.messageCount = messageCount;
+  compact.turnCount = Math.max(Number(compact.turnCount || 0), turnCountFromRows);
+  compact.preview = trimText(compact.preview, 280);
+  compact.lastMessage = trimText(compact.lastMessage, 280);
+  compact.summary = trimText(compact.summary, 400);
+  if (compact.metadata && typeof compact.metadata === "object") {
+    compact.metadata = compactSessionMetadata(compact.metadata);
+  }
+  if (compact.insights && typeof compact.insights === "object") {
+    compact.insights = compactSessionInsights(compact.insights);
+  }
+  if (Array.isArray(compact.topTools)) compact.topTools = compact.topTools.slice(0, 5);
+  if (Array.isArray(compact.recentActions)) compact.recentActions = compact.recentActions.slice(0, 6);
+  delete compact.messages;
+  delete compact.turns;
+  delete compact.trajectory;
+  return compact;
+}
+
 function resolveRequestWorkspace(url, deps, allowAll = true) {
   return deps.resolveWorkspaceContextFromRequest(url, { allowAll });
 }
@@ -87,7 +164,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     sessionRunAbortControllers,
     readJsonBody,
     resolveSessionWorkspaceDir,
-    resolveExecPrimaryPrompt,
+    resolveInteractiveSessionExecutor,
     readMultipartForm,
     sanitizePathSegment,
     ATTACHMENTS_ROOT,
@@ -205,6 +282,9 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const includeHidden = /^(1|true|yes)$/i.test(toTrimmedString(url.searchParams.get("includeHidden") || ""));
       const typeFilter = url.searchParams.get("type");
       const statusFilter = url.searchParams.get("status");
+      const wantsFull = isTruthyQueryValue(url.searchParams.get("full"));
+      const parsedLimit = Number(url.searchParams.get("limit"));
+      const parsedOffset = Number(url.searchParams.get("offset"));
       const requestedWorkspace = toTrimmedString(url.searchParams.get("workspace") || "").toLowerCase();
       const allowLegacyWithoutWorkspace =
         !typeFilter
@@ -221,9 +301,28 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       sessions = sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, {
         allowLegacyWithoutWorkspace,
       }));
+      const total = sessions.length;
+      const offset = Number.isFinite(parsedOffset) && parsedOffset > 0
+        ? Math.min(Math.trunc(parsedOffset), total)
+        : 0;
+      const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.max(1, Math.min(Math.trunc(parsedLimit), 500))
+        : 0;
+      const pagedSessions = limit > 0
+        ? sessions.slice(offset, offset + limit)
+        : sessions;
+      const responseSessions = wantsFull
+        ? pagedSessions
+        : pagedSessions.map((session) => compactSessionListItem(session));
       jsonResponse(res, 200, {
         ok: true,
-        sessions,
+        sessions: responseSessions,
+        pagination: {
+          total,
+          offset,
+          limit: limit > 0 ? limit : total,
+          hasMore: limit > 0 ? offset + pagedSessions.length < total : false,
+        },
         loadMeta: {
           stale: false,
           lastSuccessAt: new Date().toISOString(),
@@ -476,10 +575,9 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         userMessageRecorded = true;
       };
 
-      let exec = session.type === "primary" ? deps.uiDeps.execPrimaryPrompt : null;
-      if (!exec && session.type === "primary") {
-        exec = await resolveExecPrimaryPrompt();
-      }
+      const exec = session.type === "primary"
+        ? await resolveInteractiveSessionExecutor()
+        : null;
       if (exec) {
         const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
         recordUserMessageOnce();

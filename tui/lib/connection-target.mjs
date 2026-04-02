@@ -1,10 +1,15 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const REMOTE_CONNECTION_FILE = "remote-connection.json";
 const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
+const DEFAULT_LOCAL_CONNECTION_NAME = "Local Backend";
+const DEFAULT_LOCAL_HOST = "127.0.0.1";
+const DEFAULT_LOCAL_PORT = 3080;
 
 function toTrimmedString(value) {
   return String(value ?? "").trim();
@@ -23,6 +28,37 @@ function normalizeConnectionName(entry, index) {
     || toTrimmedString(entry?.label)
     || toTrimmedString(entry?.endpoint)
     || `Connection ${index + 1}`;
+}
+
+export function buildLocalConnectionEntry(entry = {}) {
+  const name = toTrimmedString(entry?.name) || DEFAULT_LOCAL_CONNECTION_NAME;
+  const parsed = parseConnectionEndpoint(
+    entry?.endpoint || "",
+    entry?.httpProtocol || entry?.protocol || "http",
+  );
+  const port = parsed?.port || Number(entry?.port || 0);
+  if (!Number.isFinite(port) || port <= 0) {
+    return null;
+  }
+
+  const httpProtocol = parsed?.httpProtocol
+    || normalizeHttpProtocol(entry?.httpProtocol || entry?.protocol || "http");
+  const host = parsed?.host
+    || toTrimmedString(entry?.host || DEFAULT_LOCAL_HOST)
+    || DEFAULT_LOCAL_HOST;
+
+  return {
+    name,
+    endpoint: `${httpProtocol}://${host}:${port}`,
+    host,
+    port,
+    protocol: httpProtocol === "https" ? "wss" : "ws",
+    httpProtocol,
+  };
+}
+
+function normalizeLocalConnectionConfig(raw = {}) {
+  return buildLocalConnectionEntry(raw) || null;
 }
 
 export function normalizeRemoteConnectionConfig(raw = {}) {
@@ -75,6 +111,7 @@ export function normalizeRemoteConnectionConfig(raw = {}) {
     apiKey: activeConnection?.apiKey || "",
     name: activeConnection?.name || "",
     connections: normalizedConnections,
+    localConnection: normalizeLocalConnectionConfig(raw?.localConnection || raw?.local || {}),
   };
 }
 
@@ -127,6 +164,18 @@ export function upsertRemoteConnection(config = {}, entry = {}, options = {}) {
   });
 }
 
+export function setLocalConnectionConfig(config = {}, entry = {}) {
+  const normalized = normalizeRemoteConnectionConfig(config);
+  const nextLocalConnection = buildLocalConnectionEntry({
+    ...normalized.localConnection,
+    ...entry,
+  });
+  return normalizeRemoteConnectionConfig({
+    ...normalized,
+    localConnection: nextLocalConnection,
+  });
+}
+
 export function defaultConfigDir() {
   const explicit = toTrimmedString(
     process.env.BOSUN_DIR
@@ -138,12 +187,12 @@ export function defaultConfigDir() {
 }
 
 export function normalizeWsProtocol(protocol) {
-  const value = toTrimmedString(protocol).toLowerCase();
-  return value === "wss" ? "wss" : "ws";
+  const value = toTrimmedString(protocol).toLowerCase().replace(/:$/, "");
+  return value === "wss" || value === "https" ? "wss" : "ws";
 }
 
 export function normalizeHttpProtocol(protocol) {
-  const value = toTrimmedString(protocol).toLowerCase();
+  const value = toTrimmedString(protocol).toLowerCase().replace(/:$/, "");
   return value === "https" || value === "wss" ? "https" : "http";
 }
 
@@ -187,8 +236,17 @@ export function saveRemoteConnectionConfig(
 }
 
 export function clearRemoteConnectionConfig(configDir = defaultConfigDir()) {
+  const current = readRemoteConnectionConfig(configDir);
   return saveRemoteConnectionConfig(
-    { enabled: false, activeConnectionId: "", endpoint: "", apiKey: "", connections: [] },
+    {
+      ...current,
+      enabled: false,
+      activeConnectionId: "",
+      endpoint: "",
+      apiKey: "",
+      name: "",
+      connections: [],
+    },
     configDir,
   );
 }
@@ -224,12 +282,16 @@ export function resolveLocalTuiConnectionTarget(options = {}) {
   const configDir = options.configDir || defaultConfigDir();
   const env = options.env || process.env;
   const config = options.config || {};
+  const savedConfig = normalizeRemoteConnectionConfig(
+    options.connectionConfig || readRemoteConnectionConfig(configDir),
+  );
   const defaultPort = Number(
     env.TELEGRAM_UI_PORT
       || env.BOSUN_PORT
       || config?.telegramUiPort
-      || 3080,
-  ) || 3080;
+      || savedConfig.localConnection?.port
+      || DEFAULT_LOCAL_PORT,
+  ) || DEFAULT_LOCAL_PORT;
 
   const instance = readUiInstanceLock(configDir);
   if (instance?.url || instance?.host || instance?.port) {
@@ -257,6 +319,14 @@ export function resolveLocalTuiConnectionTarget(options = {}) {
     };
   }
 
+  if (savedConfig.localConnection?.endpoint) {
+    return {
+      ...savedConfig.localConnection,
+      apiKey: "",
+      source: "saved-local",
+    };
+  }
+
   return {
     endpoint: `http://127.0.0.1:${defaultPort}`,
     host: "127.0.0.1",
@@ -265,6 +335,114 @@ export function resolveLocalTuiConnectionTarget(options = {}) {
     httpProtocol: "http",
     apiKey: "",
     source: "default-local",
+  };
+}
+
+function resolveBosunRuntimeRoot() {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+function resolveBosunCliPath() {
+  return resolve(resolveBosunRuntimeRoot(), "cli.mjs");
+}
+
+function delay(ms) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+export async function ensureLocalBosunBackendRunning(options = {}) {
+  const configDir = options.configDir || defaultConfigDir();
+  const env = options.env || process.env;
+  const config = options.config || {};
+  const timeoutMs = Math.max(2000, Number(options.timeoutMs || 20000));
+  const probeTimeoutMs = Math.min(4000, timeoutMs);
+  const resolveTarget = () => resolveLocalTuiConnectionTarget({ configDir, config, env });
+
+  let target = resolveTarget();
+  let probe = await testConnectionTarget(target, "", { timeoutMs: probeTimeoutMs });
+  if (probe.ok) {
+    const saved = saveRemoteConnectionConfig(
+      setLocalConnectionConfig(readRemoteConnectionConfig(configDir), target),
+      configDir,
+    );
+    return {
+      ok: true,
+      started: false,
+      pid: null,
+      target: {
+        ...target,
+        source: target.source || (saved.localConnection?.endpoint ? "saved-local" : ""),
+      },
+      error: "",
+    };
+  }
+
+  const cliPath = resolveBosunCliPath();
+  if (!existsSync(cliPath)) {
+    return {
+      ok: false,
+      started: false,
+      pid: null,
+      target,
+      error: `CLI not found at ${cliPath}`,
+    };
+  }
+
+  let pid = null;
+  try {
+    const args = [cliPath, "--daemon", "--no-update-check"];
+    if (configDir) {
+      args.push("--config-dir", resolve(configDir));
+    }
+    const child = spawn(process.execPath, args, {
+      cwd: resolveBosunRuntimeRoot(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...env,
+        BOSUN_CONNECTION_AUTO_LAUNCH: "1",
+      },
+    });
+    child.unref();
+    pid = Number(child.pid || 0) || null;
+  } catch (error) {
+    return {
+      ok: false,
+      started: false,
+      pid: null,
+      target,
+      error: String(error?.message || "Failed to launch local backend"),
+    };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await delay(500);
+    target = resolveTarget();
+    probe = await testConnectionTarget(target, "", { timeoutMs: 2000 });
+    if (probe.ok) {
+      saveRemoteConnectionConfig(
+        setLocalConnectionConfig(readRemoteConnectionConfig(configDir), target),
+        configDir,
+      );
+      return {
+        ok: true,
+        started: true,
+        pid,
+        target,
+        error: "",
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    started: true,
+    pid,
+    target,
+    error: `Local backend did not become reachable within ${Math.round(timeoutMs / 1000)}s`,
   };
 }
 

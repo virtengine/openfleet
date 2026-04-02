@@ -8,7 +8,7 @@ describe("library agent type + bosun tools regressions", () => {
     expect(source).toContain('const agentTypeRaw = String(url.searchParams.get("agentType") || "").trim().toLowerCase()');
     expect(source).toContain("entry?.agentType");
     expect(source).toContain('return String(entry?.agentType || "").trim().toLowerCase() === agentTypeRaw;');
-    expect(source).toContain("manualAgents");
+    expect(source).toContain("resolveAgentProfileLibraryView(entry, profile, rootInfo.scope)");
   });
 
   it("keeps bosun runtime tool toggles independent from built-in defaults", () => {

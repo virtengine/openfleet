@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
+import { createQueryEngine } from "./query-engine.mjs";
 import {
   getHarnessRunFromStateLedger,
   listHarnessRunsFromStateLedger,
@@ -20,6 +21,11 @@ function toTrimmedString(value) {
 function normalizeValidationMode(value) {
   const normalized = toTrimmedString(value).toLowerCase();
   return ["off", "report", "enforce"].includes(normalized) ? normalized : "report";
+}
+
+function toPositiveInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : fallback;
 }
 
 export function resolveHarnessControlPlanePaths(configDir) {
@@ -453,4 +459,178 @@ export function summarizeHarnessRuns(configDir, options = {}) {
 
 export function shouldEnforceHarnessValidation(validationMode) {
   return normalizeValidationMode(validationMode) === "enforce";
+}
+
+export function createHarnessFailoverController(options = {}) {
+  const queryEngine = options.queryEngine || createQueryEngine(options.queryEngineOptions || options);
+  return {
+    policy: queryEngine.policy,
+    clearAdapterFailureState(adapterName) {
+      return queryEngine.clearAdapterFailureState(adapterName);
+    },
+    noteAdapterFailure(adapterName, err) {
+      return queryEngine.noteAdapterFailure(adapterName, err);
+    },
+    async executeTurn(request = {}) {
+      return await queryEngine.executeTurn(request);
+    },
+  };
+}
+
+export function createHarnessProviderSessionRuntime(options = {}) {
+  const launchers = options.launchers && typeof options.launchers === "object"
+    ? { ...options.launchers }
+    : {};
+  const resumers = options.resumers && typeof options.resumers === "object"
+    ? { ...options.resumers }
+    : {};
+  const recoverers = options.recoverers && typeof options.recoverers === "object"
+    ? { ...options.recoverers }
+    : {};
+
+  async function defaultRecoverer({ adapter }) {
+    if (!adapter) return;
+    if (typeof adapter.reset === "function") {
+      await adapter.reset();
+    }
+    if (typeof adapter.init === "function") {
+      await adapter.init();
+    }
+  }
+
+  return {
+    async launchSession(input = {}) {
+      const sdkName = toTrimmedString(input.sdkName || input.sdk);
+      const launcher = launchers[sdkName];
+      if (typeof launcher !== "function") {
+        throw new Error(`No launch handler is registered for SDK "${sdkName || "unknown"}"`);
+      }
+      return await launcher(
+        input.prompt,
+        input.cwd,
+        input.timeoutMs,
+        input.extra || {},
+      );
+    },
+    async resumeSession(input = {}) {
+      const strategy = toTrimmedString(input.strategy);
+      const resumeHandler =
+        resumers[strategy]
+        || resumers[toTrimmedString(input.sdkName || input.sdk)]
+        || null;
+      if (typeof resumeHandler !== "function") {
+        throw new Error(`No resume handler is registered for strategy "${strategy || "unknown"}"`);
+      }
+      return await resumeHandler(
+        input.threadId,
+        input.prompt,
+        input.cwd,
+        input.timeoutMs,
+        input.extra || {},
+        input.sdkName || input.sdk,
+      );
+    },
+    async recoverSession(input = {}) {
+      const adapterName = toTrimmedString(input.adapterName);
+      const recoverHandler = recoverers[adapterName] || options.defaultRecoverer || defaultRecoverer;
+      return await recoverHandler(input);
+    },
+  };
+}
+
+export function planPersistentThreadExecution(input = {}) {
+  const taskKey = toTrimmedString(input.taskKey);
+  const requestedSdk = toTrimmedString(input.requestedSdk || input.sdk);
+  const existingRecord = input.existingRecord && typeof input.existingRecord === "object"
+    ? { ...input.existingRecord }
+    : null;
+  const maxThreadTurns = toPositiveInteger(input.maxThreadTurns, 0) || 0;
+  const warningThreshold = toPositiveInteger(input.warningThreshold, 0) || 0;
+  const absoluteAgeMs = toPositiveInteger(input.absoluteAgeMs, 0) || 0;
+  const refreshTurnsRemaining = toPositiveInteger(input.monitorRefreshTurnsRemaining, 0) || 0;
+  const monitorTaskKey = toTrimmedString(input.monitorTaskKey);
+  const nowMs = Number.isFinite(Number(input.nowMs)) ? Number(input.nowMs) : Date.now();
+  const result = {
+    action: "launch_fresh",
+    strategy: "launch_fresh",
+    reason: existingRecord?.threadId ? "fresh_launch_required" : "no_persistent_thread",
+    requestedSdk: requestedSdk || null,
+    threadId: toTrimmedString(existingRecord?.threadId || "") || null,
+    warnings: [],
+    invalidateRecord: false,
+    deleteRecord: false,
+    markRecordDead: false,
+    staleResumeState: false,
+    turnsRemaining: maxThreadTurns > 0 ? maxThreadTurns - Number(existingRecord?.turnCount || 0) : null,
+  };
+
+  if (!taskKey || !existingRecord || existingRecord.alive !== true || !result.threadId) {
+    return result;
+  }
+
+  const turnCount = Number(existingRecord.turnCount || 0);
+  const turnsRemaining = result.turnsRemaining;
+
+  if (
+    monitorTaskKey
+    && taskKey === monitorTaskKey
+    && Number.isFinite(turnsRemaining)
+    && turnsRemaining <= refreshTurnsRemaining
+  ) {
+    return {
+      ...result,
+      reason: "monitor_refresh_threshold",
+      invalidateRecord: true,
+      markRecordDead: true,
+      warnings: [
+        `proactively refreshing monitor-monitor thread with ${turnsRemaining} turns remaining`,
+      ],
+    };
+  }
+
+  if (warningThreshold > 0 && maxThreadTurns > 0 && turnCount >= warningThreshold && turnCount < maxThreadTurns) {
+    result.warnings.push(
+      `thread for task "${taskKey}" approaching exhaustion: ${turnCount}/${maxThreadTurns} turns (${turnsRemaining} remaining)`,
+    );
+  }
+
+  if (maxThreadTurns > 0 && turnCount >= maxThreadTurns) {
+    return {
+      ...result,
+      reason: "turn_limit_exceeded",
+      invalidateRecord: true,
+      markRecordDead: true,
+    };
+  }
+
+  if (absoluteAgeMs > 0 && nowMs - Number(existingRecord.createdAt || 0) > absoluteAgeMs) {
+    return {
+      ...result,
+      reason: "absolute_age_exceeded",
+      invalidateRecord: true,
+      markRecordDead: true,
+    };
+  }
+
+  if (requestedSdk && toTrimmedString(existingRecord.sdk) && requestedSdk !== toTrimmedString(existingRecord.sdk)) {
+    return {
+      ...result,
+      reason: "sdk_changed",
+      invalidateRecord: true,
+      markRecordDead: true,
+    };
+  }
+
+  let strategy = "resume_generic";
+  if (requestedSdk === "codex" && toTrimmedString(existingRecord.sdk) === "codex") strategy = "resume_codex";
+  else if (requestedSdk === "copilot" && toTrimmedString(existingRecord.sdk) === "copilot") strategy = "resume_copilot";
+  else if (requestedSdk === "claude" && toTrimmedString(existingRecord.sdk) === "claude") strategy = "resume_claude";
+  else if (requestedSdk === "opencode" && toTrimmedString(existingRecord.sdk) === "opencode") strategy = "resume_opencode";
+
+  return {
+    ...result,
+    action: "resume_existing",
+    strategy,
+    reason: "resume_existing",
+  };
 }

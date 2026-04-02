@@ -257,7 +257,7 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
     expect(monitorSource).toContain("review-fix-redispatch");
     expect(monitorSource).toContain("re-dispatching inreview session");
-    expect(monitorSource).toContain("mode=REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH");
+    expect(monitorSource).toContain("mode: REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH");
     expect(monitorSource).toContain('taskPatch.status = "todo";');
     expect(monitorSource).toContain("taskPatch.sessionId = null;");
     expect(monitorSource).toContain("taskPatch.latestSessionId = null;");
@@ -370,11 +370,11 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     // Stale shared-state alone is only allowed to override a lingering thread
     // record; it must not override active workflow-run evidence.
     expect(executorSource).toContain("if (this.workflowOwnsTaskLifecycle) {");
-    expect(executorSource).toContain("const hasRecentWorkflowRunEvidence =");
+    expect(executorSource).toContain("const recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(");
     expect(executorSource).toContain("const hasWorkflowEvidence =");
     expect(executorSource).toContain("const hasWorkflowLiveness =");
-    expect(executorSource).toContain("this._collectRecentWorkflowEvidenceCandidates(");
-    expect(executorSource).toContain("this._workflowRunCandidateHasRecentEvidence(candidate)");
+    expect(executorSource).toContain("this._resolveRecentWorkflowEvidence(");
+    expect(executorSource).toContain("activeWorkflowEvidenceByTaskId");
     expect(executorSource).toContain(
       "if (hasWorkflowEvidence) {",
     );

@@ -50287,6 +50287,115 @@
       ]
     },
     {
+      "id": "queued-execution-plan",
+      "name": "Queued Execution Plan",
+      "description": "Turn a large implementation plan into a Bosun-native queued run with step-level observability, lane ownership, dependency edges, and optional task-graph creation.",
+      "icon": "workflow",
+      "category": "planning",
+      "tags": [
+        "planning",
+        "queue",
+        "dag",
+        "sprint",
+        "subtasks",
+        "agents"
+      ],
+      "builtin": true,
+      "version": "1.0.0",
+      "fields": [
+        {
+          "id": "planTitle",
+          "label": "Plan Title",
+          "type": "text",
+          "placeholder": "Bosun Internal Harness Adoption",
+          "defaultValue": "",
+          "required": true,
+          "helpText": "Human-readable title for the queued plan and any tasks created from it."
+        },
+        {
+          "id": "objective",
+          "label": "Objective",
+          "type": "textarea",
+          "placeholder": "Describe the end state this queue is intended to deliver.",
+          "defaultValue": "",
+          "required": true,
+          "helpText": "Used in observability, run summaries, and generated task descriptions."
+        },
+        {
+          "id": "planDocument",
+          "label": "Plan Document",
+          "type": "textarea",
+          "placeholder": "Paste headings like ## Step 1 A: ... with the prompt body beneath each heading.",
+          "defaultValue": "",
+          "required": true,
+          "helpText": "Accepts the 12-step queue format used in Bosun planning docs, or a JSON array of step objects. Headings like '## Step 1 A: Title' are parsed automatically."
+        },
+        {
+          "id": "queueStrategy",
+          "label": "Queue Strategy",
+          "type": "select",
+          "defaultValue": "agent-lane-queue",
+          "options": [
+            {
+              "label": "Agent Lane Queue",
+              "value": "agent-lane-queue"
+            },
+            {
+              "label": "Global Sequential",
+              "value": "global-sequential"
+            },
+            {
+              "label": "Explicit Dependencies Only",
+              "value": "explicit-only"
+            }
+          ],
+          "required": true,
+          "helpText": "Controls default dependencies when the plan document does not declare them explicitly."
+        },
+        {
+          "id": "createTasks",
+          "label": "Create Task Graph",
+          "type": "toggle",
+          "defaultValue": true,
+          "helpText": "Create Bosun tasks and dependency edges for each parsed step when task APIs are available."
+        },
+        {
+          "id": "taskPriority",
+          "label": "Task Priority",
+          "type": "select",
+          "defaultValue": "high",
+          "options": [
+            {
+              "label": "Critical",
+              "value": "critical"
+            },
+            {
+              "label": "High",
+              "value": "high"
+            },
+            {
+              "label": "Medium",
+              "value": "medium"
+            },
+            {
+              "label": "Low",
+              "value": "low"
+            }
+          ],
+          "required": true
+        },
+        {
+          "id": "sprintId",
+          "label": "Sprint ID",
+          "type": "text",
+          "placeholder": "optional-sprint-id",
+          "defaultValue": "",
+          "required": false,
+          "helpText": "Optional sprint assignment applied to created step tasks when Bosun sprint APIs are available."
+        }
+      ]
+    },
+    {
       "id": "research-agent",
       "name": "Research Agent (Aletheia-Style)",
       "description": "Launch an iterative research agent inspired by Google DeepMind's Aletheia. Generates a candidate solution, verifies it with an independent model, and iterates through revision or full regeneration cycles until convergence. Supports literature search, configurable iteration limits, and multi-domain research.",

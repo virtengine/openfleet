@@ -1,3 +1,11 @@
+/**
+ * Canonical architecture note:
+ * Tool registration, execution routing, approvals, retry policy, network
+ * policy, sandbox policy, and truncation semantics are owned here. Surface
+ * wrappers may adapt transport or UX, but they must not co-own tool-control
+ * rules outside this orchestrator contract.
+ */
+
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { getAgentToolConfig, getEffectiveTools, listAvailableTools } from "./agent-tool-config.mjs";
 import { createBuiltinToolDefinitions } from "./tool-builtin-catalog.mjs";

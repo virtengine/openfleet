@@ -3,7 +3,6 @@ import htm from "htm";
 import * as ink from "ink";
 
 import {
-  clearRemoteConnectionConfig,
   listRemoteConnections,
   readRemoteConnectionConfig,
   saveRemoteConnectionConfig,
@@ -22,7 +21,7 @@ const useInput = ink.useInput ?? ink.default?.useInput;
 
 const html = htm.bind(React.createElement);
 
-const FOCUS_ORDER = ["endpoint", "apiKey", "test", "save", "local"];
+const FOCUS_ORDER = ["endpoint", "apiKey", "test", "save", "launch", "local"];
 
 function clampIndex(value) {
   if (value < 0) return FOCUS_ORDER.length - 1;
@@ -59,6 +58,7 @@ export default function ConnectionSetupScreen({
   initialApiKey = "",
   initialError = "",
   onConnect,
+  onLaunchLocal,
   onUseLocal,
   onInputCaptureChange,
 }) {
@@ -87,6 +87,7 @@ export default function ConnectionSetupScreen({
   const canSubmit = useMemo(() => String(endpoint || "").trim().length > 0 && !busy, [busy, endpoint]);
   const savedConnections = useMemo(() => listRemoteConnections(savedConfig), [savedConfig]);
   const selectedConnection = savedConnections[selectedConnectionIndex] || null;
+  const localConnection = savedConfig.localConnection || null;
 
   useEffect(() => {
     setSavedConfig(readRemoteConnectionConfig(configDir));
@@ -177,11 +178,34 @@ export default function ConnectionSetupScreen({
 
   async function useLocalFallback() {
     if (busy) return;
-    clearRemoteConnectionConfig(configDir);
-    setStatusLine("Saved remote connection cleared. Switching to local attach...");
+    const currentConfig = readRemoteConnectionConfig(configDir);
+    const nextConfig = saveRemoteConnectionConfig({
+      ...currentConfig,
+      enabled: false,
+    }, configDir);
+    setSavedConfig(nextConfig);
+    setStatusLine("Switching to local attach...");
     setErrorLine("");
     if (typeof onUseLocal === "function") {
       await onUseLocal();
+    }
+  }
+
+  async function launchLocalBackend() {
+    if (busy || typeof onLaunchLocal !== "function") return;
+    setBusy(true);
+    setErrorLine("");
+    setStatusLine("Launching local backend...");
+    try {
+      const target = await onLaunchLocal();
+      if (target?.endpoint) {
+        setStatusLine(`Local backend ready at ${target.endpoint}`);
+      }
+    } catch (error) {
+      setErrorLine(String(error?.message || "Failed to launch local backend"));
+      setStatusLine("");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -205,6 +229,10 @@ export default function ConnectionSetupScreen({
       return;
     }
     if (key.ctrl && input?.toLowerCase() === "l") {
+      void launchLocalBackend();
+      return;
+    }
+    if (key.ctrl && input?.toLowerCase() === "u") {
       void useLocalFallback();
       return;
     }
@@ -249,6 +277,10 @@ export default function ConnectionSetupScreen({
         void saveAndConnect();
         return;
       }
+      if (activeField === "launch") {
+        void launchLocalBackend();
+        return;
+      }
       if (activeField === "local") {
         void useLocalFallback();
         return;
@@ -263,7 +295,7 @@ export default function ConnectionSetupScreen({
         Bosun could not connect to the configured instance. Update the endpoint, test it, then save to attach.
       <//>
       <${Text} dimColor>
-        [Tab] next  [Ctrl+T] test  [Ctrl+S] save & connect  [Ctrl+W] switch saved  [Ctrl+L] use local
+        [Tab] next  [Ctrl+T] test  [Ctrl+S] save & connect  [Ctrl+W] switch saved  [Ctrl+L] launch local  [Ctrl+U] use local
       <//>
 
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
@@ -279,6 +311,15 @@ export default function ConnectionSetupScreen({
           : html`<${Text} dimColor>No saved remote connections yet.<//>`}
         <${Text} dimColor>[Left/Right] select saved connection<//>
       <//>
+
+      ${localConnection?.endpoint
+        ? html`
+            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} bold>Local Backend<//>
+              <${Text}>${localConnection.endpoint}<//>
+            <//>
+          `
+        : null}
 
       <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
         <${Text} bold inverse=${activeField === "endpoint"}>Endpoint<//>
@@ -298,6 +339,7 @@ export default function ConnectionSetupScreen({
         <${ActionButton} label="Test Connection" selected=${activeField === "test"} color="cyan" />
         <${ActionButton} label="Save & Connect" selected=${activeField === "save"} color=${canSubmit ? "green" : "gray"} />
         <${ActionButton} label="Switch Saved" selected=${false} color=${selectedConnection ? "magenta" : "gray"} />
+        <${ActionButton} label="Launch Local Backend" selected=${activeField === "launch"} color="blue" />
         <${ActionButton} label="Use Local" selected=${activeField === "local"} color="yellow" />
       <//>
 

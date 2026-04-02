@@ -1,3 +1,11 @@
+/**
+ * Transitional architecture note:
+ * `ui-server.mjs` remains the broad HTTP/WebSocket composition shell, but
+ * harness business logic must be delegated to canonical route modules and
+ * harness control-plane owners. This file may compose surfaces, caching, and
+ * transport concerns, but it must not become a second harness control plane.
+ */
+
 import { execSync as nodeExecSync, spawn, spawnSync, exec } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { randomUUID as _genCallId } from "node:crypto";
@@ -157,6 +165,7 @@ import {
   clearThreadRegistry,
   continueSession,
   createCompiledInternalHarnessSession,
+  execPooledPrompt,
   getAvailableSdks,
   getActiveThreads,
   getPoolSdkName,
@@ -415,6 +424,7 @@ import {
   extractTaskReplanProposal,
   normalizeTaskPlanningMode,
   normalizeTaskReplanProposal,
+  uniqueStrings,
 } from "../task/task-replanner.mjs";
 import { getVisionSessionState } from "../voice/vision-session-state.mjs";
 import {
@@ -3347,9 +3357,9 @@ async function generateTaskPlanningProposal({ taskId, url, mode }) {
   if (!task) {
     return { status: 404, body: { ok: false, error: "task not found" } };
   }
-  const exec = await resolveExecPrimaryPrompt();
+  const exec = await resolveBackgroundPromptExecutor();
   if (typeof exec !== "function") {
-    return { status: 503, body: { ok: false, error: "Primary agent not available. Start bosun first." } };
+    return { status: 503, body: { ok: false, error: "Background prompt executor not available. Start bosun first." } };
   }
   const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
   const allTasks = await listAllTasksForApi(adapter);
@@ -7323,6 +7333,23 @@ function resolveSessionWorkspaceDir(session = null) {
   return context.workspaceDir || repoRoot;
 }
 
+function findTrackedSessionById(sessionId = "") {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) return null;
+  try {
+    const tracker = getSessionTracker();
+    return (
+      tracker?.getSessionById?.(normalizedSessionId)
+      || tracker?.getSessionMessages?.(normalizedSessionId)
+      || tracker?.getSession?.(normalizedSessionId)
+      || null
+    );
+  } catch {
+    // Best effort; fall through to the in-memory surface snapshot.
+  }
+  return _activeSessions.find((session) => String(session?.id || "").trim() === normalizedSessionId) || null;
+}
+
 const HIDDEN_GENERATED_WORKFLOW_NAME_SET = new Set([
   "Task trace workflow",
   "Dispatch workflow",
@@ -8941,12 +8968,6 @@ async function resolveVoiceRelay() {
   };
 }
 
-/**
- * Resolve the execPrimaryPrompt function. Prefers the injected dependency,
- * falls back to importing directly from primary-agent.mjs so the chat
- * agent works even when the UI server starts standalone.
- */
-let _fallbackExecPrimaryPrompt = null;
 /** Track in-flight chat turns so /api/sessions/:id/stop can abort them. */
 const sessionRunAbortControllers = new Map();
 let _activeSessions = [];
@@ -9333,20 +9354,16 @@ function updateActiveSessions(sessions) {
   }
 }
 
-async function resolveExecPrimaryPrompt() {
-  if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
-  if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
-  try {
-    const mod = await import("../agent/primary-agent.mjs");
-    if (typeof mod.execPrimaryPrompt === "function") {
-      _fallbackExecPrimaryPrompt = mod.execPrimaryPrompt;
-      console.log("[ui-server] loaded execPrimaryPrompt fallback from primary-agent.mjs");
-      return _fallbackExecPrimaryPrompt;
-    }
-  } catch (err) {
-    console.warn("[ui-server] failed to load execPrimaryPrompt fallback:", err.message);
-  }
-  return null;
+async function resolveInteractiveSessionExecutor() {
+  return typeof uiDeps.execPrimaryPrompt === "function"
+    ? uiDeps.execPrimaryPrompt
+    : null;
+}
+
+async function resolveBackgroundPromptExecutor() {
+  if (typeof uiDeps.execBackgroundPrompt === "function") return uiDeps.execBackgroundPrompt;
+  if (typeof uiDeps.execPooledPrompt === "function") return uiDeps.execPooledPrompt;
+  return execPooledPrompt;
 }
 
 /**
@@ -11123,6 +11140,23 @@ function shouldHideSessionFromDefaultList(session) {
   ) {
     return true;
   }
+  const syntheticListLeakIdentifier = identifiers.some((value) =>
+    /^(?:manual-visible-session|primary-stale-empty-hidden|primary-stale-empty-[a-z0-9-]+|meeting-(?:1|vision|msg|transcript|archived|stop))$/i.test(
+      String(value || "").trim(),
+    ),
+  );
+  if (
+    syntheticListLeakIdentifier &&
+    !normalizedWorkspaceId &&
+    !normalizedWorkspaceDir &&
+    !normalizedWorkspaceRoot
+  ) {
+    return true;
+  }
+  const hasTemplatePlaceholderIdentifier = identifiers.some((value) =>
+    /\{\{[^}]+\}\}/.test(String(value || "").trim()),
+  );
+  if (hasTemplatePlaceholderIdentifier) return true;
   if (!looksTemporaryWorkspace) return false;
   // Sessions with an explicit workspace assignment are intentional, not leaked fixtures.
   if (normalizedWorkspaceId) return false;
@@ -13549,7 +13583,7 @@ async function listAllTasksForApi(adapter = null) {
   const fallbackAdapter = adapter || getKanbanAdapter();
   if (typeof fallbackAdapter?.listTasks === "function") {
     try {
-      let projectId = activeProjectId.value || "";
+      let projectId = "";
       if (!projectId && typeof fallbackAdapter?.listProjects === "function") {
         const projects = await fallbackAdapter.listProjects();
         projectId = projects?.[0]?.id || projects?.[0]?.project_id || "";
@@ -14428,7 +14462,7 @@ function isSameMachineRequest(req) {
 }
 
 function shouldAllowLocalSessionBootstrap(req, url) {
-  if (!parseBooleanEnv(process.env.BOSUN_UI_LOCAL_BOOTSTRAP, false)) return false;
+  if (!parseBooleanEnv(process.env.BOSUN_UI_LOCAL_BOOTSTRAP, true)) return false;
   if (isAllowUnsafe()) return false;
   if (String(req?.method || "").toUpperCase() !== "GET") return false;
   if (!isSameMachineRequest(req)) return false;
@@ -14827,6 +14861,55 @@ function summarizeTaskStatusCounts(tasks = []) {
     counts[key] = (counts[key] || 0) + 1;
   }
   return counts;
+}
+
+function compactWorkflowRunForTaskList(run = {}) {
+  if (!run || typeof run !== "object") return null;
+  const compact = {};
+  for (const key of ["id", "runId", "workflowId", "workflowName", "status", "summary", "startedAt", "endedAt", "updatedAt", "taskId"]) {
+    if (run[key] !== undefined) compact[key] = run[key];
+  }
+  return Object.keys(compact).length > 0 ? compact : null;
+}
+
+function compactTaskMetaForList(meta = {}) {
+  if (!meta || typeof meta !== "object") return {};
+  const compact = {};
+  for (const key of ["runtimeSnapshot", "blockedContext", "lifetimeTotals", "prLinkage", "workspace", "repository", "repositories", "baseBranch", "branchName", "projectId"]) {
+    if (meta[key] !== undefined) compact[key] = meta[key];
+  }
+  return compact;
+}
+
+function compactTaskListEntry(task = {}) {
+  if (!task || typeof task !== "object") return task;
+  const compact = { ...task };
+  const timeline = Array.isArray(compact.timeline) ? compact.timeline : [];
+  const statusHistory = Array.isArray(compact.statusHistory) ? compact.statusHistory : [];
+  const workflowRuns = Array.isArray(compact.workflowRuns) ? compact.workflowRuns : [];
+  compact.timelineCount = timeline.length;
+  compact.statusHistoryCount = statusHistory.length;
+  compact.workflowRunCount = workflowRuns.length;
+  compact.timeline = timeline.slice(-3);
+  compact.statusHistory = statusHistory.slice(-6);
+  compact.workflowRuns = workflowRuns
+    .slice(-3)
+    .map((run) => compactWorkflowRunForTaskList(run))
+    .filter(Boolean);
+  if (compact.meta && typeof compact.meta === "object") {
+    if (compact.runtimeSnapshot == null && compact.meta.runtimeSnapshot !== undefined) {
+      compact.runtimeSnapshot = compact.meta.runtimeSnapshot;
+    }
+    if (compact.blockedContext == null && compact.meta.blockedContext !== undefined) {
+      compact.blockedContext = compact.meta.blockedContext;
+    }
+    if (compact.lifetimeTotals == null && compact.meta.lifetimeTotals !== undefined) {
+      compact.lifetimeTotals = compact.meta.lifetimeTotals;
+    }
+    compact.meta = compactTaskMetaForList(compact.meta);
+    if (Object.keys(compact.meta).length === 0) delete compact.meta;
+  }
+  return compact;
 }
 
 function summarizeExecutionJournalCoverage(tasks = [], options = {}) {
@@ -18411,6 +18494,16 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/project-sync/metrics" && req.method === "GET") {
+    jsonResponse(res, 200, {
+      ok: true,
+      data: {
+        webhook: getProjectSyncWebhookMetrics(),
+      },
+    });
+    return;
+  }
+
   const authResult = await requireAuth(req);
   if (!authResult?.ok) {
     jsonResponse(res, 401, {
@@ -18722,6 +18815,77 @@ async function handleApi(req, res, url) {
       const adapter = getKanbanAdapter();
       const projects = await adapter.listProjects();
       jsonResponse(res, 200, { ok: true, data: projects });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/project-summary" && req.method === "GET") {
+    try {
+      const workspaceContext =
+        resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      const injectedTaskStore = resolveInjectedTaskStoreApi();
+      let allTasks = [];
+      if (typeof injectedTaskStore?.listTasks === "function") {
+        let projectId = "";
+        if (!projectId && typeof injectedTaskStore?.listProjects === "function") {
+          const projects = await injectedTaskStore.listProjects();
+          projectId = projects?.[0]?.id || projects?.[0]?.project_id || "";
+        }
+        const scopedTasks = await injectedTaskStore.listTasks(projectId, {});
+        if (Array.isArray(scopedTasks) && scopedTasks.length > 0) {
+          allTasks = scopedTasks;
+        } else if (projectId) {
+          const unscopedTasks = await injectedTaskStore.listTasks("", {});
+          allTasks = Array.isArray(unscopedTasks) ? unscopedTasks : [];
+        }
+      }
+      if (!Array.isArray(allTasks) || allTasks.length === 0) {
+        allTasks = await listAllTasksForApi(getKanbanAdapter());
+      }
+      const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
+      let workspaceFilter = String(url.searchParams.get("workspace") || "").trim().toLowerCase();
+      if (!workspaceFilter || workspaceFilter === "active") {
+        workspaceFilter = String(
+          getActiveManagedWorkspace(resolveUiConfigDir())?.id || workspaceContext?.workspaceId || "",
+        ).trim().toLowerCase();
+      }
+      if (workspaceFilter === "*" || workspaceFilter === "all") {
+        workspaceFilter = "";
+      }
+      const scopedTasks = (Array.isArray(allTasks) ? allTasks : []).filter((task) => {
+        const taskWorkspaceRaw = String(task?.workspace || task?.meta?.workspace || "").trim();
+        const taskWorkspace = taskWorkspaceRaw.toLowerCase();
+        if (workspaceFilter && taskWorkspace !== workspaceFilter) {
+          if (!taskWorkspaceRaw) {
+            const primaryId = resolvePrimaryWorkspaceId();
+            return !primaryId || workspaceFilter === primaryId;
+          }
+          const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
+          const workspaceMatchByPath =
+            Boolean(taskWorkspacePath) &&
+            Boolean(workspaceDirFilter) &&
+            taskWorkspacePath === workspaceDirFilter;
+          if (!workspaceMatchByPath) {
+            return false;
+          }
+        }
+        return true;
+      });
+      const completedCount = scopedTasks.filter((task) => {
+        const status = normalizeTaskStatusKey(task?.status);
+        return status === "done" || status === "merged";
+      }).length;
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          taskCount: scopedTasks.length,
+          completedCount,
+          workspaceId: String(workspaceContext?.workspaceId || workspaceFilter || "").trim() || null,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -19050,6 +19214,7 @@ async function handleApi(req, res, url) {
     if (cached) { jsonResponse(res, 200, cached); return; }
     const status = url.searchParams.get("status") || "";
     const sortBy = String(url.searchParams.get("sort") || "updated").trim().toLowerCase() || "updated";
+    const wantsFullPayload = /^(1|true|yes)$/i.test(String(url.searchParams.get("full") || "").trim());
     const projectId = url.searchParams.get("project") || "";
     const workspaceQueryRaw = String(url.searchParams.get("workspace") || "").trim();
     let workspaceFilter = workspaceQueryRaw.toLowerCase();
@@ -19066,7 +19231,7 @@ async function handleApi(req, res, url) {
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
       200,
-      Math.max(5, Number(url.searchParams.get("pageSize") || "15")),
+      Math.max(5, Number(url.searchParams.get("pageSize") || url.searchParams.get("limit") || "15")),
     );
     try {
       const workflowContext = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
@@ -19154,9 +19319,12 @@ async function handleApi(req, res, url) {
         workflowEngine: workflowContext?.ok ? workflowContext.engine : null,
         workspaceDir: workspaceContext?.workspaceDir || repoRoot,
       });
+      const responseTasks = wantsFullPayload
+        ? withRuntime
+        : withRuntime.map((task) => compactTaskListEntry(task));
       const responsePayload = {
         ok: true,
-        data: withRuntime,
+        data: responseTasks,
         page,
         pageSize,
         total,
@@ -20705,6 +20873,89 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/retry" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const executor = uiDeps.getInternalExecutor?.() || null;
+      if (!executor || typeof executor.executeTask !== "function") {
+        jsonResponse(res, 400, { ok: false, error: "Internal executor not enabled." });
+        return;
+      }
+      const adapter = resolveInjectedTaskStoreApi() || getKanbanAdapter();
+      const task = await getTaskByIdForApi(taskId, adapter).catch(() => null);
+      if (!task) {
+        jsonResponse(res, 404, { ok: false, error: "Task not found." });
+        return;
+      }
+      resetExecutorTaskThrottleState(taskId, {});
+      _resolveEventBus()?.clearRetryQueueTask?.(taskId, "manual-retry-now");
+      await executor.executeTask(task, { force: true });
+      jsonResponse(res, 200, { ok: true, taskId });
+      broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+        reason: "task-retried",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/unblock" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const updated =
+        unblockInternalTask(taskId, {
+          status: body?.status || body?.targetStatus || "todo",
+          source: "api.tasks.unblock",
+        })
+        || await (async () => {
+          const adapter = resolveInjectedTaskStoreApi() || getKanbanAdapter();
+          if (typeof adapter?.updateTask !== "function") return null;
+          const task = await getTaskByIdForApi(taskId, adapter).catch(() => null);
+          if (!task) return null;
+          const nextMeta = task?.meta && typeof task.meta === "object"
+            ? { ...task.meta }
+            : {};
+          delete nextMeta.autoRecovery;
+          delete nextMeta.worktreeFailure;
+          delete nextMeta.blockedReason;
+          return adapter.updateTask(taskId, {
+            status: body?.status || body?.targetStatus || "todo",
+            cooldownUntil: null,
+            blockedReason: null,
+            meta: nextMeta,
+          });
+        })();
+      if (!updated) {
+        jsonResponse(res, 404, { ok: false, error: "Task not found." });
+        return;
+      }
+      resetExecutorTaskThrottleState(taskId, {});
+      jsonResponse(res, 200, {
+        ok: true,
+        data: withTaskRuntimeSnapshot(withTaskMetadataTopLevel(updated)),
+      });
+      broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+        reason: "task-unblocked",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/update") {
     try {
       const body = await readJsonBody(req);
@@ -21408,9 +21659,9 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "title is required" });
         return;
       }
-      const exec = uiDeps.execPrimaryPrompt;
+      const exec = await resolveBackgroundPromptExecutor();
       if (typeof exec !== "function") {
-        jsonResponse(res, 503, { ok: false, error: "Primary agent not available. Start bosun first." });
+        jsonResponse(res, 503, { ok: false, error: "Background prompt executor not available. Start bosun first." });
         return;
       }
       const prompt =
@@ -22956,6 +23207,14 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/retry-queue" && req.method === "GET") {
+    jsonResponse(res, 200, {
+      ok: true,
+      ...getRetryQueueSurfaceSnapshot(),
+    });
+    return;
+  }
+
   if (path === "/api/agent-logs") {
     try {
       const file = normalizeAgentLogName(url.searchParams.get("file"));
@@ -23440,7 +23699,7 @@ async function handleApi(req, res, url) {
       broadcastSessionsSnapshot,
       sessionRunAbortControllers,
       resolveSessionWorkspaceDir,
-      resolveExecPrimaryPrompt,
+      resolveInteractiveSessionExecutor,
       sanitizePathSegment,
       ATTACHMENTS_ROOT,
       MIME_TYPES,
@@ -23622,6 +23881,58 @@ if (path === "/api/agent-logs/context") {
       jsonResponse(res, 200, { ok: true, data: agents });
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: [] });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events") {
+    try {
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || "25") || 25, 200));
+      const snapshot = getAgentSurfaceSnapshot(limit);
+      jsonResponse(res, 200, { ok: true, events: Array.isArray(snapshot?.events) ? snapshot.events : [] });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, events: [], error: err?.message || "" });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events/status") {
+    try {
+      const snapshot = getAgentSurfaceSnapshot(25);
+      jsonResponse(res, 200, { ok: true, ...(snapshot?.status || {}) });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, started: false, source: "error", error: err?.message || "" });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events/liveness") {
+    try {
+      const snapshot = getAgentSurfaceSnapshot(25);
+      jsonResponse(res, 200, { ok: true, agents: Array.isArray(snapshot?.liveness) ? snapshot.liveness : [] });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, agents: [], error: err?.message || "" });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events/errors") {
+    try {
+      const snapshot = getAgentSurfaceSnapshot(25);
+      const patterns = snapshot?.patterns;
+      jsonResponse(res, 200, {
+        ok: true,
+        patterns: Array.isArray(patterns)
+          ? patterns
+          : (patterns && typeof patterns === "object"
+            ? Object.entries(patterns).map(([pattern, detail]) => ({
+                pattern,
+                ...(detail && typeof detail === "object" ? detail : { count: Number(detail || 0) || 0 }),
+              }))
+            : []),
+      });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, patterns: [], error: err?.message || "" });
     }
     return;
   }
@@ -26530,6 +26841,117 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  if (path === "/api/command" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const command = String(body?.command || "").trim();
+      if (!command) {
+        jsonResponse(res, 400, { ok: false, error: "command is required" });
+        return;
+      }
+      const handler = uiDeps.handleUiCommand;
+      if (typeof handler !== "function") {
+        jsonResponse(res, 503, { ok: false, error: "UI command handler unavailable" });
+        return;
+      }
+      const baseCommand = command.split(/\s+/, 1)[0]?.toLowerCase() || "";
+      if (ASYNC_UI_COMMAND_BASES.has(baseCommand)) {
+        Promise.resolve()
+          .then(() => handler(command))
+          .catch((err) => {
+            console.warn(`[ui] queued command failed: ${err?.message || err}`);
+          });
+        jsonResponse(res, 202, {
+          ok: true,
+          queued: true,
+          command,
+        });
+        return;
+      }
+      const result = await handler(command);
+      jsonResponse(res, 200, {
+        ok: true,
+        queued: false,
+        command,
+        result: result ?? null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/settings/update" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const changes = body?.changes && typeof body.changes === "object" ? body.changes : {};
+      if (Object.keys(changes).length === 0) {
+        jsonResponse(res, 400, { ok: false, error: "changes object required" });
+        return;
+      }
+
+      const fieldErrors = {};
+      for (const [key, value] of Object.entries(changes)) {
+        const def = SETTINGS_SCHEMA.find((entry) => entry.key === key);
+        if (!def) continue;
+        const verdict = validateSetting(def, value);
+        if (!verdict?.valid && !fieldErrors[key]) {
+          fieldErrors[key] = verdict.error || "Invalid value";
+        }
+      }
+      const schemaErrors = validateConfigSchemaChanges(changes);
+      for (const [key, value] of Object.entries(schemaErrors || {})) {
+        if (!fieldErrors[key]) fieldErrors[key] = value;
+      }
+      if (Object.keys(fieldErrors).length > 0) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Invalid settings update",
+          fieldErrors,
+        });
+        return;
+      }
+
+      const updateResult = updateConfigFile(changes);
+      for (const [key, value] of Object.entries(changes)) {
+        if (!SETTINGS_KNOWN_SET.has(key)) continue;
+        if (isUnsetValue(value)) {
+          delete process.env[key];
+        } else {
+          process.env[key] = String(value);
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, "KANBAN_BACKEND")) {
+        try {
+          setKanbanBackend(String(changes.KANBAN_BACKEND || "").trim().toLowerCase());
+        } catch (err) {
+          console.warn(`[settings] failed to switch kanban backend: ${err.message}`);
+        }
+      }
+      emitConfigReload({
+        reason: "settings-update",
+        source: "ui-server",
+        keys: Object.keys(changes),
+      });
+      invalidateApiCache("status");
+      invalidateApiCache("server-state");
+      invalidateApiCache("infra");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "settings-updated",
+        keys: Object.keys(changes),
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        updatedConfig: updateResult.updated || [],
+        configPath: updateResult.path || resolveConfigPath(),
+        configDir: dirname(updateResult.path || resolveConfigPath()),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/pr-automation" && req.method === "GET") {
     try {
       const { configData } = readConfigDocument();
@@ -27437,6 +27859,40 @@ if (path === "/api/agent-logs/context") {
       const { generateOpenAIAudioResponse } = await import("../voice/voice-relay.mjs");
       const result = await generateOpenAIAudioResponse(inputText, context, options);
       jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/sdk-command" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const command = String(body?.command || "").trim();
+      if (!command) {
+        jsonResponse(res, 400, { ok: false, error: "command required" });
+        return;
+      }
+      const sessionId = String(body?.sessionId || "").trim() || undefined;
+      const session = sessionId ? findTrackedSessionById(sessionId) : null;
+      const cwd = resolveSessionWorkspaceDir(session);
+      const runner = typeof uiDeps.execSdkCommand === "function"
+        ? uiDeps.execSdkCommand
+        : execSdkCommand;
+      const result = await runner(
+        command,
+        String(body?.args || ""),
+        body?.sdk,
+        {
+          cwd,
+          sessionId,
+          authSource: String(authResult?.source || "").trim() || undefined,
+        },
+      );
+      jsonResponse(res, 200, {
+        ok: true,
+        result,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

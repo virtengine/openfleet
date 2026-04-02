@@ -262,6 +262,17 @@ function formatTurnTokens(turn) {
   return "—";
 }
 
+function resolveTurnDurationMs(turn, pair) {
+  const explicitDuration = Number(turn?.durationMs || 0);
+  if (explicitDuration > 0) return explicitDuration;
+  const startedAt = Date.parse(String(turn?.startedAt || pair?.user?.timestamp || pair?.assistant?.timestamp || ""));
+  const endedAt = Date.parse(String(turn?.endedAt || pair?.assistant?.timestamp || pair?.user?.timestamp || ""));
+  if (Number.isFinite(startedAt) && Number.isFinite(endedAt) && endedAt >= startedAt) {
+    return endedAt - startedAt;
+  }
+  return 0;
+}
+
 function buildTurnTimeline(messages, turns) {
   const turnEntries = Array.isArray(turns) ? turns : [];
   const byIndex = new Map(turnEntries.map((turn) => [Number(turn?.turnIndex || 0), turn]));
@@ -285,7 +296,7 @@ function buildTurnTimeline(messages, turns) {
       assistant: pair.assistant,
       startedAt: turn.startedAt || pair.user?.timestamp || pair.assistant?.timestamp || null,
       endedAt: turn.endedAt || pair.assistant?.timestamp || pair.user?.timestamp || null,
-      durationMs: Number(turn.durationMs || 0),
+      durationMs: resolveTurnDurationMs(turn, pair),
       inputTokens: Number(turn.inputTokens || 0),
       outputTokens: Number(turn.outputTokens || 0),
       totalTokens: Number(turn.totalTokens || 0),
@@ -562,6 +573,35 @@ function dedupeFleetEntries(entries = []) {
   return Array.from(deduped.values()).sort(compareFleetEntries);
 }
 
+function buildFleetStatusMeta(key, fallbackLabel = "Unknown") {
+  const normalized = String(key || "").trim().toLowerCase();
+  if (!normalized) {
+    return { key: "unknown", label: fallbackLabel, tone: "historic", isActive: false };
+  }
+  if (["running", "busy", "active", "working", "inprogress"].includes(normalized)) {
+    return { key: normalized, label: "Active", tone: "active", isActive: true };
+  }
+  if (normalized === "inreview") {
+    return { key: normalized, label: "Review", tone: "warning", isActive: false };
+  }
+  if (["queued", "pending"].includes(normalized)) {
+    return { key: normalized, label: normalized === "queued" ? "Queued" : "Pending", tone: "warning", isActive: false };
+  }
+  if (normalized === "recent") {
+    return { key: "recent", label: "Recent", tone: "warning", isActive: false };
+  }
+  if (["idle", "paused", "waiting"].includes(normalized)) {
+    return { key: normalized, label: formatFleetStateLabel(normalized), tone: "warning", isActive: false };
+  }
+  if (["blocked_by_env", "blocked", "error", "failed", "stalled", "stale", "aborted", "stop_requested"].includes(normalized)) {
+    return { key: normalized, label: formatFleetStateLabel(normalized), tone: "error", isActive: false };
+  }
+  if (["done", "completed", "complete", "historic", "stopped"].includes(normalized)) {
+    return { key: normalized, label: normalized === "historic" ? "Historic" : normalized === "stopped" ? "Not live" : "Completed", tone: "historic", isActive: false };
+  }
+  return { key: normalized, label: formatFleetStateLabel(normalized, fallbackLabel), tone: "historic", isActive: false };
+}
+
 function getFleetEntryStatusMeta(entry) {
   if (!entry || typeof entry !== "object") {
     return { key: "unknown", label: "Unknown", tone: "historic", isActive: false };
@@ -569,6 +609,13 @@ function getFleetEntryStatusMeta(entry) {
 
   const slotStatus = String(entry?.slot?.status || "").trim().toLowerCase();
   const isSyntheticFallback = entry?.isTaskFallback || entry?.slot?.synthetic;
+  const runtimeState = entry?.session ? getSessionRuntimeState(entry.session) : null;
+  const lifecycleState = String(
+    entry?.session?.lifecycleStatus
+    || entry?.session?.lifecycle?.status
+    || entry?.session?.status
+    || "",
+  ).trim().toLowerCase();
   if (isSyntheticFallback && !entry?.session) {
     if (slotStatus === "inreview") {
       return { key: slotStatus, label: "Review", tone: "warning", isActive: false };
@@ -580,54 +627,21 @@ function getFleetEntryStatusMeta(entry) {
       isActive: false,
     };
   }
+  if (runtimeState?.key && runtimeState.key !== "running") {
+    return buildFleetStatusMeta(runtimeState.key, runtimeState.label || "Not live");
+  }
+  if (lifecycleState && !["active", "running", "busy", "inprogress"].includes(lifecycleState)) {
+    return buildFleetStatusMeta(lifecycleState, "Not live");
+  }
   if (slotStatus) {
-    if (["running", "busy", "active", "working", "inprogress"].includes(slotStatus)) {
-      return { key: slotStatus, label: "Active", tone: "active", isActive: true };
-    }
-    if (slotStatus === "inreview") {
-      return { key: slotStatus, label: "Review", tone: "warning", isActive: false };
-    }
-    if (slotStatus === "idle" || slotStatus === "queued" || slotStatus === "pending") {
-      return {
-        key: slotStatus,
-        label: slotStatus === "queued" ? "Queued" : slotStatus === "pending" ? "Pending" : "Idle",
-        tone: "warning",
-        isActive: false,
-      };
-    }
-    if (slotStatus === "error" || slotStatus === "failed" || slotStatus === "stalled") {
-      return {
-        key: slotStatus,
-        label: slotStatus === "error" ? "Error" : formatFleetStateLabel(slotStatus),
-        tone: "error",
-        isActive: false,
-      };
-    }
-    if (slotStatus === "done" || slotStatus === "completed") {
-      return { key: slotStatus, label: "Completed", tone: "historic", isActive: false };
-    }
+    return buildFleetStatusMeta(slotStatus);
   }
 
-  if (entry?.session) {
-    const runtimeState = getSessionRuntimeState(entry.session);
-    if (runtimeState?.key === "running") {
-      return { key: "running", label: "Active", tone: "active", isActive: true };
-    }
-    if (runtimeState?.key === "recent") {
-      return { key: "recent", label: "Recent", tone: "warning", isActive: false };
-    }
-    if (runtimeState?.key === "idle" || runtimeState?.key === "queued" || runtimeState?.key === "paused") {
-      return { key: runtimeState.key, label: runtimeState.label || "Idle", tone: "warning", isActive: false };
-    }
-    if (runtimeState?.key === "stalled" || runtimeState?.key === "stale") {
-      return { key: runtimeState.key, label: runtimeState.label || "Stale", tone: "error", isActive: false };
-    }
-    if (runtimeState?.key === "stopped") {
-      return { key: "historic", label: entry?.isHistory ? "Historic" : "Not live", tone: "historic", isActive: false };
-    }
-    if (runtimeState?.label) {
-      return { key: runtimeState.key || "unknown", label: runtimeState.label, tone: "historic", isActive: false };
-    }
+  if (runtimeState?.key === "running") {
+    return { key: "running", label: "Active", tone: "active", isActive: true };
+  }
+  if (runtimeState?.label) {
+    return buildFleetStatusMeta(runtimeState.key || "unknown", runtimeState.label);
   }
 
   return {
@@ -3253,8 +3267,8 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
       subtitle="Dedicated slots and session-tracked agents with full execution detail"
       className="fleet-fullview-card"
     >
-      <div class="fleet-fullview">
-        <div class="fleet-slot-rail">
+      <div class="fleet-fullview" style=${{ display: "flex", gap: "16px", alignItems: "stretch", minHeight: "720px", flexWrap: "wrap" }}>
+        <div class="fleet-slot-rail" style=${{ display: "flex", flexDirection: "column", minHeight: 0, flex: "0 0 320px", maxWidth: "360px", width: "100%" }}>
           <div class="fleet-session-rail-header">
             <div class="fleet-session-rail-title">Sessions</div>
             <div class="fleet-session-rail-subtitle">${scopeCounts.allCount} total</div>
@@ -3297,7 +3311,7 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
               Historic (${scopeCounts.historicCount})
             <//>
           </div>
-          <div class="fleet-slot-list-scroll">
+          <div class="fleet-slot-list-scroll" style=${{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
             ${visibleEntries.length === 0
               ? html`<div class="meta-text fleet-session-empty">
                   ${sessionSearch.trim()
@@ -3371,7 +3385,7 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
                 })}`}
           </div>
         </div>
-        <div class="session-detail fleet-session-detail">
+        <div class="session-detail fleet-session-detail" style=${{ minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 420px" }}>
           ${selectedEntry
             ? html`
                 <div class="fleet-session-header">
@@ -3430,7 +3444,7 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
                     onClick=${() => setDetailTab("turns")}
                   >${iconText(":repeat: Turns")}<//>
                 </div>
-                <div class="fleet-session-body">
+                <div class="fleet-session-body" style=${{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingRight: "4px" }}>
                   ${detailTab === "stream"
                     ? streamSessionId
                       ? html`<${ChatView} sessionId=${streamSessionId} readOnly=${true} />`

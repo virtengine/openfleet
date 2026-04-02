@@ -12,6 +12,7 @@ import { RuntimeMetrics } from "./runtime-metrics.mjs";
 import { exportHarnessTrace } from "./trace-export.mjs";
 import {
   cloneHotPathValue,
+  exportTraceWithBosunHotPathTelemetry,
   getBosunHotPathStatus,
 } from "../lib/hot-path-runtime.mjs";
 import { createHarnessTelemetryRuntime } from "./session-telemetry-runtime.mjs";
@@ -246,6 +247,7 @@ export class HarnessObservabilitySpine {
     this._loadOnce();
     const events = this.runtime.getEvents();
     const lastEvent = events.at(-1) || null;
+    const hotPathBridge = getBosunHotPathStatus();
     return {
       eventCount: events.length,
       lastEventAt: lastEvent?.timestamp || null,
@@ -255,7 +257,13 @@ export class HarnessObservabilitySpine {
       metrics: this.getMetricsSummary(),
       providers: this.getProviderUsageSummary(),
       hotPath: {
-        ...getBosunHotPathStatus(),
+        mode:
+          hotPathBridge.mode === "native" || this.runtime.getStatus().reason === "native"
+            ? "native"
+            : "javascript",
+        bridge: hotPathBridge,
+        exec: hotPathBridge.exec,
+        telemetryBridge: hotPathBridge.telemetry,
         telemetry: this.runtime.getStatus(),
       },
     };
@@ -264,6 +272,13 @@ export class HarnessObservabilitySpine {
   exportTrace(filter = {}) {
     this._loadOnce();
     return exportHarnessTrace(this.listEvents(filter), filter);
+  }
+
+  async exportTraceAsync(filter = {}) {
+    this._loadOnce();
+    await this.runtime.flush();
+    const nativeTrace = await exportTraceWithBosunHotPathTelemetry(filter);
+    return nativeTrace || this.exportTrace(filter);
   }
 
   async flush() {
@@ -315,6 +330,10 @@ export function getHarnessProviderUsageSummary(options = {}) {
 
 export function exportHarnessTelemetryTrace(filter = {}, options = {}) {
   return getHarnessObservabilitySpine(options).exportTrace(filter);
+}
+
+export async function exportHarnessTelemetryTraceAsync(filter = {}, options = {}) {
+  return await getHarnessObservabilitySpine(options).exportTraceAsync(filter);
 }
 
 export function getHarnessHotPathStatus(options = {}) {

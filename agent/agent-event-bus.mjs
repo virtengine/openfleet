@@ -18,6 +18,12 @@
  *   createAgentEventBus(options) → AgentEventBus instance
  *   AgentEventBus class
  *   AGENT_EVENT  — Frozen enum of all event types
+ *
+ * Canonical architecture note:
+ * This bus is the canonical runtime ingress for live agent events into the
+ * observability spine. Surfaces may subscribe or rebroadcast, but canonical
+ * event normalization and harness telemetry recording must remain centralized
+ * here plus `infra/session-telemetry.mjs`.
  */
 
 import {

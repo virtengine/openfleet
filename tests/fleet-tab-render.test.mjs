@@ -172,6 +172,19 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain("formatMsDuration(turn.durationMs || 0)");
     });
 
+    it("derives completed turn durations from timestamps when durationMs is missing", () => {
+      expect(source).toContain("function resolveTurnDurationMs(turn, pair)");
+      expect(source).toContain("endedAt >= startedAt");
+      expect(source).toContain("durationMs: resolveTurnDurationMs(turn, pair)");
+    });
+
+    it("demotes blocked or stale session states before slot status can mark them active", () => {
+      expect(source).toContain("const lifecycleState = String(");
+      expect(source).toContain('runtimeState?.key && runtimeState.key !== "running"');
+      expect(source).toContain('buildFleetStatusMeta(lifecycleState, "Not live")');
+      expect(source).toContain('"blocked_by_env"');
+    });
+
     it("scopes Fleet metrics to workspace slot summaries and separates session-only activity", () => {
       expect(source).toContain("const workspaceSummary = execData?.workspaceSummary || null;");
       expect(source).toContain('loadSessions({ type: "task", workspace: "all" });');
@@ -661,12 +674,12 @@ for (const relPath of ["ui/tabs/agents.js", "site/ui/tabs/agents.js"]) {
 describe("TUI agents harness monitor", () => {
   it("renders harness detail, approvals, and nudge controls backed by harness APIs", () => {
     expect(tuiAgentsSource).toContain('fetchJson(');
-    expect(tuiAgentsSource).toContain('"/api/harness/surface?view=agents&limit=25"');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}`)');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/events?limit=40&direction=desc`)');
-    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, `/api/harness/runs/${encodeURIComponent(runId)}/approval`)');
-    expect(tuiAgentsSource).toContain('`/api/harness/approvals/${encodeURIComponent(requestId)}/resolve`');
-    expect(tuiAgentsSource).toContain('`/api/harness/runs/${encodeURIComponent(runId)}/nudge`');
+    expect(tuiAgentsSource).toContain('buildHarnessSurfacePath("agents", { limit: 25 })');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, buildHarnessRunPath(runId), undefined, wsBridge)');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, buildHarnessRunPath(runId, "events", { limit: 40, direction: "desc" }), undefined, wsBridge)');
+    expect(tuiAgentsSource).toContain('fetchJson(resolvedHost, resolvedPort, buildHarnessRunPath(runId, "approval"), undefined, wsBridge)');
+    expect(tuiAgentsSource).toContain('buildHarnessApprovalPath(requestId, "resolve")');
+    expect(tuiAgentsSource).toContain('buildHarnessRunPath(runId, "nudge")');
     expect(tuiAgentsSource).toContain("function HarnessDetail(");
     expect(tuiAgentsSource).toContain("function AgentMonitorDetail(");
     expect(tuiAgentsSource).toContain("Agent Live Monitor (");

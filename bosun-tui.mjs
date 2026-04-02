@@ -35,7 +35,7 @@ function showHelp() {
   OPTIONS
     --endpoint <url>    Connect to an existing Bosun server (example: https://host:4400)
     --host <host>       WebSocket host (default: 127.0.0.1)
-    --port <n>          WebSocket/UI port (default: TELEGRAM_UI_PORT or 3080)
+    --port <n>          WebSocket/UI port (default: configured local backend, TELEGRAM_UI_PORT, or 3080 fallback)
     --protocol <proto>  Connection protocol (ws|wss|http|https)
     --api-key <key>     API key for remote/existing Bosun server (BOSUN_API_KEY)
     --save-connection   Persist endpoint + API key to remote-connection.json

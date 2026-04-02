@@ -551,7 +551,11 @@ const SETTINGS_STYLES = `
   width: 100%;
   box-sizing: border-box;
   padding-bottom: calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 48px);
-  overflow-x: clip;
+  overflow-x: auto;
+  min-width: 0;
+}
+.settings-content-constrained > * {
+  min-width: 0;
 }
 
 .setting-row .segmented-control {
@@ -925,8 +929,8 @@ function AgentArchitectureGuide({ architecture }) {
         ${sections.map((section) => html`
           <div class="settings-arch-card" key=${section.title}>
             <div class="settings-arch-title">${section.title}</div>
-            ${section.current && html`
-              <div class="settings-arch-current">Current: <code>${section.current}</code></div>
+            ${(section.currentLabel || section.current) && html`
+              <div class="settings-arch-current">Current: <code>${section.currentLabel || section.current}</code></div>
             `}
             <div class="settings-arch-note">${section.summary}</div>
             ${section.note && html`<div class="settings-arch-note" style="margin-top:8px">${section.note}</div>`}
@@ -935,7 +939,7 @@ function AgentArchitectureGuide({ architecture }) {
                 ${section.items.slice(0, 8).map((item) => html`
                   <span class=${`settings-arch-chip ${item.selected ? "active" : ""}`.trim()}>
                     ${item.label || item.providerId || item.id}
-                    ${item.authenticated ? "connected" : item.selected ? "selected" : ""}
+                    ${item.statusLabel || (item.authenticated ? "connected" : item.selected ? "selected" : "")}
                   </span>
                 `)}
               </div>
@@ -944,6 +948,114 @@ function AgentArchitectureGuide({ architecture }) {
         `)}
       </div>
     <//>
+  `;
+}
+
+function parseExecutorRoutingPool(rawValue = "") {
+  const source = String(rawValue || "").trim();
+  if (!source) return [];
+  return source
+    .split(",")
+    .map((chunk, index) => {
+      const [executor = "", variant = "", weight = "", ...modelParts] = String(chunk || "").split(":");
+      const models = modelParts.join(":").split("|").map((entry) => String(entry || "").trim()).filter(Boolean);
+      return {
+        id: `executor-pool-${index}-${executor}-${variant}`,
+        executor: String(executor || "").trim().toUpperCase() || "CODEX",
+        variant: String(variant || "").trim().toUpperCase() || "DEFAULT",
+        weight: Math.max(0, Number.parseInt(String(weight || "0"), 10) || 0),
+        modelsText: models.join(", "),
+      };
+    })
+    .filter((entry) => entry.executor);
+}
+
+function serializeExecutorRoutingPool(entries = []) {
+  return entries
+    .map((entry) => {
+      const executor = String(entry?.executor || "").trim().toUpperCase();
+      const variant = String(entry?.variant || "").trim().toUpperCase();
+      const weight = Math.max(0, Number.parseInt(String(entry?.weight || "0"), 10) || 0);
+      const models = String(entry?.modelsText || "")
+        .split(",")
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .join("|");
+      if (!executor || !variant) return "";
+      return `${executor}:${variant}:${weight}${models ? `:${models}` : ""}`;
+    })
+    .filter(Boolean)
+    .join(",");
+}
+
+function ExecutorRoutingPoolEditor({ value = "", onChange }) {
+  const entries = useMemo(() => parseExecutorRoutingPool(value), [value]);
+  const totalWeight = entries.reduce((sum, entry) => sum + (Number(entry?.weight || 0) || 0), 0);
+  const syncEntries = useCallback((nextEntries) => {
+    onChange(serializeExecutorRoutingPool(nextEntries));
+  }, [onChange]);
+  const updateEntry = useCallback((entryId, field, nextValue) => {
+    syncEntries(entries.map((entry) => (
+      entry.id === entryId
+        ? { ...entry, [field]: nextValue }
+        : entry
+    )));
+  }, [entries, syncEntries]);
+  const removeEntry = useCallback((entryId) => {
+    syncEntries(entries.filter((entry) => entry.id !== entryId));
+  }, [entries, syncEntries]);
+  const addEntry = useCallback(() => {
+    syncEntries([
+      ...entries,
+      {
+        id: `executor-pool-${Date.now()}-${entries.length}`,
+        executor: "CODEX",
+        variant: "DEFAULT",
+        weight: entries.length === 0 ? 100 : 0,
+        modelsText: "",
+      },
+    ]);
+  }, [entries, syncEntries]);
+
+  return html`
+    <div style="display:grid;gap:10px">
+      <div class="meta-text">
+        Build the queued-task routing pool here instead of hand-editing the raw <code>EXECUTORS</code> string. This does not affect direct chat sessions.
+      </div>
+      ${entries.length === 0
+        ? html`<div class="meta-text">No routing entries yet. Add one if you want queued tasks distributed across multiple runtimes.</div>`
+        : entries.map((entry, index) => html`
+            <div key=${entry.id} style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;padding:10px;border:1px solid var(--border, rgba(255,255,255,0.1));border-radius:12px;background:color-mix(in srgb, var(--bg-card, #222) 88%, transparent)">
+              <div>
+                <div class="setting-row-label">Runtime</div>
+                <${Select} size="small" value=${entry.executor} onChange=${(e) => updateEntry(entry.id, "executor", e.target.value)} fullWidth>
+                  ${["CODEX", "CLAUDE", "COPILOT", "OPENCODE", "GEMINI"].map((option) => html`<${MenuItem} value=${option}>${option}<//>`)}
+                <//>
+              </div>
+              <div>
+                <div class="setting-row-label">Variant</div>
+                <${TextField} size="small" value=${entry.variant} onInput=${(e) => updateEntry(entry.id, "variant", e.target.value)} placeholder="DEFAULT" fullWidth />
+              </div>
+              <div>
+                <div class="setting-row-label">Weight</div>
+                <${TextField} type="number" size="small" value=${entry.weight} inputProps=${{ min: 0, max: 1000 }} onInput=${(e) => updateEntry(entry.id, "weight", e.target.value)} fullWidth />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model allow-list</div>
+                <${TextField} size="small" value=${entry.modelsText} onInput=${(e) => updateEntry(entry.id, "modelsText", e.target.value)} placeholder="Optional comma-separated models" fullWidth />
+                <div class="meta-text" style="margin-top:4px">Entry ${index + 1}. Use commas here; Bosun stores them as <code>|</code> internally.</div>
+              </div>
+              <div style="grid-column:1/-1;display:flex;justify-content:flex-end">
+                <${Button} variant="text" color="error" size="small" onClick=${() => removeEntry(entry.id)}>Remove runtime<//>
+              </div>
+            </div>
+          `)}
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="meta-text">Total configured weight: <strong>${totalWeight}</strong></div>
+        <${Button} variant="outlined" size="small" onClick=${addEntry}>Add runtime<//>
+      </div>
+      <div class="meta-text"><strong>Stored value:</strong> <code>${value || "(empty)"}</code></div>
+    </div>
   `;
 }
 
@@ -1539,18 +1651,20 @@ function ServerConfigMode() {
 
         default: {
           // string type
-          control = html`
-            <div class="setting-input-wrap">
-              <${TextField}
-                size="small"
-                variant="outlined"
-                fullWidth
-                value=${value}
-                placeholder=${def.defaultVal != null ? String(def.defaultVal) : "Enter value…"}
-                onInput=${(e) => handleChange(def.key, e.target.value)}
-              />
-            </div>
-          `;
+          control = def.key === "EXECUTORS"
+            ? html`<${ExecutorRoutingPoolEditor} value=${value} onChange=${(nextValue) => handleChange(def.key, nextValue)} />`
+            : html`
+                <div class="setting-input-wrap">
+                  <${TextField}
+                    size="small"
+                    variant="outlined"
+                    fullWidth
+                    value=${value}
+                    placeholder=${def.defaultVal != null ? String(def.defaultVal) : "Enter value…"}
+                    onInput=${(e) => handleChange(def.key, e.target.value)}
+                  />
+                </div>
+              `;
           break;
         }
       }

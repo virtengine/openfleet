@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createToolOrchestrator } from "../agent/tool-orchestrator.mjs";
 import { createHarnessObservabilitySpine, resetHarnessObservabilitySpinesForTests } from "../infra/session-telemetry.mjs";
+import {
+  runProcessWithBosunHotPathExec,
+  watchPathsWithBosunHotPathExec,
+} from "../lib/hot-path-runtime.mjs";
 
 const SESSION_COUNT = Math.max(4, Number.parseInt(process.env.BOSUN_BENCH_SESSIONS || "12", 10) || 12);
 const EVENTS_PER_SESSION = Math.max(10, Number.parseInt(process.env.BOSUN_BENCH_EVENTS_PER_SESSION || "180", 10) || 180);
@@ -72,6 +79,9 @@ function buildEvent(sessionIndex, eventIndex) {
 
 async function main() {
   resetHarnessObservabilitySpinesForTests();
+  const tempDir = mkdtempSync(join(tmpdir(), "bosun-hotpath-bench-"));
+  const watchedPath = join(tempDir, "watch.txt");
+  writeFileSync(watchedPath, "before", "utf8");
   const telemetry = createHarnessObservabilitySpine({
     persist: false,
     maxInMemoryEvents: (SESSION_COUNT * EVENTS_PER_SESSION) + (TOOL_CALLS * 3) + (WORKFLOW_RUNS * 6),
@@ -170,6 +180,36 @@ async function main() {
   );
   await telemetry.flush();
   const mixedDurationMs = performance.now() - mixedStart;
+  const cancelController = new AbortController();
+  const processStart = performance.now();
+  const processPromise = runProcessWithBosunHotPathExec({
+    processId: "bench-proc-1",
+    command: process.execPath,
+    args: [
+      "-e",
+      [
+        "process.stdout.write('bench-start\\n');",
+        "setTimeout(() => process.stdout.write('bench-mid\\n'), 25);",
+        "setTimeout(() => process.exit(0), 1_000);",
+      ].join(""),
+    ],
+    timeoutMs: 1_500,
+    maxBufferBytes: 16 * 1024,
+    tailBufferBytes: 1024,
+  }, {
+    signal: cancelController.signal,
+  });
+  setTimeout(() => cancelController.abort("bench-cancel"), 40);
+  const watchStart = performance.now();
+  const watchPromise = watchPathsWithBosunHotPathExec({
+    paths: [watchedPath],
+    timeoutMs: 750,
+    pollMs: 10,
+  });
+  setTimeout(() => writeFileSync(watchedPath, "after", "utf8"), 20);
+  const [processResult, watchResult] = await Promise.all([processPromise, watchPromise]);
+  const processDurationMs = performance.now() - processStart;
+  const watchDurationMs = performance.now() - watchStart;
 
   const summary = telemetry.getSummary();
   const workloadEvents = (SESSION_COUNT * EVENTS_PER_SESSION) + (WORKFLOW_RUNS * 6) + toolEventCount;
@@ -183,11 +223,23 @@ async function main() {
     mixedDurationMs: Number(mixedDurationMs.toFixed(2)),
     eventsPerSecond: Number(((workloadEvents / mixedDurationMs) * 1000).toFixed(2)),
     toolCallsPerSecond: Number(((TOOL_CALLS / mixedDurationMs) * 1000).toFixed(2)),
+    processCancellation: {
+      durationMs: Number(processDurationMs.toFixed(2)),
+      cancelled: processResult.cancelled === true,
+      timedOut: processResult.timedOut === true,
+      retainedStdoutBytes: Number(processResult.buffer?.stdout?.retainedBytes || 0),
+    },
+    watcher: {
+      durationMs: Number(watchDurationMs.toFixed(2)),
+      changed: watchResult.changed === true,
+      changedPaths: watchResult.changedPaths || [],
+    },
     hotPath: summary.hotPath,
     metrics: summary.metrics?.totals || null,
     liveSessions: Array.isArray(summary.live?.sessions) ? summary.live.sessions.length : 0,
   };
 
+  rmSync(tempDir, { recursive: true, force: true });
   console.log(JSON.stringify(result, null, 2));
 }
 

@@ -1,3 +1,11 @@
+/**
+ * Transitional architecture note:
+ * This module is a compatibility bridge from legacy shell session idioms into
+ * the canonical harness session manager, provider kernel, tool orchestrator,
+ * and telemetry spine. It may translate transport payloads, but it must not
+ * define parallel lifecycle, provider, or tool-control semantics.
+ */
+
 import { getBosunSessionManager } from "../agent/session-manager.mjs";
 import { createProviderKernel } from "../agent/provider-kernel.mjs";
 import { createToolOrchestrator } from "../agent/tool-orchestrator.mjs";
@@ -213,6 +221,13 @@ export function createShellSessionCompat(options = {}) {
     return registerLifecycle(sessionId, input);
   }
 
+  function bindController(sessionId, controller = {}) {
+    const normalizedSessionId = toTrimmedString(sessionId);
+    if (!normalizedSessionId) return null;
+    if (typeof sessionManager.bindExternalController !== "function") return null;
+    return sessionManager.bindExternalController(normalizedSessionId, controller);
+  }
+
   function hydrate(input = {}) {
     const sessionId = toTrimmedString(input.sessionId || input.id || "");
     if (!sessionId) return null;
@@ -405,6 +420,7 @@ export function createShellSessionCompat(options = {}) {
       });
     },
     registerExecution,
+    bindController,
     beginTurn,
     completeTurn,
     failTurn,

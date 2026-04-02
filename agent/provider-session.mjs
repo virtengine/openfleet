@@ -146,7 +146,37 @@ function resolveToolExecutor(options = {}, turnOptions = {}) {
   if (typeof options.toolRunner?.runTool === "function") {
     return options.toolRunner.runTool.bind(options.toolRunner);
   }
+  if (typeof turnOptions.toolOrchestrator?.executeTool === "function") {
+    return turnOptions.toolOrchestrator.executeTool.bind(turnOptions.toolOrchestrator);
+  }
+  if (typeof turnOptions.toolOrchestrator?.execute === "function") {
+    return turnOptions.toolOrchestrator.execute.bind(turnOptions.toolOrchestrator);
+  }
+  if (typeof options.toolOrchestrator?.executeTool === "function") {
+    return options.toolOrchestrator.executeTool.bind(options.toolOrchestrator);
+  }
+  if (typeof options.toolOrchestrator?.execute === "function") {
+    return options.toolOrchestrator.execute.bind(options.toolOrchestrator);
+  }
   return null;
+}
+
+function resolveToolDefinitions(options = {}, turnOptions = {}, context = {}) {
+  if (Array.isArray(turnOptions.tools)) return cloneValue(turnOptions.tools);
+  if (Array.isArray(options.tools)) return cloneValue(options.tools);
+  if (typeof turnOptions.toolRunner?.listTools === "function") {
+    return cloneValue(turnOptions.toolRunner.listTools(context));
+  }
+  if (typeof options.toolRunner?.listTools === "function") {
+    return cloneValue(options.toolRunner.listTools(context));
+  }
+  if (typeof turnOptions.toolOrchestrator?.listTools === "function") {
+    return cloneValue(turnOptions.toolOrchestrator.listTools(context));
+  }
+  if (typeof options.toolOrchestrator?.listTools === "function") {
+    return cloneValue(options.toolOrchestrator.listTools(context));
+  }
+  return [];
 }
 
 async function executeProviderToolCalls(toolCalls = [], executeTool = null, context = {}, emitEvent = () => {}) {
@@ -346,7 +376,11 @@ export function createProviderSession(providerId = null, options = {}) {
       const inputPayload = buildProviderTurnPayload(message, {
         providerId: provider,
         model: turnOptions.model || activeModel || runtime.provider?.defaultModel || null,
-        tools: turnOptions.tools || options.tools,
+        tools: resolveToolDefinitions(options, turnOptions, {
+          cwd: turnOptions.cwd || options.cwd || null,
+          repoRoot: turnOptions.repoRoot || options.repoRoot || turnOptions.cwd || options.cwd || null,
+          agentProfileId: turnOptions.agentProfileId || options.agentProfileId || null,
+        }),
         metadata: turnOptions.metadata || options.metadata,
         reasoningEffort: turnOptions.reasoningEffort || turnOptions.reasoning || options.reasoningEffort || options.reasoning,
         sessionId: turnOptions.sessionId || activeSessionId || options.sessionId,

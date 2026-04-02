@@ -22,6 +22,10 @@ import { execPooledPrompt } from "./agent-pool.mjs";
 import { executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
 import { createProviderKernel } from "./provider-kernel.mjs";
 import { createQueryEngine } from "./query-engine.mjs";
+import {
+  createHarnessFailoverController,
+  createHarnessProviderSessionRuntime,
+} from "./internal-harness-control-plane.mjs";
 import { getBosunSessionManager } from "./session-manager.mjs";
 import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
 import { normalizeProviderDefinitionId } from "./providers/index.mjs";
@@ -142,6 +146,112 @@ function getPrimarySessionCompat(sessionType = "primary", scope = "") {
     scope: normalizePrimarySessionScope(sessionType, scope),
     sessionType,
     sessionManager: primarySessionManager,
+  });
+}
+
+const primarySessionAbortControllers = new Map();
+
+function setPrimarySessionAbortController(sessionId, controller = null) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) return null;
+  if (!controller) {
+    primarySessionAbortControllers.delete(normalizedSessionId);
+    return null;
+  }
+  primarySessionAbortControllers.set(normalizedSessionId, controller);
+  return controller;
+}
+
+function getPrimarySessionAbortController(sessionId) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  return normalizedSessionId ? (primarySessionAbortControllers.get(normalizedSessionId) || null) : null;
+}
+
+function normalizePrimaryControllerPrompt(runRequest = {}) {
+  return String(
+    runRequest.prompt
+    || runRequest.message
+    || runRequest.userMessage
+    || "",
+  ).trim();
+}
+
+function bindPrimarySessionController(sessionId, defaults = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId || typeof primarySessionManager.bindExternalController !== "function") {
+    return null;
+  }
+  return primarySessionManager.bindExternalController(normalizedSessionId, {
+    abort(reason = "aborted") {
+      const abortController = getPrimarySessionAbortController(normalizedSessionId);
+      if (abortController && !abortController.signal.aborted) {
+        try {
+          abortController.abort(reason);
+        } catch {
+          /* best effort */
+        }
+      }
+    },
+    steer(prompt, meta = {}) {
+      if (typeof activeAdapter?.steer !== "function") {
+        return {
+          ok: false,
+          delivered: false,
+          reason: "not_steerable",
+          interventionType: String(meta?.kind || meta?.type || "steer").trim() || "steer",
+          stageId: null,
+          targetTaskKey: normalizedSessionId,
+        };
+      }
+      try {
+        const response = activeAdapter.steer(prompt);
+        return {
+          ok: response !== false,
+          delivered: response !== false,
+          reason: response === false ? "adapter_rejected" : null,
+          interventionType: String(meta?.kind || meta?.type || "steer").trim() || "steer",
+          stageId: null,
+          targetTaskKey: normalizedSessionId,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          delivered: false,
+          reason: String(error?.message || error || "steer_failed"),
+          interventionType: String(meta?.kind || meta?.type || "steer").trim() || "steer",
+          stageId: null,
+          targetTaskKey: normalizedSessionId,
+        };
+      }
+    },
+    async run(runRequest = {}) {
+      const prompt = normalizePrimaryControllerPrompt(runRequest);
+      if (!prompt) {
+        throw new Error(`Primary session "${normalizedSessionId}" continuation requires a prompt`);
+      }
+      const abortController =
+        runRequest.abortController instanceof AbortController
+          ? runRequest.abortController
+          : new AbortController();
+      setPrimarySessionAbortController(normalizedSessionId, abortController);
+      try {
+        return await execPrimaryPrompt(prompt, {
+          ...defaults,
+          ...runRequest,
+          sessionId: normalizedSessionId,
+          abortController,
+          metadata: {
+            ...(defaults.metadata && typeof defaults.metadata === "object" ? defaults.metadata : {}),
+            ...(runRequest.metadata && typeof runRequest.metadata === "object" ? runRequest.metadata : {}),
+          },
+          skipUserMessageRecord: runRequest.skipUserMessageRecord ?? false,
+        });
+      } finally {
+        if (getPrimarySessionAbortController(normalizedSessionId) === abortController) {
+          setPrimarySessionAbortController(normalizedSessionId, null);
+        }
+      }
+    },
   });
 }
 
@@ -518,12 +628,17 @@ let primaryProfile = null;
 let primaryFallbackReason = null;
 let initialized = false;
 const primaryQueryEngine = createQueryEngine();
+const primaryFailoverController = createHarnessFailoverController({
+  queryEngine: primaryQueryEngine,
+});
+const primaryProviderSessionRuntime = createHarnessProviderSessionRuntime();
 const primaryProviderKernel = createProviderKernel({
   adapters: ADAPTERS,
   getConfig: () => loadConfig() || {},
   env: process.env,
   readBusy: readAdapterBusy,
   getAdapterCapabilities,
+  sessionManager: primarySessionManager,
 });
 
 const CONFIG_WARNING_THROTTLE_MS = 5 * 60 * 1000;
@@ -731,6 +846,11 @@ function createPrimaryExecutionSession(adapterName = "", options = {}) {
     threadId: options.threadId || options.sessionId || null,
     model: options.model || null,
     metadata: options.metadata || {},
+    cwd: options.cwd || null,
+    repoRoot: options.repoRoot || options.cwd || null,
+    sessionManager: options.sessionManager || primarySessionManager,
+    onEvent: options.onEvent,
+    subagentMaxParallel: options.subagentMaxParallel,
   });
 }
 
@@ -885,22 +1005,6 @@ const FALLBACK_ORDER = [
   "opencode-sdk",
 ];
 
-async function recoverAdapterSession(adapter, adapterName) {
-  if (!adapter) return;
-  if (typeof adapter.reset === "function") {
-    try {
-      await adapter.reset();
-    } catch (err) {
-      console.warn(
-        `[primary-agent] recovery reset failed for ${adapterName}: ${err?.message || err}`,
-      );
-    }
-  }
-  if (typeof adapter.init === "function") {
-    await adapter.init();
-  }
-}
-
 function mapAdapterToPoolSdk(adapterName) {
   const normalized = String(adapterName || "").trim().toLowerCase();
   if (normalized === "copilot-sdk") return "copilot";
@@ -984,6 +1088,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     status: "active",
     metadata: {
       mode: effectiveMode,
+    },
+  });
+  bindPrimarySessionController(sessionRecord.sessionId, {
+    ...options,
+    sessionId: sessionRecord.sessionId,
+    sessionType,
+    scope: sessionScope,
+    cwd: options.cwd || sessionRecord.cwd || "",
+    model: options.model,
+    metadata: {
+      mode: effectiveMode,
+      ...(options.metadata && typeof options.metadata === "object" ? options.metadata : {}),
     },
   });
   const effectiveModel = options.model || selectedProfile.preferredModel || undefined;
@@ -1092,7 +1208,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     }
   };
 
-  const outcome = await primaryQueryEngine.executeTurn({
+  const outcome = await primaryFailoverController.executeTurn({
     adapters: ADAPTERS,
     initialAdapterName: activeAdapter.name,
     fallbackOrder: FALLBACK_ORDER,
@@ -1121,6 +1237,11 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         sessionId,
         threadId: sessionId,
         model: effectiveModel,
+        cwd: options.cwd || null,
+        repoRoot: options.repoRoot || options.cwd || null,
+        sessionManager: primarySessionManager,
+        onEvent: options.onEvent,
+        subagentMaxParallel: options.subagentMaxParallel,
         metadata: {
           mode: effectiveMode,
           ...(recovered ? { recovered: true } : {}),
@@ -1148,6 +1269,8 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
             mode: effectiveMode,
             ...(recovered ? { recovered: true } : {}),
           },
+          sessionManager: primarySessionManager,
+          subagentMaxParallel: options.subagentMaxParallel,
         }),
         timeoutMs,
         recovered ? `${adapterName}.exec.retry` : `${adapterName}.exec`,
@@ -1165,7 +1288,12 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         content: `:arrows_counterclockwise: Recovering ${adapterName} session (${retry}/${maxRetries}) before any failover.`,
         timestamp: new Date().toISOString(),
       });
-      await recoverAdapterSession(adapter, adapterName);
+      await primaryProviderSessionRuntime.recoverSession({
+        adapterName,
+        adapter,
+        retry,
+        maxRetries,
+      });
     },
     onFailure({ adapterName, error }) {
       const isTimeout = error?.message?.startsWith("AGENT_TIMEOUT");

@@ -316,6 +316,7 @@ function normalizeMessageEntry(message, index = 0, fallbackRole = "user") {
     : { role: fallbackRole, content: message };
   const role = inferMessageRole(base, fallbackRole);
   const content = normalizeTextContent(resolveMessageContentSource(base));
+  const metadataSource = base.metadata || base.data || base.item || {};
   return {
     id: toTrimmedString(base.id || base.message?.id || base.data?.id) || `msg-${index + 1}`,
     role,
@@ -324,11 +325,18 @@ function normalizeMessageEntry(message, index = 0, fallbackRole = "user") {
     toolCalls: content.toolCalls,
     toolResults: content.toolResults,
     reasoning: content.reasoning,
+    _compressed: toTrimmedString(base._compressed) || null,
+    _originalLength: Number.isFinite(Number(base._originalLength))
+      ? Number(base._originalLength)
+      : null,
+    _cachedLogId: base._cachedLogId ?? null,
+    _contextEnvelope: isPlainObject(base._contextEnvelope) ? cloneJson(base._contextEnvelope) : null,
+    _liveCompactionFamily: toTrimmedString(base._liveCompactionFamily) || null,
+    _commandDiagnostics: isPlainObject(base._commandDiagnostics) ? cloneJson(base._commandDiagnostics) : null,
+    _semanticBudgetPolicy: toTrimmedString(base._semanticBudgetPolicy) || null,
     metadata:
-      (base.metadata && typeof base.metadata === "object")
-      || (base.data && typeof base.data === "object")
-      || (base.item && typeof base.item === "object")
-        ? cloneJson(base.metadata || base.data || base.item)
+      (metadataSource && typeof metadataSource === "object")
+        ? cloneJson(metadataSource)
         : {},
   };
 }

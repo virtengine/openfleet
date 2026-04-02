@@ -1,15 +1,22 @@
 /**
- * telegram-bot.mjs — Two-way Telegram :workflow: primary agent for bosun.
+ * telegram-bot.mjs — Telegram surface controller for Bosun.
  *
  * Polls Telegram Bot API for incoming messages, routes slash commands to
- * built-in handlers, and forwards free-text to the persistent primary agent.
+ * built-in handlers, and forwards free-text plus control actions through the
+ * canonical harness API surface.
  *
  * Architecture:
  *   Telegram → getUpdates long-poll → handleUpdate()
  *     ├─ /command → built-in handler (fast, no agent)
- *     └─ free-text → PrimaryAgent.exec() → response back to Telegram
+ *     └─ free-text → harness session API → canonical session manager/runtime
  *
  * Security: Only accepts messages from the configured TELEGRAM_CHAT_ID.
+ *
+ * Transitional architecture note:
+ * Telegram remains a surface controller and poll-owner runtime, but provider
+ * switching, session inspection, approvals, and thread control must route
+ * through `telegram/harness-api-client.mjs` and the canonical server harness
+ * routes instead of direct transitional runtime seams.
  */
 
 import { execSync, spawn, spawnSync } from "node:child_process";

@@ -1497,7 +1497,17 @@ describe("task-executor", () => {
           return JSON.stringify([{ runId: "run-1" }]);
         }
         if (targetPath === resolve("/workflow-runs", "run-1.json")) {
-          return JSON.stringify({ data: { taskId: "wf-owned-1" } });
+          return JSON.stringify({
+            data: {
+              taskId: "wf-owned-1",
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+              },
+            },
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+          });
         }
         return "";
       });
@@ -2066,7 +2076,10 @@ describe("task-executor", () => {
         ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
       });
       existsSync.mockImplementation(
-        (targetPath) => targetPath === resolve("/workflow-runs", "_active-runs.json"),
+        (targetPath) => [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "run-active-1.json"),
+        ].includes(targetPath),
       );
       readFileSync.mockImplementation((targetPath) => {
         if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
@@ -2077,6 +2090,20 @@ describe("task-executor", () => {
               taskId: "wf-stale-active-run-1",
             },
           ]);
+        }
+        if (targetPath === resolve("/workflow-runs", "run-active-1.json")) {
+          return JSON.stringify({
+            id: "run-active-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              taskId: "wf-stale-active-run-1",
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+              },
+            },
+          });
         }
         return "";
       });
@@ -2206,7 +2233,7 @@ describe("task-executor", () => {
         return "";
       });
 
-      await ex._recoverInterruptedInProgressTasks("startup");
+      const summary = await ex._recoverInterruptedInProgressTasks("startup");
 
       expect(updateTaskStatus).not.toHaveBeenCalledWith(
         "wf-duplicate-live-1",
@@ -2220,7 +2247,7 @@ describe("task-executor", () => {
         force: true,
       });
       expect(executeSpy).not.toHaveBeenCalled();
-      expect(ex.getStatus().inProgressRecovery.lastRun.workflowEvidenceKept).toEqual([
+      expect(summary.workflowEvidenceKept).toEqual([
         expect.objectContaining({
           taskId: "wf-duplicate-live-1",
           runId: "run-live-history-1",
@@ -2306,7 +2333,7 @@ describe("task-executor", () => {
         return "";
       });
 
-      await ex._recoverInterruptedInProgressTasks("startup");
+      const summary = await ex._recoverInterruptedInProgressTasks("startup");
 
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "wf-array-carryover-1",
@@ -2320,7 +2347,7 @@ describe("task-executor", () => {
         force: true,
       });
       expect(executeSpy).not.toHaveBeenCalled();
-      expect(ex.getStatus().inProgressRecovery.lastRun.workflowEvidenceKept).toEqual([]);
+      expect(summary.workflowEvidenceKept).toEqual([]);
     });
 
     it("resets workflow-owned tasks when a fresh shared-state claim belongs to a dead local pid", async () => {

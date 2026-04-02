@@ -79,7 +79,9 @@ describe("cli daemon pid tracking", () => {
   });
 
   it("launches the foreground monitor as a child process instead of a worker thread", () => {
-    expect(cliSource).toContain("monitorChild = spawn(");
+    expect(cliSource).toContain("const spawnMonitorChild = (forceWindowsShell = false) => {");
+    expect(cliSource).toContain("return spawn(");
+    expect(cliSource).toContain("monitorChild = spawnMonitorChild(false);");
     expect(cliSource).toContain("[...runAsNode, monitorPath, ...process.argv.slice(2)]");
     expect(cliSource).not.toContain("monitorChild = new Worker(");
   });

@@ -35,6 +35,12 @@
  *   listWorkflows()   — list all available workflows
  *   getWorkflow()     — get a single workflow by ID
  *   executeWorkflow() — run a workflow by ID with given context
+ *
+ * Transitional architecture note:
+ * The workflow engine remains the graph scheduler, but harness-backed session,
+ * tool, approval, and subagent semantics must delegate to canonical harness
+ * nodes and control-plane modules. This file must not become a second agent
+ * runtime or a second approval/provider control plane.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
@@ -49,7 +55,7 @@ import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
-import { getAgentExecutionSlotStatus } from "../agent/agent-pool.mjs";
+import { getBosunSessionManager } from "../agent/session-manager.mjs";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import {
   getWorkflowRunFromStateLedger,
@@ -81,6 +87,27 @@ function ensureWorkspaceManagerSync() {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const TAG = "[workflow-engine]";
+
+function getHarnessRuntimeSlotStatus() {
+  try {
+    const snapshot = getBosunSessionManager()?.snapshot?.();
+    const pools = Array.isArray(snapshot?.subagentPool?.pools) ? snapshot.subagentPool.pools : [];
+    if (pools.length === 0) return null;
+    const totals = pools.reduce((acc, pool) => {
+      acc.maxParallel += Math.max(0, Number(pool?.maxConcurrent || 0));
+      acc.activeSlots += Math.max(0, Number(pool?.activeCount || 0));
+      acc.queuedSlots += Math.max(0, Number(pool?.queueDepth || 0));
+      return acc;
+    }, {
+      maxParallel: 0,
+      activeSlots: 0,
+      queuedSlots: 0,
+    });
+    return totals.maxParallel > 0 ? totals : null;
+  } catch {
+    return null;
+  }
+}
 
 // Run history in-process cache (2s TTL)
 const RUN_HISTORY_CACHE_TTL_MS = 2000;
@@ -3635,7 +3662,7 @@ export class WorkflowEngine extends EventEmitter {
    */
   getConcurrencyStats() {
     let agentSlots;
-    try { agentSlots = getAgentExecutionSlotStatus(); } catch { agentSlots = null; }
+    agentSlots = getHarnessRuntimeSlotStatus();
     return {
       activeRuns: this._runSlots,
       maxConcurrentRuns: MAX_CONCURRENT_RUNS,

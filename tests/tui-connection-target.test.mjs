@@ -6,11 +6,14 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLocalConnectionEntry,
+  clearRemoteConnectionConfig,
   normalizeRemoteConnectionConfig,
   parseConnectionEndpoint,
   resolveLocalTuiConnectionTarget,
   resolveTuiConnectionTarget,
   saveRemoteConnectionConfig,
+  setLocalConnectionConfig,
   testConnectionTarget,
   upsertRemoteConnection,
 } from "../tui/lib/connection-target.mjs";
@@ -90,6 +93,26 @@ describe("tui connection target resolution", () => {
     expect(next.endpoint).toBe("https://two.example.com:4400");
   });
 
+  it("stores a persisted local backend target alongside remote connections", () => {
+    const next = setLocalConnectionConfig({
+      enabled: true,
+      endpoint: "https://one.example.com:4400",
+      apiKey: "one",
+    }, {
+      endpoint: "https://127.0.0.1:4400",
+    });
+
+    expect(next.localConnection).toEqual({
+      name: "Local Backend",
+      endpoint: "https://127.0.0.1:4400",
+      host: "127.0.0.1",
+      port: 4400,
+      protocol: "wss",
+      httpProtocol: "https",
+    });
+    expect(next.connections).toHaveLength(1);
+  });
+
   it("uses the persisted UI instance lock when no remote target is saved", () => {
     const configDir = mkdtempSync(join(tmpdir(), "bosun-tui-lock-"));
     try {
@@ -144,6 +167,69 @@ describe("tui connection target resolution", () => {
     } finally {
       rmSync(configDir, { recursive: true, force: true });
     }
+  });
+
+  it("uses saved local defaults before falling back to the legacy 3080 port", () => {
+    const configDir = mkdtempSync(join(tmpdir(), "bosun-tui-saved-local-"));
+    try {
+      const saved = setLocalConnectionConfig({}, {
+        endpoint: "https://127.0.0.1:4400",
+      });
+      saveRemoteConnectionConfig(saved, configDir);
+
+      expect(resolveLocalTuiConnectionTarget({
+        configDir,
+        env: {},
+        config: {},
+      })).toEqual({
+        name: "Local Backend",
+        endpoint: "https://127.0.0.1:4400",
+        host: "127.0.0.1",
+        port: 4400,
+        protocol: "wss",
+        httpProtocol: "https",
+        apiKey: "",
+        source: "saved-local",
+      });
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears remote selections without discarding saved local defaults", () => {
+    const configDir = mkdtempSync(join(tmpdir(), "bosun-tui-clear-"));
+    try {
+      const saved = setLocalConnectionConfig({
+        enabled: true,
+        endpoint: "https://saved.example.com:9443",
+        apiKey: "secret-key",
+      }, {
+        endpoint: "https://127.0.0.1:4400",
+      });
+      saveRemoteConnectionConfig(saved, configDir);
+
+      const cleared = clearRemoteConnectionConfig(configDir);
+      expect(cleared.enabled).toBe(false);
+      expect(cleared.connections).toEqual([]);
+      expect(cleared.localConnection?.endpoint).toBe("https://127.0.0.1:4400");
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds local connection entries from host, port, and protocol inputs", () => {
+    expect(buildLocalConnectionEntry({
+      host: "192.168.0.183",
+      port: 4400,
+      protocol: "https",
+    })).toEqual({
+      name: "Local Backend",
+      endpoint: "https://192.168.0.183:4400",
+      host: "192.168.0.183",
+      port: 4400,
+      protocol: "wss",
+      httpProtocol: "https",
+    });
   });
 
   it("tests a candidate endpoint before saving it", async () => {

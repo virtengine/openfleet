@@ -2586,22 +2586,86 @@ function runMonitor({ restartReason = "" } = {}) {
           delete childEnv.BOSUN_MONITOR_RESTART_REASON;
         }
         const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
-        monitorChild = spawn(
-          process.execPath,
-          [...runAsNode, monitorPath, ...process.argv.slice(2)],
-          {
-            env: childEnv,
-            stdio: ["ignore", "pipe", "pipe"],
-            windowsHide: process.platform === "win32",
-            cwd: process.cwd(),
-          },
-        );
-        monitorChild.stdout?.on("data", (chunk) => {
-          process.stdout.write(chunk);
-        });
-        monitorChild.stderr?.on("data", (chunk) => {
-          process.stderr.write(chunk);
-        });
+        const monitorArgs = [...runAsNode, monitorPath, ...process.argv.slice(2)];
+        let usedWindowsShellFallback = false;
+        const spawnMonitorChild = (forceWindowsShell = false) => {
+          if (forceWindowsShell && process.platform === "win32") {
+            const command = [process.execPath, ...monitorArgs]
+              .map((part) => `"${String(part).replace(/"/g, '\\"')}"`)
+              .join(" ");
+            return spawn(
+              process.env.ComSpec || "cmd.exe",
+              ["/d", "/s", "/c", command],
+              {
+                env: childEnv,
+                stdio: ["ignore", "pipe", "pipe"],
+                windowsHide: true,
+                cwd: process.cwd(),
+              },
+            );
+          }
+          try {
+            return spawn(
+              process.execPath,
+              monitorArgs,
+              {
+                env: childEnv,
+                stdio: ["ignore", "pipe", "pipe"],
+                windowsHide: process.platform === "win32",
+                cwd: process.cwd(),
+              },
+            );
+          } catch (err) {
+            if (
+              process.platform === "win32"
+              && !forceWindowsShell
+              && err?.code === "EPERM"
+            ) {
+              usedWindowsShellFallback = true;
+              console.warn("\n  [cli] direct monitor spawn hit EPERM; retrying via cmd.exe shell wrapper");
+              return spawnMonitorChild(true);
+            }
+            throw err;
+          }
+        };
+        const launchInlineMonitor = async () => {
+          console.warn("\n  [cli] monitor child spawn is unavailable; falling back to inline monitor execution");
+          Object.assign(process.env, childEnv);
+          await import(`${pathToFileURL(monitorPath).href}?inline=${Date.now()}`);
+        };
+        const attachMonitorChildHandlers = (child) => {
+          child.stdout?.on("data", (chunk) => {
+            process.stdout.write(chunk);
+          });
+          child.stderr?.on("data", (chunk) => {
+            process.stderr.write(chunk);
+          });
+          child.on("error", (err) => {
+            if (monitorChild !== child) return;
+            const canRetryViaShell =
+              process.platform === "win32"
+              && !usedWindowsShellFallback
+              && err?.code === "EPERM";
+            if (canRetryViaShell) {
+              usedWindowsShellFallback = true;
+              console.warn("\n  [cli] direct monitor spawn hit EPERM; retrying via cmd.exe shell wrapper");
+              monitorChild = spawnMonitorChild(true);
+              attachMonitorChildHandlers(monitorChild);
+              return;
+            }
+            console.error(`\n  :close: Monitor failed to start: ${err.message}`);
+          });
+        };
+        try {
+          monitorChild = spawnMonitorChild(false);
+        } catch (spawnErr) {
+          if (process.platform === "win32" && spawnErr?.code === "EPERM") {
+            launchInlineMonitor().then(resolve).catch(reject);
+            return;
+          }
+          throw spawnErr;
+        }
+        attachMonitorChildHandlers(monitorChild);
         daemonCrashTracker.markStart();
 
         monitorChild.on("exit", (code, signal) => {
@@ -2729,9 +2793,6 @@ function runMonitor({ restartReason = "" } = {}) {
           }
         });
 
-        monitorChild.on("error", (err) => {
-          console.error(`\n  :close: Monitor failed to start: ${err.message}`);
-        });
       })
       .catch((err) => {
         console.error(`\n  :close: Monitor failed to start: ${err.message}`);

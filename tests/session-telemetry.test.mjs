@@ -6,10 +6,15 @@ import { join } from "node:path";
 import {
   createHarnessObservabilitySpine,
   exportHarnessTelemetryTrace,
+  exportHarnessTelemetryTraceAsync,
   flushHarnessTelemetryRuntimeForTests,
   resetHarnessObservabilitySpinesForTests,
 } from "../infra/session-telemetry.mjs";
 import { createReplayReader } from "../infra/replay-reader.mjs";
+import {
+  configureBosunHotPathRuntimeForTests,
+  resetBosunHotPathRuntimeForTests,
+} from "../lib/hot-path-runtime.mjs";
 
 describe("session telemetry spine", () => {
   const tempDirs = [];
@@ -18,6 +23,7 @@ describe("session telemetry spine", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop(), { recursive: true, force: true });
     }
+    resetBosunHotPathRuntimeForTests();
     resetHarnessObservabilitySpinesForTests();
   });
 
@@ -243,6 +249,14 @@ describe("session telemetry spine", () => {
       service: "exec",
       reason: "javascript",
     }));
+    expect(summary.hotPath.bridge.exec).toEqual(expect.objectContaining({
+      service: "exec",
+      reason: "javascript",
+    }));
+    expect(summary.hotPath.telemetryBridge).toEqual(expect.objectContaining({
+      service: "telemetry",
+      reason: "javascript",
+    }));
     expect(summary.hotPath.telemetry).toEqual(expect.objectContaining({
       available: true,
       service: "telemetry",
@@ -385,6 +399,101 @@ describe("session telemetry spine", () => {
       rootSessionId: "session-root-1",
       runId: "run-replay-1",
       rootRunId: "run-root-1",
+    }));
+  });
+
+  it("can use native telemetry export acceleration without changing canonical event storage", async () => {
+    const nativeEvents = [];
+    configureBosunHotPathRuntimeForTests({
+      telemetryClient: {
+        async request(command, payload) {
+          if (command === "append_events") {
+            nativeEvents.push(...(payload.events || []));
+            return {
+              ok: true,
+              service: "bosun-telemetry",
+              version: "test-native",
+              accepted: payload.events.length,
+              eventCount: nativeEvents.length,
+            };
+          }
+          if (command === "export_trace") {
+            return {
+              ok: true,
+              service: "bosun-telemetry",
+              version: "test-native",
+              trace: {
+                schemaVersion: 1,
+                format: "chrome-trace",
+                displayTimeUnit: "ms",
+                traceEvents: nativeEvents
+                  .filter((event) => event.sessionId === payload.filter?.sessionId)
+                  .map((event) => ({
+                    name: event.eventType,
+                    cat: event.category,
+                    ts: Date.parse(event.timestamp) * 1000,
+                    ph: "i",
+                    s: "t",
+                    args: {
+                      sessionId: event.sessionId,
+                      providerId: event.providerId ?? null,
+                    },
+                  })),
+              },
+            };
+          }
+          if (command === "flush" || command === "status" || command === "reset") {
+            return { ok: true, service: "bosun-telemetry", version: "test-native" };
+          }
+          throw new Error(`unsupported:${command}`);
+        },
+        async flush() {},
+        async reset() {
+          nativeEvents.length = 0;
+        },
+      },
+    });
+
+    const spine = createHarnessObservabilitySpine({ persist: false });
+    spine.recordEvent({
+      timestamp: "2026-04-03T13:00:00.000Z",
+      eventType: "provider.turn.completed",
+      source: "agent-event-bus",
+      category: "provider",
+      taskId: "task-native-export",
+      sessionId: "session-native-export",
+      runId: "run-native-export",
+      providerId: "openai-api",
+      modelId: "gpt-5.4",
+      status: "completed",
+    });
+
+    await flushHarnessTelemetryRuntimeForTests();
+
+    const syncTrace = spine.exportTrace({ sessionId: "session-native-export" });
+    const asyncTrace = await exportHarnessTelemetryTraceAsync(
+      { sessionId: "session-native-export" },
+      { persist: false },
+    );
+    const summary = spine.getSummary();
+
+    expect(syncTrace.traceEvents).toHaveLength(1);
+    expect(asyncTrace.traceEvents).toEqual([
+      expect.objectContaining({
+        name: "provider.turn.completed",
+        args: expect.objectContaining({
+          sessionId: "session-native-export",
+          providerId: "openai-api",
+        }),
+      }),
+    ]);
+    expect(summary.hotPath.bridge.telemetry).toEqual(expect.objectContaining({
+      mode: "native",
+      nativeVersion: "test-native",
+    }));
+    expect(summary.hotPath.telemetry).toEqual(expect.objectContaining({
+      nativeMirrorFlushes: 1,
+      nativeMirrorFailures: 0,
     }));
   });
 });

@@ -40,7 +40,11 @@ import {
   ensureLogSource,
 } from "../ui/tui/logs-screen-helpers.js";
 import { buildTuiHttpUrl } from "./lib/ws-bridge.mjs";
-import { readRemoteConnectionConfig, resolveLocalTuiConnectionTarget } from "./lib/connection-target.mjs";
+import {
+  ensureLocalBosunBackendRunning,
+  readRemoteConnectionConfig,
+  resolveLocalTuiConnectionTarget,
+} from "./lib/connection-target.mjs";
 
 const CLI_SHORTCUT_TITLES = new Set(["Global", "Tasks screen", "Agents screen", "Modals"]);
 const CLI_SHORTCUT_GROUPS = SHORTCUT_GROUPS.filter((group) => CLI_SHORTCUT_TITLES.has(group.title));
@@ -537,6 +541,19 @@ export default function App({
     });
     handleConnectionTargetConnect(localTarget);
   }, [bridge?.configDir, config, handleConnectionTargetConnect, resolvedConfigDir]);
+  const handleLaunchLocalConnection = useCallback(async () => {
+    const result = await ensureLocalBosunBackendRunning({
+      configDir: resolvedConfigDir || bridge?.configDir,
+      config,
+      env: process.env,
+      timeoutMs: 20000,
+    });
+    if (!result?.ok || !result?.target) {
+      throw new Error(result?.error || "Local backend did not start");
+    }
+    handleConnectionTargetConnect(result.target);
+    return result.target;
+  }, [bridge?.configDir, config, handleConnectionTargetConnect, resolvedConfigDir]);
   const connectionConfigSnapshot = useMemo(
     () => readRemoteConnectionConfig(resolvedConfigDir || bridge?.configDir),
     [bridge?.configDir, connectionTarget.endpoint, connectionTarget.source, resolvedApiKey, resolvedConfigDir],
@@ -556,6 +573,7 @@ export default function App({
     authMode: resolvedApiKey ? "api-key" : "local-token",
     activeConnectionId: connectionConfigSnapshot.activeConnectionId,
     remoteConnections: connectionConfigSnapshot.connections,
+    localConnection: connectionConfigSnapshot.localConnection,
   };
   const footerText = (footerHints || []).map(([keysLabel, description]) => `${keysLabel} ${description}`).join("  |  ");
 
@@ -597,6 +615,7 @@ export default function App({
                 initialApiKey=${resolvedApiKey}
                 initialError=${connectionSetupReason}
                 onConnect=${handleConnectionTargetConnect}
+                onLaunchLocal=${handleLaunchLocalConnection}
                 onUseLocal=${handleUseLocalConnection}
                 onInputCaptureChange=${setScreenInputLocked}
               />

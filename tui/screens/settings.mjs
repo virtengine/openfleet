@@ -197,6 +197,19 @@ export default function SettingsScreen({
 
   useInput((input, key) => {
     if (loading || saving) return;
+
+    if (input?.toLowerCase() === "c") {
+      if (typeof onOpenConnectionManager === "function") {
+        onOpenConnectionManager();
+      }
+      return;
+    }
+
+    if (input?.toLowerCase() === "r") {
+      void loadModel({ keepStatus: true });
+      return;
+    }
+
     if (!selectedField && !editingPath) return;
 
     if (editingPath) {
@@ -234,18 +247,6 @@ export default function SettingsScreen({
       setEditingPath(selectedField.path);
       setEditValue(selectedField.valueText || "");
       setErrorMessage("");
-      return;
-    }
-
-    if (input.toLowerCase() === "r") {
-      void loadModel({ keepStatus: true });
-      return;
-    }
-
-    if (input.toLowerCase() === "c") {
-      if (typeof onOpenConnectionManager === "function") {
-        onOpenConnectionManager();
-      }
       return;
     }
 
@@ -294,6 +295,9 @@ export default function SettingsScreen({
         <${Text}>Source: ${settingsState.connectionSource || "default-local"}<//>
         <${Text}>Auth: ${settingsState.authMode === "api-key" ? "API key" : "local token"}<//>
         <${Text}>State: ${settingsState.connectionState || "offline"}<//>
+        ${settingsState.localConnection?.endpoint
+          ? html`<${Text}>Local Default: ${settingsState.localConnection.endpoint}<//>`
+          : null}
         <${Text}>Saved Targets: ${Array.isArray(settingsState.remoteConnections) ? settingsState.remoteConnections.length : 0}<//>
         ${Array.isArray(settingsState.remoteConnections) && settingsState.remoteConnections.length
           ? settingsState.remoteConnections.slice(0, 4).map((connection) => html`

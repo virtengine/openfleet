@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 import {
   BUILTIN_FLOW_TEMPLATES,
@@ -38,10 +39,12 @@ async function makeTempRoot() {
 
 describe("manual-flows", () => {
   beforeEach(async () => {
+    resetStateLedgerCache();
     testRoot = await makeTempRoot();
   });
 
   afterEach(async () => {
+    resetStateLedgerCache();
     if (testRoot && existsSync(testRoot)) {
       await rm(testRoot, { recursive: true, force: true });
     }

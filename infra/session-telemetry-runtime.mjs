@@ -1,7 +1,11 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { cloneHotPathValue } from "../lib/hot-path-runtime.mjs";
+import {
+  appendEventsWithBosunHotPathTelemetry,
+  cloneHotPathValue,
+  flushBosunHotPathTelemetry,
+} from "../lib/hot-path-runtime.mjs";
 
 const DEFAULT_STATUS = Object.freeze({
   service: "telemetry",
@@ -22,6 +26,9 @@ const DEFAULT_STATUS = Object.freeze({
   inMemoryEvents: 0,
   analyticsHighWatermark: 0,
   persistHighWatermark: 0,
+  nativeMirrorQueuedEvents: 0,
+  nativeMirrorFlushes: 0,
+  nativeMirrorFailures: 0,
   lastEnqueueAt: null,
   lastDrainAt: null,
   lastPersistAt: null,
@@ -157,9 +164,12 @@ export class HarnessTelemetryRuntime {
     this.events = new RingBuffer(this.maxInMemoryEvents);
     this.pendingAnalytics = new IndexedQueue();
     this.pendingPersist = new IndexedQueue();
+    this.pendingNativeMirror = new IndexedQueue();
     this.analyticsScheduled = false;
     this.persistScheduled = false;
+    this.nativeMirrorScheduled = false;
     this.persistPromise = null;
+    this.nativeMirrorPromise = null;
     this.status = createStatus(this.maxInMemoryEvents, this.maxPersistBatchEvents);
   }
 
@@ -179,6 +189,9 @@ export class HarnessTelemetryRuntime {
       this.status.pendingPersistBytes += bytes;
       this.status.persistHighWatermark = Math.max(this.status.persistHighWatermark, queuedPersistEvents);
     }
+
+    const nativeQueuedEvents = this.pendingNativeMirror.push(normalized);
+    this.status.nativeMirrorQueuedEvents = nativeQueuedEvents;
   }
 
   load(entries = []) {
@@ -186,12 +199,14 @@ export class HarnessTelemetryRuntime {
       this._appendEvent(entry, { persist: false });
     }
     this.flushForeground();
+    this._scheduleNativeMirrorFlush();
   }
 
   record(normalized) {
     this._appendEvent(normalized, { persist: true });
     this._scheduleAnalyticsDrain();
     this._schedulePersistFlush();
+    this._scheduleNativeMirrorFlush();
     return normalized;
   }
 
@@ -278,6 +293,45 @@ export class HarnessTelemetryRuntime {
     });
   }
 
+  async _flushNativeMirrorBatch() {
+    if (this.pendingNativeMirror.length === 0) return;
+    const batch = this.pendingNativeMirror.drain(Math.max(1, this.maxPersistBatchEvents * 2));
+    this.status.nativeMirrorQueuedEvents = this.pendingNativeMirror.length;
+    try {
+      await appendEventsWithBosunHotPathTelemetry(batch, {
+        maxInMemoryEvents: this.maxInMemoryEvents,
+      });
+      this.status.nativeMirrorFlushes += 1;
+    } catch {
+      this.status.nativeMirrorFailures += 1;
+    }
+  }
+
+  async _runNativeMirrorLoop() {
+    try {
+      while (this.pendingNativeMirror.length > 0) {
+        await this._flushNativeMirrorBatch();
+      }
+      await flushBosunHotPathTelemetry();
+    } finally {
+      this.nativeMirrorPromise = null;
+      if (this.pendingNativeMirror.length > 0) {
+        this._scheduleNativeMirrorFlush();
+      }
+    }
+  }
+
+  _scheduleNativeMirrorFlush() {
+    if (this.nativeMirrorScheduled) return;
+    this.nativeMirrorScheduled = true;
+    scheduleBackground(() => {
+      this.nativeMirrorScheduled = false;
+      if (!this.nativeMirrorPromise) {
+        this.nativeMirrorPromise = this._runNativeMirrorLoop();
+      }
+    });
+  }
+
   flushForeground() {
     this._drainAnalyticsFully();
   }
@@ -293,8 +347,20 @@ export class HarnessTelemetryRuntime {
         await this.persistPromise;
         continue;
       }
+      if (this.nativeMirrorScheduled) {
+        await waitForBackgroundTurn();
+        continue;
+      }
+      if (this.nativeMirrorPromise) {
+        await this.nativeMirrorPromise;
+        continue;
+      }
       if (this.pendingPersist.length > 0) {
         await this._runPersistLoop();
+        continue;
+      }
+      if (this.pendingNativeMirror.length > 0) {
+        await this._runNativeMirrorLoop();
         continue;
       }
       break;
@@ -316,9 +382,12 @@ export class HarnessTelemetryRuntime {
     this.events.clear();
     this.pendingAnalytics.clear();
     this.pendingPersist.clear();
+    this.pendingNativeMirror.clear();
     this.analyticsScheduled = false;
     this.persistScheduled = false;
+    this.nativeMirrorScheduled = false;
     this.persistPromise = null;
+    this.nativeMirrorPromise = null;
     this.status = createStatus(this.maxInMemoryEvents, this.maxPersistBatchEvents);
   }
 }
