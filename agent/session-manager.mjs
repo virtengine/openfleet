@@ -540,6 +540,10 @@ function createInternalSessionManager(defaultOptions = {}) {
     getActiveSessionId(scope = "default") {
       return this.getActiveSession(scope)?.sessionId || null;
     },
+    clearActiveSession(scope = "default") {
+      activeSessions.delete(toTrimmedString(scope || "default") || "default");
+      return true;
+    },
     createSubagentSession(profileSourceOrCompiled, options = {}) {
       const nextOptions = { ...options, sessionType: options.sessionType || "subagent" };
       if (profileSourceOrCompiled && Array.isArray(profileSourceOrCompiled.stages)) {
