@@ -59,6 +59,10 @@ const TOOL_OUTPUT_GUARDRAIL = String.raw`
 
 [Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.`;
 
+function toTrimmedString(value) {
+  return String(value ?? "").trim();
+}
+
 function parseBoundedNumber(value, fallback, min, max) {
   const num = Number(value);
   if (!Number.isFinite(num)) return fallback;
