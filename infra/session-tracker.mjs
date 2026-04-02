@@ -23,6 +23,7 @@ import {
 } from "../lib/state-ledger-sqlite.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
+import { recordHarnessTelemetryEvent } from "./session-telemetry.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_MIRROR_MARKER = `${sep}.bosun${sep}workspaces${sep}`.toLowerCase();
@@ -945,6 +946,55 @@ function emitSessionEvent(session, message) {
   }
 }
 
+function buildSessionTelemetryEvent(session, eventType, payload = {}, message = null) {
+  const tokenUsage = message?.meta?.usage && typeof message.meta.usage === "object"
+    ? {
+        inputTokens: Number(message.meta.usage.inputTokens || message.meta.usage.promptTokens || 0),
+        outputTokens: Number(message.meta.usage.outputTokens || message.meta.usage.completionTokens || 0),
+        totalTokens: Number(message.meta.usage.totalTokens || 0),
+      }
+    : null;
+  return {
+    timestamp: payload.timestamp || message?.timestamp || session?.lastActiveAt || new Date().toISOString(),
+    eventType,
+    type: eventType,
+    source: "session-tracker",
+    category: "session",
+    taskId: session?.taskId || session?.id,
+    sessionId: session?.id || session?.taskId,
+    runId: session?.metadata?.rootRunId || session?.metadata?.taskSessionId || null,
+    rootRunId: session?.metadata?.rootRunId || null,
+    parentRunId: session?.metadata?.parentRunId || null,
+    workflowId: session?.metadata?.workflowId || null,
+    workflowName: session?.metadata?.workflowName || null,
+    threadId: session?.metadata?.threadId || session?.metadata?.activeThreadId || null,
+    providerId: session?.metadata?.providerId || session?.executor || null,
+    modelId: session?.model || session?.metadata?.modelId || null,
+    toolId: message?.name || payload.toolId || null,
+    toolName: message?.name || payload.toolName || null,
+    approvalId: payload.approvalId || null,
+    actor: payload.actor || session?.metadata?.agentId || session?.type || "session",
+    status: payload.status || session?.status || null,
+    retryCount: payload.retryCount || null,
+    tokenUsage,
+    summary: payload.summary || message?.content || session?.taskTitle || null,
+    reason: payload.reason || null,
+    message: message?.content || null,
+    payload: {
+      messageType: message?.type || null,
+      role: message?.role || null,
+      status: payload.status || session?.status || null,
+      eventCount: Number(session?.totalEvents || 0),
+    },
+    meta: {
+      source: "session-tracker",
+      workspaceId: session?.metadata?.workspaceId || null,
+      workspaceDir: session?.metadata?.workspaceDir || null,
+      branch: session?.metadata?.branch || null,
+    },
+  };
+}
+
 function emitSessionStateEvent(session, reason, extra = {}) {
   if (!session || SESSION_STATE_LISTENERS.size === 0) return;
   const normalizedReason = String(reason || "updated").trim() || "updated";
@@ -1068,6 +1118,10 @@ export class SessionTracker {
     });
     const session = this.#sessions.get(taskId);
     this.#markDirty(taskId);
+    recordHarnessTelemetryEvent(buildSessionTelemetryEvent(session, "session.started", {
+      summary: taskTitle || taskId,
+      status: session.status,
+    }));
     emitSessionStateEvent(session, "session-created", { title: taskTitle || taskId });
   }
 
@@ -1125,6 +1179,7 @@ export class SessionTracker {
       this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
       persistSessionRecordToStateLedger(session);
+      recordHarnessTelemetryEvent(buildSessionTelemetryEvent(session, "session.event", {}, msg));
       emitSessionEvent(session, msg);
       return;
     }
@@ -1165,6 +1220,7 @@ export class SessionTracker {
       this.#scheduleDerivedStateRefresh(session);
       this.#markDirty(taskId);
       persistSessionRecordToStateLedger(session);
+      recordHarnessTelemetryEvent(buildSessionTelemetryEvent(session, "session.message", {}, msg));
       emitSessionEvent(session, msg);
       return;
     }
@@ -1188,6 +1244,7 @@ export class SessionTracker {
     this.#scheduleDerivedStateRefresh(session);
     this.#markDirty(taskId);
     persistSessionRecordToStateLedger(session);
+    recordHarnessTelemetryEvent(buildSessionTelemetryEvent(session, "session.activity", {}, msg));
     emitSessionEvent(session, msg);
   }
 
@@ -1216,6 +1273,10 @@ export class SessionTracker {
     this.#markDirty(taskId);
     this.#flushDirty();
     persistSessionRecordToStateLedger(session);
+    recordHarnessTelemetryEvent(buildSessionTelemetryEvent(session, "session.ended", {
+      status: session.status,
+      reason: "session-ended",
+    }));
     emitSessionStateEvent(session, "session-ended", { status: session.status });
   }
 

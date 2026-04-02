@@ -425,6 +425,170 @@ describe("state ledger sqlite workflow integration", () => {
       "harness:approval-requested",
     ]);
   });
+
+  it("persists canonical harness observability events for replay-friendly projections", async () => {
+    const repoRoot = makeTempDir("state-ledger-harness-observability-");
+    const harnessRunsDir = join(repoRoot, ".bosun", ".cache", "harness", "runs");
+    mkdirSync(harnessRunsDir, { recursive: true });
+
+    writeHarnessRunToStateLedger({
+      runId: "harness-run-observe-1",
+      taskId: "task-observe-1",
+      taskKey: "harness:task-observe-1",
+      actor: "ui",
+      recordedAt: "2026-03-31T05:15:00.000Z",
+      startedAt: "2026-03-31T05:10:00.000Z",
+      finishedAt: "2026-03-31T05:15:00.000Z",
+      mode: "run",
+      dryRun: false,
+      sourceOrigin: "ui",
+      sourcePath: "internal-harness-observe.json",
+      artifactId: "artifact-observe-1",
+      artifactPath: "artifact-observe-1.json",
+      compiledProfile: { agentId: "observability-agent", name: "Observability Agent" },
+      result: { success: true, status: "completed" },
+      events: [
+        {
+          id: "observe-e1",
+          seq: 1,
+          timestamp: "2026-03-31T05:10:00.000Z",
+          type: "tool_execution_start",
+          category: "tool",
+          stageId: "implement",
+          stageType: "tool",
+          status: "running",
+          providerId: "openai-codex-subscription",
+          toolId: "shell.exec",
+          toolName: "shell.exec",
+          sessionId: "session-observe-1",
+          traceId: "11111111111111111111111111111111",
+          spanId: "2222222222222222",
+        },
+        {
+          id: "observe-e2",
+          seq: 2,
+          timestamp: "2026-03-31T05:11:00.000Z",
+          type: "approval_requested",
+          category: "control",
+          stageId: "review",
+          stageType: "approval",
+          reason: "push_branch requires approval",
+          status: "pending",
+          actor: "operator",
+          approvalId: "approval-observe-1",
+          toolId: "push_branch",
+        },
+        {
+          id: "observe-e3",
+          seq: 3,
+          timestamp: "2026-03-31T05:12:00.000Z",
+          type: "patch_applied",
+          category: "artifact",
+          stageId: "implement",
+          stageType: "mutation",
+          status: "completed",
+          filePath: "server/ui-server.mjs",
+          patchHash: "patch-observe-1",
+        },
+        {
+          id: "observe-e4",
+          seq: 4,
+          timestamp: "2026-03-31T05:13:00.000Z",
+          type: "subagent_completed",
+          category: "subagent",
+          stageId: "delegate",
+          stageType: "subagent",
+          status: "completed",
+          childSessionId: "session-observe-child-1",
+          childTaskId: "task-observe-child-1",
+        },
+      ],
+    }, { anchorPath: harnessRunsDir });
+
+    const stored = getHarnessRunFromStateLedger("harness-run-observe-1", { anchorPath: harnessRunsDir });
+    expect(stored).toEqual(expect.objectContaining({
+      runId: "harness-run-observe-1",
+      taskId: "task-observe-1",
+      actor: "ui",
+      compiledProfile: expect.objectContaining({ agentId: "observability-agent" }),
+      result: expect.objectContaining({ success: true, status: "completed" }),
+    }));
+    expect(stored.events).toEqual([
+      expect.objectContaining({
+        id: "observe-e1",
+        type: "tool_execution_start",
+        category: "tool",
+        providerId: "openai-codex-subscription",
+        toolId: "shell.exec",
+        traceId: "11111111111111111111111111111111",
+      }),
+      expect.objectContaining({
+        id: "observe-e2",
+        type: "approval_requested",
+        category: "control",
+        approvalId: "approval-observe-1",
+        status: "pending",
+      }),
+      expect.objectContaining({
+        id: "observe-e3",
+        type: "patch_applied",
+        category: "artifact",
+        filePath: "server/ui-server.mjs",
+        patchHash: "patch-observe-1",
+      }),
+      expect.objectContaining({
+        id: "observe-e4",
+        type: "subagent_completed",
+        category: "subagent",
+        childSessionId: "session-observe-child-1",
+        childTaskId: "task-observe-child-1",
+      }),
+    ]);
+
+    const replayEvents = listHarnessRunEventsFromStateLedger("harness-run-observe-1", { anchorPath: harnessRunsDir });
+    expect(replayEvents).toEqual([
+      expect.objectContaining({
+        id: "observe-e1",
+        seq: 1,
+        type: "tool_execution_start",
+        category: "tool",
+      }),
+      expect.objectContaining({
+        id: "observe-e2",
+        seq: 2,
+        type: "approval_requested",
+        category: "control",
+        actor: "operator",
+      }),
+      expect.objectContaining({
+        id: "observe-e3",
+        seq: 3,
+        type: "patch_applied",
+        category: "artifact",
+      }),
+      expect.objectContaining({
+        id: "observe-e4",
+        seq: 4,
+        type: "subagent_completed",
+        category: "subagent",
+      }),
+    ]);
+
+    const listed = listHarnessRunsFromStateLedger({ anchorPath: harnessRunsDir, limit: 10 });
+    expect(listed).toEqual([
+      expect.objectContaining({
+        runId: "harness-run-observe-1",
+        taskId: "task-observe-1",
+        result: expect.objectContaining({ success: true, status: "completed" }),
+        events: expect.arrayContaining([
+          expect.objectContaining({ type: "tool_execution_start" }),
+          expect.objectContaining({ type: "approval_requested" }),
+          expect.objectContaining({ type: "patch_applied" }),
+          expect.objectContaining({ type: "subagent_completed" }),
+        ]),
+      }),
+    ]);
+  });
 });
 
 describe("state ledger sqlite task-claims integration", () => {

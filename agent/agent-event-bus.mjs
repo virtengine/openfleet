@@ -26,6 +26,11 @@ import {
   snapshotRetryQueue,
 } from "./retry-queue.mjs";
 import { addSpanEvent, recordAgentError, recordIntervention } from "../infra/tracing.mjs";
+import {
+  getHarnessTelemetrySummary,
+  listHarnessTelemetryEvents,
+  recordHarnessTelemetryEvent,
+} from "../infra/session-telemetry.mjs";
 
 const TAG = "[agent-event-bus]";
 
@@ -147,6 +152,7 @@ export class AgentEventBus {
         : (typeof globalThis.__bosun_setRetryQueueData === "function"
             ? globalThis.__bosun_setRetryQueueData
             : null);
+    this._configDir = options.configDir || process.cwd();
 
     /** @type {Array<{type: string, taskId: string, payload: object, ts: number}>} ring buffer */
     this._eventLog = [];
@@ -259,6 +265,7 @@ export class AgentEventBus {
     if (this._eventLog.length > this._maxEventLogSize) {
       this._eventLog.shift();
     }
+    this._recordCanonicalEvent(event);
 
     // ── WS broadcast
     if (!opts.skipBroadcast) {
@@ -589,6 +596,7 @@ export class AgentEventBus {
    */
   getStatus() {
     const retryQueue = snapshotRetryQueue(this._retryQueueState);
+    const observability = getHarnessTelemetrySummary({ configDir: this._configDir });
     return {
       started: this._started,
       eventLogSize: this._eventLog.length,
@@ -599,11 +607,22 @@ export class AgentEventBus {
       retryQueue,
       liveness: this.getAgentLiveness(),
       errorPatterns: this.getErrorPatternSummary(),
+      observability: {
+        eventCount: Number(observability?.eventCount || 0),
+        lastEventAt: observability?.lastEventAt || null,
+      },
     };
   }
 
   getRetryQueue() {
     return snapshotRetryQueue(this._retryQueueState);
+  }
+
+  getCanonicalEventLog(filter = {}) {
+    return listHarnessTelemetryEvents({
+      ...filter,
+      source: filter.source || "agent-event-bus",
+    }, { configDir: this._configDir });
   }
 
   clearRetryQueueTask(taskId, reason = "manual") {
@@ -635,6 +654,52 @@ export class AgentEventBus {
     } catch (err) {
       console.warn(`${TAG} WS broadcast error:`, err.message || err);
     }
+  }
+
+  _recordCanonicalEvent(event) {
+    const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
+    recordHarnessTelemetryEvent({
+      id: payload.eventId || payload.id || undefined,
+      timestamp: new Date(Number(event.ts || Date.now())).toISOString(),
+      ts: Number(event.ts || Date.now()),
+      type: event.type,
+      eventType: event.type,
+      source: "agent-event-bus",
+      category: "agent",
+      taskId: event.taskId,
+      sessionId: payload.sessionId || payload.threadId || event.taskId,
+      threadId: payload.threadId || null,
+      runId: payload.runId || null,
+      rootRunId: payload.rootRunId || null,
+      parentRunId: payload.parentRunId || null,
+      workflowId: payload.workflowId || null,
+      workflowName: payload.workflowName || null,
+      providerId: payload.providerId || payload.provider || payload.sdk || null,
+      providerKind: payload.providerKind || null,
+      modelId: payload.modelId || null,
+      requestId: payload.requestId || null,
+      traceId: payload.traceId || null,
+      spanId: payload.spanId || null,
+      parentSpanId: payload.parentSpanId || null,
+      toolId: payload.toolId || null,
+      toolName: payload.toolName || payload.hookId || null,
+      approvalId: payload.approvalId || payload.requestId || null,
+      actor: payload.actor || payload.source || "agent-event-bus",
+      status: payload.status || null,
+      attempt: payload.attempt || null,
+      retryCount: payload.retryCount || null,
+      durationMs: payload.durationMs || null,
+      latencyMs: payload.latencyMs || payload.durationMs || null,
+      costUsd: payload.costUsd || payload.cost || null,
+      tokenUsage: payload.tokenUsage || payload.usage || null,
+      summary: payload.summary || payload.title || null,
+      reason: payload.reason || payload.error || null,
+      message: payload.message || payload.error || null,
+      payload,
+      meta: {
+        source: "agent-event-bus",
+      },
+    }, { configDir: this._configDir });
   }
 
   _updateRetryQueue(action, meta = {}) {
@@ -1100,5 +1165,4 @@ export class AgentEventBus {
 export function createAgentEventBus(options) {
   return new AgentEventBus(options);
 }
-
 

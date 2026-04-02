@@ -296,6 +296,13 @@ import {
   addSessionEventListener,
   addSessionStateListener,
 } from "../infra/session-tracker.mjs";
+import {
+  exportHarnessTelemetryTrace,
+  getHarnessLiveTelemetrySnapshot,
+  getHarnessProviderUsageSummary,
+  getHarnessTelemetrySummary,
+  listHarnessTelemetryEvents,
+} from "../infra/session-telemetry.mjs";
 import { withIncomingTraceContext } from "../infra/tracing.mjs";
 import {
   deleteSessionRecordFromStateLedger,
@@ -22958,6 +22965,71 @@ async function handleApi(req, res, url) {
           },
         },
       });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/harness/summary") {
+    try {
+      jsonResponse(res, 200, { ok: true, data: getHarnessTelemetrySummary({ configDir: process.cwd() }) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/harness/live") {
+    try {
+      jsonResponse(res, 200, { ok: true, data: getHarnessLiveTelemetrySnapshot({ configDir: process.cwd() }) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/harness/events") {
+    try {
+      const filter = {
+        taskId: url.searchParams.get("taskId") || undefined,
+        sessionId: url.searchParams.get("sessionId") || undefined,
+        runId: url.searchParams.get("runId") || undefined,
+        type: url.searchParams.get("type") || undefined,
+        category: url.searchParams.get("category") || undefined,
+        source: url.searchParams.get("source") || undefined,
+        since: url.searchParams.get("since") || undefined,
+        limit: url.searchParams.get("limit") || undefined,
+      };
+      jsonResponse(res, 200, { ok: true, events: listHarnessTelemetryEvents(filter, { configDir: process.cwd() }) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/harness/providers") {
+    try {
+      jsonResponse(res, 200, { ok: true, data: getHarnessProviderUsageSummary({ configDir: process.cwd() }) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/harness/trace") {
+    try {
+      const filter = {
+        taskId: url.searchParams.get("taskId") || undefined,
+        sessionId: url.searchParams.get("sessionId") || undefined,
+        runId: url.searchParams.get("runId") || undefined,
+        type: url.searchParams.get("type") || undefined,
+        category: url.searchParams.get("category") || undefined,
+        source: url.searchParams.get("source") || undefined,
+        since: url.searchParams.get("since") || undefined,
+        limit: url.searchParams.get("limit") || undefined,
+      };
+      jsonResponse(res, 200, { ok: true, data: exportHarnessTelemetryTrace(filter, { configDir: process.cwd() }) });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

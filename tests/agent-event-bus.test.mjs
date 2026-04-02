@@ -4,6 +4,7 @@ import {
   createAgentEventBus,
   AGENT_EVENT,
 } from "../agent/agent-event-bus.mjs";
+import { resetHarnessObservabilitySpinesForTests } from "../infra/session-telemetry.mjs";
 
 describe("agent-event-bus", () => {
   /** @type {AgentEventBus} */
@@ -28,6 +29,7 @@ describe("agent-event-bus", () => {
 
   afterEach(() => {
     bus.stop();
+    resetHarnessObservabilitySpinesForTests();
     vi.useRealTimers();
   });
 
@@ -99,6 +101,24 @@ describe("agent-event-bus", () => {
     it("skips broadcast when opts.skipBroadcast is true", () => {
       bus.emit(AGENT_EVENT.TASK_STARTED, "task-1", {}, { skipBroadcast: true });
       expect(mockBroadcast).not.toHaveBeenCalled();
+    });
+
+    it("still records skipBroadcast events in the canonical telemetry log", () => {
+      bus.emit(AGENT_EVENT.TASK_STARTED, "task-1", {
+        sessionId: "session-1",
+        runId: "run-1",
+        providerId: "openai-api",
+      }, { skipBroadcast: true });
+
+      const events = bus.getCanonicalEventLog({ taskId: "task-1" });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(expect.objectContaining({
+        source: "agent-event-bus",
+        taskId: "task-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        providerId: "openai-api",
+      }));
     });
 
     it("deduplicates events within the dedup window", () => {

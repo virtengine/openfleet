@@ -221,4 +221,153 @@ describe("runtime-accumulator", () => {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
+
+  it("projects completed session observability metrics into runtime aggregates", () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-metrics-"));
+
+    try {
+      _resetRuntimeAccumulatorForTests({ cacheDir });
+
+      addCompletedSession({
+        id: "task-observe-1-session-1",
+        sessionId: "task-observe-1-session-1",
+        sessionKey: "task-observe-1:session-1",
+        taskId: "task-observe-1",
+        taskTitle: "Aggregate observability metrics",
+        startedAt: 1_000,
+        endedAt: 5_000,
+        durationMs: 4_000,
+        tokenCount: 120,
+        inputTokens: 70,
+        outputTokens: 50,
+        turnCount: 3,
+        toolCalls: 5,
+        toolResults: 4,
+        errors: 1,
+        hasEdits: true,
+        hasCommits: false,
+        fileCounts: { editOps: 2 },
+        topTools: [
+          { name: "shell.exec", count: 3 },
+          { name: "apply_patch", count: 1 },
+        ],
+        recentActions: [
+          { type: "tool", label: "Ran shell.exec", level: "info", timestamp: "2026-03-31T07:00:00.000Z" },
+        ],
+        contextWindow: { usedTokens: 800, totalTokens: 1_000 },
+        runtimeHealth: {
+          state: "implementation_done_commit_blocked",
+          severity: "warning",
+          live: false,
+          idleMs: 50,
+          toolCalls: 5,
+          toolResults: 4,
+          errors: 1,
+          hasEdits: true,
+        },
+        status: "implementation_done_commit_blocked",
+      });
+
+      addCompletedSession({
+        id: "task-observe-2-session-1",
+        sessionId: "task-observe-2-session-1",
+        sessionKey: "task-observe-2:session-1",
+        taskId: "task-observe-2",
+        taskTitle: "Aggregate observability metrics follow-up",
+        startedAt: 6_000,
+        endedAt: 11_000,
+        durationMs: 5_000,
+        tokenCount: 200,
+        inputTokens: 120,
+        outputTokens: 80,
+        turnCount: 2,
+        toolCalls: 2,
+        toolResults: 1,
+        errors: 2,
+        hasEdits: false,
+        hasCommits: true,
+        fileCounts: { editOps: 1 },
+        topTools: [
+          { name: "apply_patch", count: 2 },
+          { name: "mcp.search", count: 1 },
+        ],
+        recentActions: [
+          { type: "approval", label: "Approved patch", level: "info", timestamp: "2026-03-31T07:05:00.000Z" },
+          { type: "retry", label: "Retried tool call", level: "warning", timestamp: "2026-03-31T07:06:00.000Z" },
+        ],
+        contextUsagePercent: 92,
+        runtimeHealth: {
+          state: "failed",
+          severity: "error",
+          live: false,
+          idleMs: 10,
+          toolCalls: 2,
+          toolResults: 1,
+          errors: 2,
+          hasCommits: true,
+        },
+        status: "failed",
+      });
+
+      _resetRuntimeAccumulatorForTests({ cacheDir });
+      const stats = getRuntimeStats();
+
+      expect(stats.sessionCount).toBe(2);
+      expect(stats.totalTurns).toBe(5);
+      expect(stats.healthBuckets).toEqual(expect.objectContaining({
+        completed: 1,
+        failed: 1,
+      }));
+      expect(stats.severityBuckets).toEqual(expect.objectContaining({
+        warning: 1,
+        error: 1,
+      }));
+      expect(stats.toolSummary).toEqual(expect.objectContaining({
+        toolCalls: 7,
+        toolResults: 5,
+        errors: 3,
+        editOps: 3,
+        commitOps: 1,
+        sessionsWithEdits: 1,
+        sessionsWithCommits: 1,
+      }));
+      expect(stats.toolSummary.topTools).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "shell.exec", count: 3 }),
+        expect.objectContaining({ name: "apply_patch", count: 3 }),
+        expect.objectContaining({ name: "mcp.search", count: 1 }),
+      ]));
+      expect(stats.contextSummary).toEqual(expect.objectContaining({
+        sessionCount: 2,
+        maxUsagePercent: 92,
+        avgUsagePercent: 86,
+        sessionsNearLimit: 1,
+        sessionsHighPressure: 2,
+      }));
+      expect(stats.completedSessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          taskId: "task-observe-1",
+          topTools: [
+            expect.objectContaining({ name: "shell.exec", count: 3 }),
+            expect.objectContaining({ name: "apply_patch", count: 1 }),
+          ],
+          recentActions: [
+            expect.objectContaining({ type: "tool", label: "Ran shell.exec" }),
+          ],
+          contextWindow: expect.objectContaining({ usedTokens: 800, totalTokens: 1_000, percent: 80 }),
+          runtimeHealth: expect.objectContaining({ state: "completed", severity: "warning" }),
+        }),
+        expect.objectContaining({
+          taskId: "task-observe-2",
+          recentActions: [
+            expect.objectContaining({ type: "approval", label: "Approved patch" }),
+            expect.objectContaining({ type: "retry", label: "Retried tool call" }),
+          ],
+          runtimeHealth: expect.objectContaining({ state: "failed", severity: "error" }),
+        }),
+      ]));
+    } finally {
+      _resetRuntimeAccumulatorForTests();
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -7,6 +7,7 @@ import {
   listHarnessRunsFromStateLedger,
   writeHarnessRunToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
+import { recordHarnessTelemetryEvent } from "../infra/session-telemetry.mjs";
 
 function ensureDir(dirPath) {
   mkdirSync(dirPath, { recursive: true });
@@ -122,7 +123,28 @@ function buildHarnessRunSummary(runRecord) {
     artifactId: runRecord.artifactId || null,
     agentId: runRecord.compiledProfile?.agentId || null,
     eventCount: Array.isArray(runRecord.events) ? runRecord.events.length : 0,
+    observability: runRecord.observability || null,
   };
+}
+
+function summarizeHarnessObservability(events = []) {
+  const summary = {
+    categories: {},
+    eventTypes: {},
+    approvals: 0,
+    tools: 0,
+    subagents: 0,
+  };
+  for (const event of Array.isArray(events) ? events : []) {
+    const category = toTrimmedString(event?.category || "") || "runtime";
+    const type = toTrimmedString(event?.type || event?.eventType || "") || "event";
+    summary.categories[category] = Number(summary.categories[category] || 0) + 1;
+    summary.eventTypes[type] = Number(summary.eventTypes[type] || 0) + 1;
+    if (toTrimmedString(event?.approvalId || "")) summary.approvals += 1;
+    if (toTrimmedString(event?.toolId || event?.toolName || "")) summary.tools += 1;
+    if (/subagent/i.test(category) || /subagent/i.test(type)) summary.subagents += 1;
+  }
+  return summary;
 }
 
 export function compileHarnessSourceToArtifact(source, options = {}) {
@@ -223,6 +245,7 @@ export function recordHarnessRun(runInput, options = {}) {
     events: Array.isArray(runInput?.events)
       ? JSON.parse(JSON.stringify(runInput.events))
       : [],
+    observability: summarizeHarnessObservability(runInput?.events),
   };
   const runPath = resolve(paths.runsDir, `${runId}.json`);
   writeJson(runPath, runRecord);
@@ -231,6 +254,29 @@ export function recordHarnessRun(runInput, options = {}) {
   } catch {
     // best effort during SQL migration; JSON record remains the fallback source
   }
+  recordHarnessTelemetryEvent({
+    timestamp: runRecord.recordedAt,
+    eventType: "harness.run.recorded",
+    type: "harness.run.recorded",
+    source: "internal-harness-control-plane",
+    category: "control-plane",
+    taskId: runRecord.taskId,
+    sessionId: runRecord.runId,
+    runId: runRecord.runId,
+    actor: runRecord.actor,
+    status: runRecord.result?.status || null,
+    summary: runRecord.compiledProfile?.name || runRecord.compiledProfile?.agentId || "harness run",
+    payload: {
+      artifactId: runRecord.artifactId,
+      dryRun: runRecord.dryRun,
+      eventCount: Array.isArray(runRecord.events) ? runRecord.events.length : 0,
+      observability: runRecord.observability,
+    },
+    meta: {
+      source: "internal-harness-control-plane",
+      sourceOrigin: runRecord.sourceOrigin,
+    },
+  }, { configDir: options.configDir });
 
   const activeState = readActiveHarnessState(options.configDir);
   if (
