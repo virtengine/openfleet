@@ -39,8 +39,8 @@ import {
 } from "../components/workspace-switcher.js";
 import { ICONS } from "../modules/icons.js";
 import { formatCompactCount } from "../modules/session-insights.js";
-import { formatRelative, truncate } from "../modules/utils.js";
-import { getSessionRuntimeState, resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import { downloadFile, formatRelative, truncate } from "../modules/utils.js";
+import { buildSessionApiPath, getSessionRuntimeState, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
   Card,
   Badge,
@@ -2916,9 +2916,25 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
   const [sessionSearch, setSessionSearch] = useState("");
   const [selectedEntryKey, setSelectedEntryKey] = useState(null);
   const [copiedSessionId, setCopiedSessionId] = useState("");
+  const [sessionActionMenu, setSessionActionMenu] = useState({ anchorEl: null, sessionId: "" });
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
   const allSessions = Array.isArray(sessions) ? sessions : [];
+  const sessionActionMenuOpen = Boolean(sessionActionMenu?.anchorEl && sessionActionMenu?.sessionId);
+
+  const closeSessionActionMenu = () => {
+    setSessionActionMenu({ anchorEl: null, sessionId: "" });
+  };
+
+  const openSessionActionMenu = (event, sessionId) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (!sessionId) return;
+    setSessionActionMenu({
+      anchorEl: event?.currentTarget || null,
+      sessionId,
+    });
+  };
 
   const copySessionId = (sessionId) => {
     if (!sessionId) return;
@@ -2939,6 +2955,52 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
     } catch (_err) {
       setCopiedSessionId("");
       showToast("Copy failed", "error");
+    }
+  };
+
+  const fetchSessionDiagnostics = async (sessionId) => {
+    const sessionRecord = allSessions.find((entry) => entry?.id === sessionId) || null;
+    const diagnosticsPath = buildSessionApiPath(sessionId, "diagnostics", {
+      workspace: resolveSessionWorkspaceHint(sessionRecord, "all") || "all",
+    });
+    if (!diagnosticsPath) {
+      throw new Error("Session diagnostics path unavailable");
+    }
+    const response = await apiFetch(diagnosticsPath, { _silent: true });
+    return response?.data || null;
+  };
+
+  const handleCopyDiagnostics = async (sessionId) => {
+    closeSessionActionMenu();
+    if (!sessionId) return;
+    if (!navigator?.clipboard?.writeText) {
+      showToast("Clipboard unavailable", "error");
+      return;
+    }
+    try {
+      const diagnostics = await fetchSessionDiagnostics(sessionId);
+      if (!diagnostics) throw new Error("Session diagnostics unavailable");
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      showToast("Session diagnostics copied", "success");
+    } catch (err) {
+      showToast(`Diagnostics export failed: ${err?.message || err}`, "error");
+    }
+  };
+
+  const handleDownloadDiagnostics = async (sessionId) => {
+    closeSessionActionMenu();
+    if (!sessionId) return;
+    try {
+      const diagnostics = await fetchSessionDiagnostics(sessionId);
+      if (!diagnostics) throw new Error("Session diagnostics unavailable");
+      downloadFile(
+        JSON.stringify(diagnostics, null, 2),
+        `session-diagnostics-${sessionId}.json`,
+        "application/json",
+      );
+      showToast("Session diagnostics saved", "success");
+    } catch (err) {
+      showToast(`Diagnostics export failed: ${err?.message || err}`, "error");
     }
   };
 
@@ -3242,7 +3304,10 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
                               data-session-id=${sessionId}
                               data-copied=${copiedSessionId === sessionId ? "true" : "false"}
                               aria-label=${`Copy session ID ${sessionId}`}
-                              onClick=${() => copySessionId(sessionId)}
+                              aria-controls=${sessionActionMenuOpen ? "fleet-session-action-menu" : undefined}
+                              aria-haspopup="menu"
+                              aria-expanded=${sessionActionMenuOpen ? "true" : undefined}
+                              onClick=${(event) => openSessionActionMenu(event, sessionId)}
                               onAnimationEnd=${(event) => {
                                 if (event?.target !== event?.currentTarget) return;
                                 if (copiedSessionId === sessionId) setCopiedSessionId("");
@@ -3262,6 +3327,25 @@ function FleetSessionsPanel({ slots, sessions = [], taskFallbackEntries = [], on
                   `;
                 })}`}
           </div>
+          <${Menu}
+            id="fleet-session-action-menu"
+            anchorEl=${sessionActionMenu?.anchorEl}
+            open=${sessionActionMenuOpen}
+            onClose=${closeSessionActionMenu}
+          >
+            <${MenuItem} onClick=${() => {
+              copySessionId(sessionActionMenu.sessionId);
+              closeSessionActionMenu();
+            }}>
+              Copy Session ID
+            </${MenuItem}>
+            <${MenuItem} onClick=${() => handleCopyDiagnostics(sessionActionMenu.sessionId)}>
+              Copy Diagnostics
+            </${MenuItem}>
+            <${MenuItem} onClick=${() => handleDownloadDiagnostics(sessionActionMenu.sessionId)}>
+              Download Diagnostics
+            </${MenuItem}>
+          </${Menu}>
         </div>
         <div class="session-detail fleet-session-detail">
           ${selectedEntry

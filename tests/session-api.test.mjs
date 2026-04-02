@@ -24,6 +24,11 @@ describe("session api workspace routing", () => {
     expect(path).toBe("/api/sessions/abc123?workspace=all");
   });
 
+  it("builds diagnostics action paths with explicit workspace scope", () => {
+    const path = buildSessionApiPath("abc123", "diagnostics", { workspace: "*" });
+    expect(path).toBe("/api/sessions/abc123/diagnostics?workspace=all");
+  });
+
   it("normalizes wildcard workspace hints to all", () => {
     const path = buildSessionApiPath("abc123", "message", { workspace: "*" });
     expect(path).toBe("/api/sessions/abc123/message?workspace=all");
@@ -342,5 +347,4 @@ describe("session lifecycle/runtime metadata", () => {
     ).toBe("2026-01-02T00:00:00.000Z");
   });
 });
-
 

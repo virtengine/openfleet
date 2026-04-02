@@ -64,7 +64,8 @@ for (const { relPath, source } of sourceFiles) {
       expect(source).toContain("aria-label=${`Copy session ID ${sessionId}`}");
       expect(source).toContain("data-copied=${copiedSessionId === sessionId ? \"true\" : \"false\"}");
       expect(source).toContain("sessionId.slice(0, 8)");
-      expect(source).toContain("copySessionId(sessionId)");
+      expect(source).toContain("openSessionActionMenu(event, sessionId)");
+      expect(source).toContain("Copy Session ID");
       expect(source).toContain("fleet-session-id-pill-icon");
       expect(source).toContain('copiedSessionId === sessionId ? "✓" : ICONS.copy');
     });
