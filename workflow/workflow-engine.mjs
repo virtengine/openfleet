@@ -60,6 +60,7 @@ import {
   writeWorkflowSnapshotToStateLedger,
   writeWorkflowRunDetailToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
+import { recordHarnessTelemetryEvent } from "../infra/session-telemetry.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -3417,6 +3418,41 @@ export class WorkflowEngine extends EventEmitter {
     this._appendTaskTraceToContext(ctx, event);
     this.emit("task:trace", event);
     await this._dispatchTaskTrace(event);
+    recordHarnessTelemetryEvent({
+      timestamp: event.timestamp,
+      eventType: event.eventType,
+      type: event.eventType,
+      source: "workflow-engine",
+      category: "workflow",
+      taskId: event.taskId,
+      sessionId: event.sessionId || event.runId || event.taskId,
+      runId: event.runId,
+      workflowId: event.workflowId,
+      workflowName: event.workflowName,
+      status: event.status,
+      durationMs: event.durationMs,
+      summary: event.summary,
+      message: event.error || event.summary || null,
+      traceId: event.traceId,
+      spanId: event.spanId,
+      parentSpanId: event.parentSpanId,
+      payload: {
+        nodeId: event.nodeId,
+        nodeType: event.nodeType,
+        nodeLabel: event.nodeLabel,
+        error: event.error,
+        meta: event.meta,
+      },
+      meta: {
+        source: "workflow-engine",
+        taskTitle: event.taskTitle,
+        workspaceId: event.workspaceId,
+        agentId: event.agentId,
+        branch: event.branch,
+        prNumber: event.prNumber,
+        prUrl: event.prUrl,
+      },
+    }, { configDir: process.cwd() });
     return event;
   }
 

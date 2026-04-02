@@ -458,6 +458,15 @@ async function main() {
     }
   }
 
+  if (commandExists("cargo")) {
+    const ver = getVersion("cargo");
+    console.log(`  :check: Rust toolchain${ver ? ` (${ver})` : ""} — optional native hot-path builds available via npm run native:build`);
+  } else {
+    console.log("  :alert:  Rust toolchain — not found");
+    console.log("     Bosun will use the built-in .mjs hot-path fallbacks.");
+    console.log("     Optional: install rustup/cargo, then run: npm run native:build");
+  }
+
   // npm-installed tools (bundled with this package)
   // Fix @openai/codex-sdk if its package.json lacks entry points
   // (published "latest" sometimes ships a stub manifest).
@@ -583,4 +592,3 @@ async function main() {
 main().catch((err) => {
   console.error(`  :alert:  postinstall failed: ${err.message}`);
 });
-

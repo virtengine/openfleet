@@ -1,13 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   createHarnessObservabilitySpine,
   exportHarnessTelemetryTrace,
+  flushHarnessTelemetryRuntimeForTests,
   resetHarnessObservabilitySpinesForTests,
 } from "../infra/session-telemetry.mjs";
 
 describe("session telemetry spine", () => {
+  const tempDirs = [];
+
   afterEach(() => {
+    while (tempDirs.length > 0) {
+      rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
     resetHarnessObservabilitySpinesForTests();
   });
 
@@ -105,6 +114,47 @@ describe("session telemetry spine", () => {
     expect(exportedTrace.traceEvents[0]).toEqual(expect.objectContaining({
       name: "provider.turn.completed",
       cat: "provider",
+    }));
+  });
+
+  it("batches persistence in the JS telemetry runtime and reports hot-path status", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "bosun-telemetry-runtime-"));
+    tempDirs.push(configDir);
+    const spine = createHarnessObservabilitySpine({
+      persist: true,
+      configDir,
+      maxInMemoryEvents: 16,
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      spine.recordEvent({
+        timestamp: `2026-04-02T09:00:0${index}.000Z`,
+        eventType: "workflow.node.complete",
+        source: "workflow-engine",
+        category: "workflow",
+        taskId: "task-hot-path",
+        sessionId: "session-hot-path",
+        runId: "run-hot-path",
+        status: "completed",
+        summary: `workflow node ${index}`,
+      });
+    }
+
+    await flushHarnessTelemetryRuntimeForTests();
+
+    const summary = spine.getSummary();
+    expect(summary.hotPath.exec).toEqual(expect.objectContaining({
+      available: true,
+      service: "exec",
+      reason: "javascript",
+    }));
+    expect(summary.hotPath.telemetry).toEqual(expect.objectContaining({
+      available: true,
+      service: "telemetry",
+      reason: "javascript",
+      processedEvents: 3,
+      persistedEvents: 3,
+      persistBatches: 1,
     }));
   });
 });

@@ -8,6 +8,7 @@ import {
   mergeToolRuntimeContext,
   normalizeToolRuntimeContext,
 } from "../agent/tool-runtime-context.mjs";
+import { createToolOrchestrator } from "../agent/tool-orchestrator.mjs";
 import {
   composeToolRegistryEntries,
   createToolRegistry,
@@ -26,6 +27,11 @@ import {
   truncateToolOutput,
 } from "../agent/tool-output-truncation.mjs";
 import {
+  truncateCompactedPreviewText,
+  truncateCompactedToolOutput,
+} from "../workspace/context-cache.mjs";
+import { resetBosunHotPathRuntimeForTests } from "../lib/hot-path-runtime.mjs";
+import {
   getApprovalRequestById,
   resolveApprovalRequest,
 } from "../workflow/approval-queue.mjs";
@@ -34,6 +40,7 @@ describe("tool governance support", () => {
   const tempRoots = [];
 
   afterEach(() => {
+    resetBosunHotPathRuntimeForTests();
     while (tempRoots.length > 0) {
       const root = tempRoots.pop();
       try {
@@ -254,12 +261,14 @@ describe("tool governance support", () => {
 
   it("truncates oversized text and JSON outputs with bounded previews", () => {
     const text = truncateText("x".repeat(120), { maxChars: 48, tailChars: 8 });
-    const structured = truncateToolOutput({
+    const payload = {
       lines: Array.from({ length: 24 }, (_, index) => `line-${index}-${"y".repeat(12)}`),
-    }, {
+    };
+    const options = {
       maxChars: 96,
       tailChars: 16,
-    });
+    };
+    const structured = truncateToolOutput(payload, options);
 
     expect(text.truncated).toBe(true);
     expect(text.text).toContain("…truncated");
@@ -268,6 +277,39 @@ describe("tool governance support", () => {
     expect(structured.data).toEqual(expect.objectContaining({
       truncated: true,
       preview: expect.stringContaining("…truncated"),
+    }));
+    expect(text).toEqual(truncateCompactedPreviewText("x".repeat(120), { maxChars: 48, tailChars: 8 }));
+    expect(structured).toEqual(truncateCompactedToolOutput(payload, options));
+  });
+
+  it("reports in-process hot-path truncation metadata through the orchestrator", async () => {
+    const events = [];
+    const orchestrator = createToolOrchestrator({
+      executeTool: async () => ({
+        lines: Array.from({ length: 12 }, (_, index) => `line-${index}-${"z".repeat(24)}`),
+      }),
+      truncation: {
+        maxChars: 96,
+        tailChars: 16,
+      },
+      onEvent: (event) => events.push(event),
+    });
+
+    const result = await orchestrator.execute("list_tasks", { limit: 1 }, {});
+
+    expect(result).toBeTruthy();
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      type: "tool_execution_end",
+      hotPath: expect.objectContaining({
+        exec: expect.objectContaining({
+          available: true,
+          service: "exec",
+          reason: "javascript",
+        }),
+      }),
+      truncation: expect.objectContaining({
+        truncated: true,
+      }),
     }));
   });
 });

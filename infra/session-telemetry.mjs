@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { LiveEventProjector } from "./live-event-projector.mjs";
 import { ProviderUsageLedger } from "./provider-usage-ledger.mjs";
 import { RuntimeMetrics } from "./runtime-metrics.mjs";
 import { exportHarnessTrace } from "./trace-export.mjs";
+import {
+  cloneHotPathValue,
+  getBosunHotPathStatus,
+} from "../lib/hot-path-runtime.mjs";
+import { createHarnessTelemetryRuntime } from "./session-telemetry-runtime.mjs";
 
 const DEFAULT_MAX_IN_MEMORY_EVENTS = 20_000;
 const OBSERVABILITY_SPINES = new Map();
-
-function ensureDir(dirPath) {
-  mkdirSync(dirPath, { recursive: true });
-}
 
 function asText(value) {
   if (value == null) return null;
@@ -25,10 +26,7 @@ function asNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function cloneValue(value) {
-  if (value == null) return value;
-  return JSON.parse(JSON.stringify(value));
-}
+const cloneValue = cloneHotPathValue;
 
 function isLikelyTestRuntime() {
   if (process.env.BOSUN_TEST_SANDBOX === "1") return true;
@@ -100,11 +98,6 @@ function trimUndefinedEntries(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
-}
-
-function appendJsonLine(filePath, value) {
-  ensureDir(dirname(filePath));
-  appendFileSync(filePath, `${JSON.stringify(value)}\n`, "utf8");
 }
 
 function readJsonLines(filePath) {
@@ -208,7 +201,14 @@ export class HarnessObservabilitySpine {
     this.projector = new LiveEventProjector(options);
     this.metrics = new RuntimeMetrics();
     this.providerUsage = new ProviderUsageLedger();
-    this._events = [];
+    this.runtime = createHarnessTelemetryRuntime({
+      persist: this.persist,
+      maxInMemoryEvents: this.maxInMemoryEvents,
+      paths: this.paths,
+      projector: this.projector,
+      metrics: this.metrics,
+      providerUsage: this.providerUsage,
+    });
     this._loaded = false;
   }
 
@@ -216,23 +216,16 @@ export class HarnessObservabilitySpine {
     if (this._loaded) return;
     this._loaded = true;
     if (!this.persist) return;
-    for (const entry of readJsonLines(this.paths.eventsPath)) {
-      this._ingest(entry, { persist: false });
-    }
+    this.runtime.load(readJsonLines(this.paths.eventsPath));
   }
 
   _ingest(event, options = {}) {
     const normalized = normalizeCanonicalHarnessEvent(event);
-    this._events.push(normalized);
-    if (this._events.length > this.maxInMemoryEvents) {
-      this._events.splice(0, this._events.length - this.maxInMemoryEvents);
+    if (options.persist === false) {
+      this.runtime.load([normalized]);
+      return normalized;
     }
-    this.projector.record(normalized);
-    this.metrics.record(normalized);
-    this.providerUsage.record(normalized);
-    if (options.persist !== false && this.persist) {
-      appendJsonLine(this.paths.eventsPath, normalized);
-    }
+    this.runtime.record(normalized);
     return normalized;
   }
 
@@ -244,7 +237,7 @@ export class HarnessObservabilitySpine {
   listEvents(filter = {}) {
     this._loadOnce();
     const since = normalizeFilterTimestamp(filter.since);
-    let events = this._events;
+    let events = this.runtime.getEvents();
     if (filter.source) {
       const source = String(filter.source).trim();
       events = events.filter((entry) => entry.source === source);
@@ -296,13 +289,18 @@ export class HarnessObservabilitySpine {
 
   getSummary() {
     this._loadOnce();
-    const lastEvent = this._events.at(-1) || null;
+    const events = this.runtime.getEvents();
+    const lastEvent = events.at(-1) || null;
     return {
-      eventCount: this._events.length,
+      eventCount: events.length,
       lastEventAt: lastEvent?.timestamp || null,
       live: this.getLiveSnapshot(),
       metrics: this.getMetricsSummary(),
       providers: this.getProviderUsageSummary(),
+      hotPath: {
+        ...getBosunHotPathStatus(),
+        telemetry: this.runtime.getStatus(),
+      },
     };
   }
 
@@ -311,9 +309,14 @@ export class HarnessObservabilitySpine {
     return exportHarnessTrace(this.listEvents(filter), filter);
   }
 
+  async flush() {
+    this._loadOnce();
+    await this.runtime.flush();
+  }
+
   reset() {
-    this._events = [];
     this._loaded = false;
+    this.runtime.reset();
     this.projector.reset();
     this.metrics.reset();
     this.providerUsage.reset();
@@ -357,10 +360,19 @@ export function exportHarnessTelemetryTrace(filter = {}, options = {}) {
   return getHarnessObservabilitySpine(options).exportTrace(filter);
 }
 
+export function getHarnessHotPathStatus(options = {}) {
+  return getHarnessObservabilitySpine(options).getSummary().hotPath;
+}
+
+export async function flushHarnessTelemetryRuntimeForTests() {
+  await Promise.all(
+    [...OBSERVABILITY_SPINES.values()].map((spine) => spine.flush()),
+  );
+}
+
 export function resetHarnessObservabilitySpinesForTests() {
   for (const spine of OBSERVABILITY_SPINES.values()) {
     spine.reset();
   }
   OBSERVABILITY_SPINES.clear();
 }
-

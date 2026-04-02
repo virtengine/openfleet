@@ -5,6 +5,10 @@ import { evaluateToolNetworkPolicy } from "./tool-network-policy.mjs";
 import { buildToolExecutionEnvelope } from "./tool-runtime-context.mjs";
 import { createToolRegistry } from "./tool-registry.mjs";
 import { truncateToolOutput } from "./tool-output-truncation.mjs";
+import {
+  getBosunHotPathStatus,
+  truncateWithBosunHotPathExec,
+} from "../lib/hot-path-runtime.mjs";
 import { randomUUID } from "node:crypto";
 
 function toTrimmedString(value) {
@@ -150,6 +154,19 @@ export function createToolOrchestrator(options = {}) {
       });
       const approval = approvalOutcome?.approval || approvalManager.evaluate(toolDefinition, envelope.context);
       if (approval.blocked) {
+        if (approval.approvalState === "denied" || approval.approvalState === "expired") {
+          emitEvent({
+            type: "approval_resolved",
+            toolName: envelope.toolName,
+            args: envelope.args,
+            context: envelope.context,
+            executionId,
+            approval,
+            request: approvalOutcome?.request || null,
+            status: approval.approvalState,
+            decision: approval.approvalState,
+          });
+        }
         emitEvent({
           type: "approval_requested",
           toolName: envelope.toolName,
@@ -169,6 +186,19 @@ export function createToolOrchestrator(options = {}) {
             executionId,
           },
         );
+      }
+      if (approval.approvalRequired === true && approval.blocked !== true) {
+        emitEvent({
+          type: "approval_resolved",
+          toolName: envelope.toolName,
+          args: envelope.args,
+          context: envelope.context,
+          executionId,
+          approval,
+          request: approvalOutcome?.request || null,
+          status: approval.approvalState || "approved",
+          decision: approval.approvalState || "approved",
+        });
       }
       const network = evaluateToolNetworkPolicy(toolDefinition, envelope.context, options.networkPolicy || {});
       if (network.blocked) {
@@ -207,13 +237,33 @@ export function createToolOrchestrator(options = {}) {
         attempt += 1;
         try {
           const result = await executeTool(toolName, args, envelope.context, toolDefinition);
-          const truncated = truncateToolOutput(result, options.truncation || {});
+          // These previews are observability-only. Authoritative session compaction
+          // runs later in workspace/context-cache.mjs after the full turn is collected.
+          const hotPathTruncated = await truncateWithBosunHotPathExec(
+            result,
+            options.truncation || {},
+          );
+          const truncated = hotPathTruncated || truncateToolOutput(result, options.truncation || {});
+          emitEvent({
+            type: "tool_execution_update",
+            ...eventBase,
+            attempt,
+            attemptCount: attempt,
+            status: "completed",
+            hotPath: getBosunHotPathStatus(),
+            truncation: {
+              truncated: truncated.truncated,
+              originalBytes: truncated.originalBytes,
+              retainedBytes: truncated.retainedBytes,
+            },
+          });
           emitEvent({
             type: "tool_execution_end",
             ...eventBase,
             attempt,
             attemptCount: attempt,
             result: truncated,
+            hotPath: getBosunHotPathStatus(),
             truncation: {
               truncated: truncated.truncated,
               originalBytes: truncated.originalBytes,
@@ -224,6 +274,14 @@ export function createToolOrchestrator(options = {}) {
         } catch (error) {
           lastError = error;
           const errorMessage = String(error?.message || error);
+          emitEvent({
+            type: "tool_execution_update",
+            ...eventBase,
+            attempt,
+            attemptCount: attempt,
+            status: attempt < retry.maxAttempts ? "retrying" : "failed",
+            error: errorMessage,
+          });
           if (attempt < retry.maxAttempts) {
             emitEvent({
               type: "tool_execution_retry",

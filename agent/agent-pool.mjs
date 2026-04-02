@@ -63,7 +63,10 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
-import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
+import {
+  maybeCompressSessionItems,
+  normalizeContextShreddingSessionType,
+} from "../workspace/context-cache.mjs";
 import { compileInternalHarnessProfile } from "./internal-harness-profile.mjs";
 import { createInternalHarnessSession as createHarnessRuntimeSession } from "./internal-harness-runtime.mjs";
 import {
@@ -96,6 +99,10 @@ import {
   THREAD_MAX_AGE_MS,
   threadRegistry,
 } from "./thread-registry.mjs";
+import {
+  bufferItemsWithBosunHotPathExec,
+  getBosunHotPathStatus,
+} from "../lib/hot-path-runtime.mjs";
 
 // Upper bound for externally supplied harness timeouts to avoid unbounded runs.
 const MAX_HARNESS_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -763,17 +770,48 @@ function truncateItemForStorage(item, maxChars) {
   return next;
 }
 
-const SHORT_LIVED_SHREDDING_SESSION_TYPES = new Set([
-  "ephemeral",
-  "voice-delegate",
-  "voice-ask",
-  "voice-mcp",
-  "voice-workflow-generate",
-]);
+async function finalizeBufferedTurnItems(items, limits = {}) {
+  const maxItems = clampNumeric(
+    limits.maxItems,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    Array.isArray(items) ? items.length : 1,
+  );
+  const maxItemChars = clampNumeric(limits.maxItemChars, 64, 100_000, 4000);
+  const initialDroppedItems = clampNumeric(limits.droppedItems, 0, Number.MAX_SAFE_INTEGER, 0);
+  const sourceItems = Array.isArray(items) ? items : [];
+  const hotPathResult = await bufferItemsWithBosunHotPathExec(sourceItems, {
+    maxItems,
+    maxItemChars,
+    droppedItems: initialDroppedItems,
+  });
+  if (hotPathResult?.ok) {
+    const compacted = Array.isArray(hotPathResult.items) ? [...hotPathResult.items] : [];
+    if (hotPathResult.notice && typeof hotPathResult.notice === "object") {
+      compacted.push(hotPathResult.notice);
+    }
+    return {
+      items: compacted,
+      droppedItems: Number(hotPathResult.droppedItems || 0),
+      hotPath: getBosunHotPathStatus().exec,
+    };
+  }
 
-function normalizeSessionType(value, fallback = "task") {
-  const text = String(value || "").trim().toLowerCase();
-  return text || fallback;
+  const bounded = sourceItems
+    .slice(0, maxItems)
+    .map((item) => truncateItemForStorage(item, maxItemChars));
+  const droppedItems = initialDroppedItems + Math.max(0, sourceItems.length - bounded.length);
+  if (droppedItems > 0) {
+    bounded.push({
+      type: "stream_notice",
+      text: `Dropped ${droppedItems} completed items to stay within INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN=${maxItems}.`,
+    });
+  }
+  return {
+    items: bounded,
+    droppedItems,
+    hotPath: getBosunHotPathStatus().exec,
+  };
 }
 
 function normalizeSdkForShredding(sdk) {
@@ -784,12 +822,6 @@ function normalizeSdkForShredding(sdk) {
   if (raw === "copilot") return "copilot-sdk";
   if (raw === "claude") return "claude-sdk";
   return raw;
-}
-
-function isShortLivedShreddingSession(sessionType) {
-  return SHORT_LIVED_SHREDDING_SESSION_TYPES.has(
-    normalizeSessionType(sessionType, "task"),
-  );
 }
 
 async function maybeCompressResultItems(
@@ -807,11 +839,8 @@ async function maybeCompressResultItems(
   }
   if (skipCompression) return items;
   if (!allowCompression && !forceCompression) return items;
-  if (isShortLivedShreddingSession(sessionType) && !forceCompression) {
-    return items;
-  }
 
-  const resolvedSessionType = normalizeSessionType(sessionType, "task");
+  const resolvedSessionType = normalizeContextShreddingSessionType(sessionType, "task");
   const agentType = normalizeSdkForShredding(sdk);
   return maybeCompressSessionItems(items, {
     sessionType: resolvedSessionType,
@@ -819,6 +848,18 @@ async function maybeCompressResultItems(
     force: forceCompression,
     skip: skipCompression,
   });
+}
+
+export function shouldCompressSessionItemsByDefault(
+  sessionType,
+  { compressEphemeralItems = false, forceCompression = false } = {},
+) {
+  if (forceCompression) return true;
+  const resolvedSessionType = normalizeContextShreddingSessionType(sessionType, "task");
+  if (resolvedSessionType === "ephemeral") {
+    return compressEphemeralItems;
+  }
+  return true;
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {
@@ -2090,7 +2131,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
         }
         if (event.type === "item.completed") {
           if (allItems.length < streamSafety.maxItemsPerTurn) {
-            allItems.push(truncateItemForStorage(event.item, streamSafety.maxItemChars));
+            allItems.push(event.item);
           } else {
             droppedItems += 1;
           }
@@ -2116,12 +2157,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
-    if (droppedItems > 0) {
-      allItems.push({
-        type: "stream_notice",
-        text: `Dropped ${droppedItems} completed items to stay within INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN=${streamSafety.maxItemsPerTurn}.`,
-      });
-    }
+    const finalizedItems = await finalizeBufferedTurnItems(allItems, {
+      maxItems: streamSafety.maxItemsPerTurn,
+      maxItemChars: streamSafety.maxItemChars,
+      droppedItems,
+    });
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
@@ -2129,10 +2169,13 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     return {
       success: true,
       output,
-      items: allItems,
+      items: finalizedItems.items,
       error: null,
       sdk: "codex",
       threadId: thread.id || null,
+      hotPath: {
+        exec: finalizedItems.hotPath,
+      },
     };
   } catch (err) {
     clearAbortScope();
@@ -3659,8 +3702,9 @@ export async function launchEphemeralThread(
  * @param {boolean}            [options.forceContextShredding] Force compression even for short-lived session types.
  * @param {boolean}            [options.skipContextShredding]  Skip compression regardless of policy.
  * @param {boolean}            [options.compressEphemeralItems]
- *   Whether to apply context shredding/compression to ephemeral pooled runs.
- *   Defaults to false for maximum fidelity in short-lived delegate calls.
+ *   Whether to apply context shredding/compression to bare ephemeral pooled runs.
+ *   Non-ephemeral helper sessions (task/flow/delegate/voice) use the shared
+ *   context-shredding path by default.
  * @returns {Promise<{ finalResponse: string, items: Array, usage: object|null }>}
  */
 export async function execPooledPrompt(userMessage, options = {}) {
@@ -3701,7 +3745,10 @@ export async function execPooledPrompt(userMessage, options = {}) {
   }
 
   let finalItems = result.items;
-  if (compressEphemeralItems || forceContextShredding) {
+  if (shouldCompressSessionItemsByDefault(sessionType, {
+    compressEphemeralItems,
+    forceCompression: forceContextShredding,
+  })) {
     try {
       finalItems = await maybeCompressResultItems(result.items, {
         sdk: sdk || result.sdk,
@@ -3978,14 +4025,22 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
+    const streamSafety = resolveCodexStreamSafety(timeoutMs);
+    const finalizedItems = await finalizeBufferedTurnItems(allItems, {
+      maxItems: streamSafety.maxItemsPerTurn,
+      maxItemChars: streamSafety.maxItemChars,
+    });
     const newThreadId = thread.id || threadId;
     return {
       success: true,
       output: finalResponse.trim() || "(resumed — no text output)",
-      items: allItems,
+      items: finalizedItems.items,
       error: null,
       sdk: "codex",
       threadId: newThreadId,
+      hotPath: {
+        exec: finalizedItems.hotPath,
+      },
     };
   } catch (err) {
     clearAbortScope();
