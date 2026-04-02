@@ -121,6 +121,33 @@ describe("agent-event-bus", () => {
       }));
     });
 
+    it("forwards artifact and subagent payload fields into canonical telemetry filters", () => {
+      bus.emit(AGENT_EVENT.TASK_COMPLETED, "task-1", {
+        sessionId: "session-1",
+        runId: "run-1",
+        filePath: "server/ui-server.mjs",
+        patchHash: "patch-bus-1",
+        childSessionId: "session-child-bus-1",
+        childTaskId: "task-child-bus-1",
+        subagentId: "subagent-bus-1",
+      }, { skipBroadcast: true });
+
+      const fileEvents = bus.getCanonicalEventLog({ filePath: "server/ui-server.mjs" });
+      const childEvents = bus.getCanonicalEventLog({ childSessionId: "session-child-bus-1" });
+
+      expect(fileEvents).toHaveLength(1);
+      expect(fileEvents[0]).toEqual(expect.objectContaining({
+        filePath: "server/ui-server.mjs",
+        patchHash: "patch-bus-1",
+      }));
+      expect(childEvents).toHaveLength(1);
+      expect(childEvents[0]).toEqual(expect.objectContaining({
+        childSessionId: "session-child-bus-1",
+        childTaskId: "task-child-bus-1",
+        subagentId: "subagent-bus-1",
+      }));
+    });
+
     it("deduplicates events within the dedup window", () => {
       bus.emit(AGENT_EVENT.AGENT_HEARTBEAT, "task-1", {});
       bus.emit(AGENT_EVENT.AGENT_HEARTBEAT, "task-1", {}); // duplicate

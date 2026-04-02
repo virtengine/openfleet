@@ -117,6 +117,99 @@ describe("session telemetry spine", () => {
     }));
   });
 
+  it("projects artifact mutations and subagent lineage into live views, metrics, and filters", () => {
+    const spine = createHarnessObservabilitySpine({ persist: false });
+
+    spine.recordEvent({
+      timestamp: "2026-04-03T08:00:00.000Z",
+      eventType: "patch_applied",
+      source: "internal-harness-control-plane",
+      category: "artifact",
+      taskId: "task-artifact-1",
+      sessionId: "session-artifact-1",
+      runId: "run-artifact-1",
+      artifactId: "artifact-1",
+      artifactPath: "server/ui-server.mjs",
+      patchHash: "patch-1",
+      status: "completed",
+      summary: "patched ui server",
+    });
+
+    spine.recordEvent({
+      timestamp: "2026-04-03T08:00:01.000Z",
+      eventType: "subagent_completed",
+      source: "internal-harness-control-plane",
+      category: "subagent",
+      taskId: "task-artifact-1",
+      sessionId: "session-artifact-1",
+      runId: "run-artifact-1",
+      childSessionId: "session-child-1",
+      childTaskId: "task-child-1",
+      subagentId: "subagent-1",
+      status: "completed",
+      summary: "delegate finished",
+    });
+
+    const summary = spine.getSummary();
+    expect(summary.live.sessions[0]).toEqual(expect.objectContaining({
+      artifactMutations: 1,
+      subagentEvents: 1,
+      lastArtifactPath: "server/ui-server.mjs",
+      childSessionIds: ["session-child-1"],
+      childTaskIds: ["task-child-1"],
+    }));
+    expect(summary.live.runs[0]).toEqual(expect.objectContaining({
+      artifactMutations: 1,
+      subagentEvents: 1,
+      childSessionIds: ["session-child-1"],
+      childTaskIds: ["task-child-1"],
+    }));
+    expect(summary.live.artifacts[0]).toEqual(expect.objectContaining({
+      artifactId: "artifact-1",
+      artifactPath: "server/ui-server.mjs",
+      patchHash: "patch-1",
+      lastEventType: "patch_applied",
+    }));
+    expect(summary.live.subagents[0]).toEqual(expect.objectContaining({
+      subagentId: "subagent-1",
+      childSessionId: "session-child-1",
+      childTaskId: "task-child-1",
+      parentSessionId: "session-artifact-1",
+      parentTaskId: "task-artifact-1",
+    }));
+    expect(summary.metrics.totals).toEqual(expect.objectContaining({
+      artifactMutations: 1,
+      subagentEvents: 1,
+    }));
+    expect(summary.metrics.byCategory).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "artifact", count: 1 }),
+      expect.objectContaining({ key: "subagent", count: 1 }),
+    ]));
+
+    expect(spine.listEvents({ filePath: "server/ui-server.mjs" })).toHaveLength(1);
+    expect(spine.listEvents({ childSessionId: "session-child-1" })).toHaveLength(1);
+    expect(spine.listEvents({ subagentId: "subagent-1" })).toHaveLength(1);
+
+    const exportedTrace = spine.exportTrace({ runId: "run-artifact-1" });
+    expect(exportedTrace.traceEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "patch_applied",
+        args: expect.objectContaining({
+          artifactPath: "server/ui-server.mjs",
+          patchHash: "patch-1",
+        }),
+      }),
+      expect.objectContaining({
+        name: "subagent_completed",
+        args: expect.objectContaining({
+          childSessionId: "session-child-1",
+          childTaskId: "task-child-1",
+          subagentId: "subagent-1",
+        }),
+      }),
+    ]));
+  });
+
   it("batches persistence in the JS telemetry runtime and reports hot-path status", async () => {
     const configDir = mkdtempSync(join(tmpdir(), "bosun-telemetry-runtime-"));
     tempDirs.push(configDir);

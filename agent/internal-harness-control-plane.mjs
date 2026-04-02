@@ -134,6 +134,8 @@ function summarizeHarnessObservability(events = []) {
     approvals: 0,
     tools: 0,
     subagents: 0,
+    fileMutations: 0,
+    patchApplications: 0,
   };
   for (const event of Array.isArray(events) ? events : []) {
     const category = toTrimmedString(event?.category || "") || "runtime";
@@ -143,8 +145,80 @@ function summarizeHarnessObservability(events = []) {
     if (toTrimmedString(event?.approvalId || "")) summary.approvals += 1;
     if (toTrimmedString(event?.toolId || event?.toolName || "")) summary.tools += 1;
     if (/subagent/i.test(category) || /subagent/i.test(type)) summary.subagents += 1;
+    if (
+      /artifact|patch|file\.|mutation/i.test(category)
+      || /artifact|patch|file\.|mutation/i.test(type)
+      || toTrimmedString(event?.filePath || event?.artifactPath || event?.patchHash || "")
+    ) {
+      summary.fileMutations += 1;
+    }
+    if (/patch/i.test(type) || toTrimmedString(event?.patchHash || "")) {
+      summary.patchApplications += 1;
+    }
   }
   return summary;
+}
+
+function recordHarnessRunObservabilityEvents(runRecord, configDir) {
+  const events = Array.isArray(runRecord?.events) ? runRecord.events : [];
+  for (const rawEvent of events) {
+    if (!rawEvent || typeof rawEvent !== "object") continue;
+    const eventType = toTrimmedString(rawEvent.eventType || rawEvent.type) || "event";
+    recordHarnessTelemetryEvent({
+      id: toTrimmedString(rawEvent.id || "") || undefined,
+      timestamp: toTrimmedString(rawEvent.timestamp || "") || runRecord.recordedAt,
+      eventType,
+      type: eventType,
+      source: toTrimmedString(rawEvent.source || "internal-harness-control-plane") || "internal-harness-control-plane",
+      category: toTrimmedString(rawEvent.category || "") || undefined,
+      taskId: toTrimmedString(rawEvent.taskId || runRecord.taskId || "") || null,
+      sessionId: toTrimmedString(rawEvent.sessionId || runRecord.runId || runRecord.taskId || "") || null,
+      threadId: toTrimmedString(rawEvent.threadId || "") || null,
+      runId: toTrimmedString(rawEvent.runId || runRecord.runId || "") || null,
+      rootRunId: toTrimmedString(rawEvent.rootRunId || "") || null,
+      parentRunId: toTrimmedString(rawEvent.parentRunId || "") || null,
+      childRunId: toTrimmedString(rawEvent.childRunId || "") || null,
+      workflowId: toTrimmedString(rawEvent.workflowId || "") || null,
+      workflowName: toTrimmedString(rawEvent.workflowName || "") || null,
+      stageId: toTrimmedString(rawEvent.stageId || "") || null,
+      stageType: toTrimmedString(rawEvent.stageType || "") || null,
+      providerId: toTrimmedString(rawEvent.providerId || "") || null,
+      providerKind: toTrimmedString(rawEvent.providerKind || "") || null,
+      modelId: toTrimmedString(rawEvent.modelId || "") || null,
+      requestId: toTrimmedString(rawEvent.requestId || "") || null,
+      traceId: toTrimmedString(rawEvent.traceId || "") || null,
+      spanId: toTrimmedString(rawEvent.spanId || "") || null,
+      parentSpanId: toTrimmedString(rawEvent.parentSpanId || "") || null,
+      parentSessionId: toTrimmedString(rawEvent.parentSessionId || "") || null,
+      childSessionId: toTrimmedString(rawEvent.childSessionId || "") || null,
+      parentTaskId: toTrimmedString(rawEvent.parentTaskId || "") || null,
+      childTaskId: toTrimmedString(rawEvent.childTaskId || "") || null,
+      subagentId: toTrimmedString(rawEvent.subagentId || "") || null,
+      toolId: toTrimmedString(rawEvent.toolId || "") || null,
+      toolName: toTrimmedString(rawEvent.toolName || "") || null,
+      approvalId: toTrimmedString(rawEvent.approvalId || "") || null,
+      artifactId: toTrimmedString(rawEvent.artifactId || "") || null,
+      artifactPath: toTrimmedString(rawEvent.artifactPath || rawEvent.filePath || "") || null,
+      patchHash: toTrimmedString(rawEvent.patchHash || "") || null,
+      actor: toTrimmedString(rawEvent.actor || runRecord.actor || "") || null,
+      status: toTrimmedString(rawEvent.status || "") || null,
+      attempt: Number.isFinite(Number(rawEvent.attempt)) ? Number(rawEvent.attempt) : null,
+      retryCount: Number.isFinite(Number(rawEvent.retryCount)) ? Number(rawEvent.retryCount) : null,
+      durationMs: Number.isFinite(Number(rawEvent.durationMs)) ? Number(rawEvent.durationMs) : null,
+      latencyMs: Number.isFinite(Number(rawEvent.latencyMs)) ? Number(rawEvent.latencyMs) : null,
+      costUsd: Number.isFinite(Number(rawEvent.costUsd)) ? Number(rawEvent.costUsd) : null,
+      tokenUsage: rawEvent.tokenUsage && typeof rawEvent.tokenUsage === "object" ? rawEvent.tokenUsage : null,
+      summary: toTrimmedString(rawEvent.summary || rawEvent.reason || rawEvent.message || "") || null,
+      reason: toTrimmedString(rawEvent.reason || "") || null,
+      message: toTrimmedString(rawEvent.message || "") || null,
+      payload: rawEvent,
+      meta: {
+        sourceOrigin: runRecord.sourceOrigin || null,
+        artifactId: runRecord.artifactId || null,
+        controlPlaneRunId: runRecord.runId,
+      },
+    }, { configDir });
+  }
 }
 
 export function compileHarnessSourceToArtifact(source, options = {}) {
@@ -169,6 +243,30 @@ export function compileHarnessSourceToArtifact(source, options = {}) {
     compiledProfileJson: compileResult.compiledProfileJson,
   };
   writeJson(artifactPath, artifact);
+  recordHarnessTelemetryEvent({
+    timestamp: artifact.compiledAt,
+    eventType: "harness.artifact.compiled",
+    type: "harness.artifact.compiled",
+    source: "internal-harness-control-plane",
+    category: "artifact",
+    actor: toTrimmedString(options.actor || "api") || "api",
+    artifactId,
+    artifactPath,
+    status: artifact.isValid === true ? "compiled" : "invalid",
+    summary: artifact.compiledProfile?.name || artifact.compiledProfile?.agentId || "harness artifact",
+    payload: {
+      sourceOrigin: artifact.sourceOrigin,
+      sourcePath: artifact.sourcePath,
+      validationMode: artifact.validationMode,
+      isValid: artifact.isValid,
+      agentId: artifact.compiledProfile?.agentId || null,
+      entryStageId: artifact.compiledProfile?.entryStageId || null,
+    },
+    meta: {
+      source: "internal-harness-control-plane",
+      sourceOrigin: artifact.sourceOrigin,
+    },
+  }, { configDir: options.configDir });
   return {
     ...compileResult,
     artifact,
@@ -200,6 +298,29 @@ export function activateHarnessArtifact(artifactPath, options = {}) {
     },
   };
   writeJson(paths.activeStatePath, activeState);
+  recordHarnessTelemetryEvent({
+    timestamp: activeState.activatedAt,
+    eventType: "harness.artifact.activated",
+    type: "harness.artifact.activated",
+    source: "internal-harness-control-plane",
+    category: "artifact",
+    actor: activeState.actor,
+    artifactId: activeState.artifactId,
+    artifactPath: activeState.artifactPath,
+    status: activeState.isValid === true ? "active" : "invalid",
+    summary: activeState.compiledProfile?.name || activeState.compiledProfile?.agentId || "active harness",
+    payload: {
+      sourceOrigin: activeState.sourceOrigin,
+      sourcePath: activeState.sourcePath,
+      validationMode: activeState.validationMode,
+      isValid: activeState.isValid,
+      entryStageId: activeState.compiledProfile?.entryStageId || null,
+    },
+    meta: {
+      source: "internal-harness-control-plane",
+      sourceOrigin: activeState.sourceOrigin,
+    },
+  }, { configDir: options.configDir });
   return activeState;
 }
 
@@ -254,6 +375,7 @@ export function recordHarnessRun(runInput, options = {}) {
   } catch {
     // best effort during SQL migration; JSON record remains the fallback source
   }
+  recordHarnessRunObservabilityEvents(runRecord, options.configDir);
   recordHarnessTelemetryEvent({
     timestamp: runRecord.recordedAt,
     eventType: "harness.run.recorded",

@@ -51,6 +51,10 @@ import {
   writeHarnessRunToStateLedger,
   writeWorkflowRunDetailToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
+import {
+  listHarnessTelemetryEvents,
+  resetHarnessObservabilitySpinesForTests,
+} from "../infra/session-telemetry.mjs";
 
 vi.mock("../infra/presence.mjs", () => ({
   getPresenceState: vi.fn(() => ({
@@ -94,6 +98,7 @@ async function loadTaskClaimsModule() {
 
 afterEach(async () => {
   resetStateLedgerCache();
+  resetHarnessObservabilitySpinesForTests();
   await vi.resetModules();
   while (tempDirs.length) {
     rmSync(tempDirs.pop(), { recursive: true, force: true });
@@ -586,6 +591,128 @@ describe("state ledger sqlite workflow integration", () => {
           expect.objectContaining({ type: "patch_applied" }),
           expect.objectContaining({ type: "subagent_completed" }),
         ]),
+      }),
+    ]);
+  });
+
+  it("replays recorded harness run events into the canonical telemetry spine", async () => {
+    const repoRoot = makeTempDir("state-ledger-harness-telemetry-replay-");
+    const controlPlane = await import("../agent/internal-harness-control-plane.mjs");
+
+    controlPlane.recordHarnessRun({
+      runId: "harness-run-telemetry-1",
+      taskId: "task-telemetry-1",
+      actor: "ui",
+      sourceOrigin: "ui",
+      artifactId: "artifact-telemetry-1",
+      artifactPath: "artifact-telemetry-1.json",
+      compiledProfile: { agentId: "telemetry-agent", name: "Telemetry Agent" },
+      result: { success: true, status: "completed" },
+      events: [
+        {
+          id: "telemetry-e1",
+          timestamp: "2026-04-03T10:00:00.000Z",
+          type: "patch_applied",
+          category: "artifact",
+          stageId: "implement",
+          stageType: "mutation",
+          filePath: "server/ui-server.mjs",
+          patchHash: "patch-telemetry-1",
+          status: "completed",
+        },
+        {
+          id: "telemetry-e2",
+          timestamp: "2026-04-03T10:00:01.000Z",
+          type: "subagent_completed",
+          category: "subagent",
+          stageId: "delegate",
+          stageType: "subagent",
+          childSessionId: "session-telemetry-child-1",
+          childTaskId: "task-telemetry-child-1",
+          subagentId: "subagent-telemetry-1",
+          status: "completed",
+        },
+      ],
+    }, { configDir: join(repoRoot, ".bosun") });
+
+    const fileEvents = listHarnessTelemetryEvents({
+      filePath: "server/ui-server.mjs",
+    }, { configDir: join(repoRoot, ".bosun") });
+    const childEvents = listHarnessTelemetryEvents({
+      childSessionId: "session-telemetry-child-1",
+    }, { configDir: join(repoRoot, ".bosun") });
+
+    expect(fileEvents).toEqual([
+      expect.objectContaining({
+        eventType: "patch_applied",
+        category: "artifact",
+        artifactPath: "server/ui-server.mjs",
+        patchHash: "patch-telemetry-1",
+        runId: "harness-run-telemetry-1",
+      }),
+    ]);
+    expect(childEvents).toEqual([
+      expect.objectContaining({
+        eventType: "subagent_completed",
+        category: "subagent",
+        childSessionId: "session-telemetry-child-1",
+        childTaskId: "task-telemetry-child-1",
+        subagentId: "subagent-telemetry-1",
+        runId: "harness-run-telemetry-1",
+      }),
+    ]);
+  });
+
+  it("records harness artifact compile and activation events into the canonical telemetry spine", async () => {
+    const repoRoot = makeTempDir("state-ledger-harness-artifact-observability-");
+    const controlPlane = await import("../agent/internal-harness-control-plane.mjs");
+    const configDir = join(repoRoot, ".bosun");
+    const source = [
+      "# Internal Harness",
+      "```json",
+      JSON.stringify({
+        name: "Observability Harness",
+        entryStageId: "plan",
+        stages: [
+          {
+            id: "plan",
+            type: "prompt",
+            prompt: "Plan the task.",
+          },
+        ],
+      }),
+      "```",
+    ].join("\n");
+
+    const compiled = controlPlane.compileHarnessSourceToArtifact(source, {
+      configDir,
+      sourceOrigin: "ui",
+      actor: "operator",
+    });
+    const activeState = controlPlane.activateHarnessArtifact(compiled.artifactPath, {
+      configDir,
+      actor: "operator",
+    });
+
+    const artifactEvents = listHarnessTelemetryEvents({
+      artifactId: compiled.artifactId,
+    }, { configDir });
+
+    expect(activeState.artifactId).toBe(compiled.artifactId);
+    expect(artifactEvents).toEqual([
+      expect.objectContaining({
+        eventType: "harness.artifact.compiled",
+        category: "artifact",
+        artifactId: compiled.artifactId,
+        artifactPath: compiled.artifactPath,
+        actor: "operator",
+      }),
+      expect.objectContaining({
+        eventType: "harness.artifact.activated",
+        category: "artifact",
+        artifactId: compiled.artifactId,
+        artifactPath: compiled.artifactPath,
+        actor: "operator",
       }),
     ]);
   });

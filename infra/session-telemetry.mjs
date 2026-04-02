@@ -78,12 +78,39 @@ function normalizeJsonObject(value) {
   return cloneValue(value);
 }
 
+function pickText(...values) {
+  for (const value of values) {
+    const text = asText(value);
+    if (text) return text;
+  }
+  return null;
+}
+
+function pickNumber(...values) {
+  for (const value of values) {
+    const numeric = asNumber(value);
+    if (numeric != null) return numeric;
+  }
+  return null;
+}
+
 function inferCategory(eventType, source) {
   const normalizedType = String(eventType || "").trim().toLowerCase();
   const normalizedSource = String(source || "").trim().toLowerCase();
   if (normalizedSource.includes("workflow") || normalizedType.startsWith("node.") || normalizedType.startsWith("run.")) {
     return "workflow";
   }
+  if (
+    normalizedType.includes("artifact")
+    || normalizedType.includes("patch")
+    || normalizedType.includes("file.")
+    || normalizedType.includes("mutation")
+  ) return "artifact";
+  if (
+    normalizedType.includes("subagent")
+    || normalizedType.includes("delegate")
+    || normalizedSource.includes("subagent")
+  ) return "subagent";
   if (normalizedType.includes("approval")) return "approval";
   if (normalizedType.includes("tool")) return "tool";
   if (normalizedType.includes("provider") || normalizedType.includes("model") || normalizedType.includes("token")) return "provider";
@@ -144,8 +171,8 @@ export function normalizeCanonicalHarnessEvent(input = {}) {
   const eventType = asText(input.eventType || input.type || payload?.type) || "event";
   const source = asText(input.source || meta?.source) || "unknown";
   const category = asText(input.category) || inferCategory(eventType, source);
-  const taskId = asText(input.taskId || payload?.taskId || meta?.taskId || input.session?.taskId);
-  const sessionId = asText(input.sessionId || meta?.sessionId || input.session?.id) || taskId;
+  const taskId = pickText(input.taskId, payload?.taskId, meta?.taskId, input.session?.taskId);
+  const sessionId = pickText(input.sessionId, payload?.sessionId, meta?.sessionId, input.session?.id) || taskId;
   return trimUndefinedEntries({
     id: asText(input.id || input.eventId) || randomUUID(),
     timestamp,
@@ -156,30 +183,66 @@ export function normalizeCanonicalHarnessEvent(input = {}) {
     source,
     taskId,
     sessionId,
-    threadId: asText(input.threadId || meta?.threadId),
-    turnId: asText(input.turnId || meta?.turnId),
-    runId: asText(input.runId || meta?.runId),
-    rootRunId: asText(input.rootRunId || meta?.rootRunId),
-    parentRunId: asText(input.parentRunId || meta?.parentRunId),
-    workflowId: asText(input.workflowId || meta?.workflowId),
-    workflowName: asText(input.workflowName || meta?.workflowName),
-    providerId: asText(input.providerId || input.provider || payload?.providerId || meta?.providerId),
-    providerKind: asText(input.providerKind || payload?.providerKind || meta?.providerKind),
-    modelId: asText(input.modelId || payload?.modelId || meta?.modelId),
-    requestId: asText(input.requestId || meta?.requestId),
-    traceId: asText(input.traceId || meta?.traceId),
-    spanId: asText(input.spanId || meta?.spanId),
-    parentSpanId: asText(input.parentSpanId || meta?.parentSpanId),
-    toolId: asText(input.toolId || payload?.toolId || meta?.toolId),
-    toolName: asText(input.toolName || input.name || payload?.toolName || payload?.name || meta?.toolName),
-    approvalId: asText(input.approvalId || payload?.approvalId || meta?.approvalId),
-    actor: asText(input.actor || meta?.actor),
-    status: asText(input.status || payload?.status || meta?.status),
-    attempt: asNumber(input.attempt || payload?.attempt || meta?.attempt),
-    retryCount: asNumber(input.retryCount || payload?.retryCount || meta?.retryCount),
-    durationMs: asNumber(input.durationMs || payload?.durationMs || meta?.durationMs),
-    latencyMs: asNumber(input.latencyMs || input.durationMs || payload?.latencyMs || meta?.latencyMs),
-    costUsd: asNumber(input.costUsd || input.cost || payload?.costUsd || payload?.cost || meta?.costUsd),
+    rootTaskId: pickText(input.rootTaskId, payload?.rootTaskId, meta?.rootTaskId),
+    parentTaskId: pickText(input.parentTaskId, payload?.parentTaskId, meta?.parentTaskId),
+    childTaskId: pickText(input.childTaskId, payload?.childTaskId, meta?.childTaskId),
+    delegationDepth: pickNumber(input.delegationDepth, payload?.delegationDepth, meta?.delegationDepth),
+    threadId: pickText(input.threadId, payload?.threadId, meta?.threadId),
+    turnId: pickText(input.turnId, payload?.turnId, meta?.turnId),
+    runId: pickText(input.runId, payload?.runId, meta?.runId),
+    rootRunId: pickText(input.rootRunId, payload?.rootRunId, meta?.rootRunId),
+    parentRunId: pickText(input.parentRunId, payload?.parentRunId, meta?.parentRunId),
+    childRunId: pickText(input.childRunId, payload?.childRunId, meta?.childRunId),
+    workflowId: pickText(input.workflowId, payload?.workflowId, meta?.workflowId),
+    workflowName: pickText(input.workflowName, payload?.workflowName, meta?.workflowName),
+    nodeId: pickText(input.nodeId, payload?.nodeId, meta?.nodeId),
+    nodeType: pickText(input.nodeType, payload?.nodeType, meta?.nodeType),
+    nodeLabel: pickText(input.nodeLabel, payload?.nodeLabel, meta?.nodeLabel),
+    stageId: pickText(input.stageId, payload?.stageId, meta?.stageId),
+    stageType: pickText(input.stageType, payload?.stageType, meta?.stageType),
+    providerId: pickText(input.providerId, input.provider, payload?.providerId, payload?.provider, meta?.providerId),
+    providerKind: pickText(input.providerKind, payload?.providerKind, meta?.providerKind),
+    providerTurnId: pickText(input.providerTurnId, payload?.providerTurnId, meta?.providerTurnId),
+    modelId: pickText(input.modelId, payload?.modelId, meta?.modelId),
+    requestId: pickText(input.requestId, payload?.requestId, meta?.requestId),
+    traceId: pickText(input.traceId, payload?.traceId, meta?.traceId),
+    spanId: pickText(input.spanId, payload?.spanId, meta?.spanId),
+    parentSpanId: pickText(input.parentSpanId, payload?.parentSpanId, meta?.parentSpanId),
+    executionId: pickText(input.executionId, payload?.executionId, meta?.executionId),
+    executionKey: pickText(input.executionKey, payload?.executionKey, meta?.executionKey),
+    executionKind: pickText(input.executionKind, payload?.executionKind, meta?.executionKind),
+    executionLabel: pickText(input.executionLabel, payload?.executionLabel, meta?.executionLabel),
+    parentExecutionId: pickText(input.parentExecutionId, payload?.parentExecutionId, meta?.parentExecutionId),
+    causedByExecutionId: pickText(input.causedByExecutionId, payload?.causedByExecutionId, meta?.causedByExecutionId),
+    rootSessionId: pickText(input.rootSessionId, payload?.rootSessionId, meta?.rootSessionId),
+    parentSessionId: pickText(input.parentSessionId, payload?.parentSessionId, meta?.parentSessionId),
+    childSessionId: pickText(input.childSessionId, payload?.childSessionId, meta?.childSessionId),
+    subagentId: pickText(input.subagentId, payload?.subagentId, meta?.subagentId),
+    toolId: pickText(input.toolId, payload?.toolId, meta?.toolId),
+    toolName: pickText(input.toolName, input.name, payload?.toolName, payload?.name, meta?.toolName),
+    approvalId: pickText(input.approvalId, payload?.approvalId, meta?.approvalId),
+    artifactId: pickText(input.artifactId, payload?.artifactId, meta?.artifactId),
+    artifactPath: pickText(input.artifactPath, input.filePath, payload?.artifactPath, payload?.filePath, meta?.artifactPath, meta?.filePath),
+    filePath: pickText(input.filePath, payload?.filePath, meta?.filePath, input.artifactPath, payload?.artifactPath, meta?.artifactPath),
+    fileHash: pickText(input.fileHash, payload?.fileHash, meta?.fileHash),
+    patchHash: pickText(input.patchHash, payload?.patchHash, meta?.patchHash),
+    commandId: pickText(input.commandId, payload?.commandId, meta?.commandId),
+    commandName: pickText(input.commandName, payload?.commandName, meta?.commandName),
+    surface: pickText(input.surface, payload?.surface, meta?.surface),
+    channel: pickText(input.channel, payload?.channel, meta?.channel),
+    action: pickText(input.action, payload?.action, meta?.action),
+    workspaceId: pickText(input.workspaceId, payload?.workspaceId, meta?.workspaceId),
+    repoRoot: pickText(input.repoRoot, payload?.repoRoot, meta?.repoRoot),
+    branch: pickText(input.branch, payload?.branch, meta?.branch),
+    prNumber: pickNumber(input.prNumber, payload?.prNumber, meta?.prNumber),
+    prUrl: pickText(input.prUrl, payload?.prUrl, meta?.prUrl),
+    actor: pickText(input.actor, payload?.actor, meta?.actor),
+    status: pickText(input.status, payload?.status, meta?.status),
+    attempt: pickNumber(input.attempt, payload?.attempt, meta?.attempt),
+    retryCount: pickNumber(input.retryCount, payload?.retryCount, meta?.retryCount),
+    durationMs: pickNumber(input.durationMs, payload?.durationMs, meta?.durationMs),
+    latencyMs: pickNumber(input.latencyMs, input.durationMs, payload?.latencyMs, payload?.durationMs, meta?.latencyMs, meta?.durationMs),
+    costUsd: pickNumber(input.costUsd, input.cost, payload?.costUsd, payload?.cost, meta?.costUsd, meta?.cost),
     tokenUsage,
     summary: asText(input.summary || payload?.summary || meta?.summary),
     reason: asText(input.reason || payload?.reason || meta?.reason),
@@ -243,29 +306,37 @@ export class HarnessObservabilitySpine {
     this._loadOnce();
     const since = normalizeFilterTimestamp(filter.since);
     let events = this.runtime.getEvents();
-    if (filter.source) {
-      const source = String(filter.source).trim();
-      events = events.filter((entry) => entry.source === source);
-    }
-    if (filter.type) {
-      const type = String(filter.type).trim();
-      events = events.filter((entry) => entry.eventType === type || entry.type === type);
-    }
-    if (filter.category) {
-      const category = String(filter.category).trim();
-      events = events.filter((entry) => entry.category === category);
-    }
-    if (filter.taskId) {
-      const taskId = String(filter.taskId).trim();
-      events = events.filter((entry) => entry.taskId === taskId);
-    }
-    if (filter.sessionId) {
-      const sessionId = String(filter.sessionId).trim();
-      events = events.filter((entry) => entry.sessionId === sessionId);
-    }
-    if (filter.runId) {
-      const runId = String(filter.runId).trim();
-      events = events.filter((entry) => entry.runId === runId || entry.rootRunId === runId);
+    const exactFilterMap = [
+      ["source", ["source"]],
+      ["type", ["eventType", "type"]],
+      ["category", ["category"]],
+      ["taskId", ["taskId", "rootTaskId", "parentTaskId", "childTaskId"]],
+      ["sessionId", ["sessionId", "rootSessionId", "parentSessionId", "childSessionId", "threadId"]],
+      ["runId", ["runId", "rootRunId", "parentRunId", "childRunId"]],
+      ["workflowId", ["workflowId"]],
+      ["providerId", ["providerId"]],
+      ["modelId", ["modelId"]],
+      ["toolName", ["toolName", "toolId"]],
+      ["approvalId", ["approvalId"]],
+      ["actor", ["actor"]],
+      ["filePath", ["filePath", "artifactPath"]],
+      ["artifactId", ["artifactId"]],
+      ["childSessionId", ["childSessionId"]],
+      ["childTaskId", ["childTaskId"]],
+      ["traceId", ["traceId"]],
+      ["spanId", ["spanId", "parentSpanId"]],
+      ["executionId", ["executionId", "parentExecutionId", "causedByExecutionId"]],
+      ["surface", ["surface"]],
+      ["channel", ["channel"]],
+      ["action", ["action", "commandName"]],
+      ["workspaceId", ["workspaceId"]],
+      ["nodeId", ["nodeId"]],
+      ["subagentId", ["subagentId"]],
+    ];
+    for (const [filterKey, candidateKeys] of exactFilterMap) {
+      const expected = String(filter[filterKey] || "").trim();
+      if (!expected) continue;
+      events = events.filter((entry) => candidateKeys.some((key) => String(entry?.[key] || "").trim() === expected));
     }
     if (since != null) {
       events = events.filter((entry) => Number(entry.ts || Date.parse(entry.timestamp || 0)) >= since);
@@ -279,16 +350,19 @@ export class HarnessObservabilitySpine {
 
   getLiveSnapshot() {
     this._loadOnce();
+    this.runtime.flushForeground();
     return this.projector.getSnapshot();
   }
 
   getMetricsSummary() {
     this._loadOnce();
+    this.runtime.flushForeground();
     return this.metrics.getSummary();
   }
 
   getProviderUsageSummary() {
     this._loadOnce();
+    this.runtime.flushForeground();
     return this.providerUsage.getUsageSummary();
   }
 

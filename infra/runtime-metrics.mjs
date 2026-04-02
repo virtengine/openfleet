@@ -34,7 +34,11 @@ export class RuntimeMetrics {
       measuredEvents: 0,
       retries: 0,
       approvals: 0,
+      artifactMutations: 0,
+      patchApplications: 0,
+      subagentEvents: 0,
     };
+    this._byCategory = new Map();
     this._byType = new Map();
     this._bySource = new Map();
     this._byStatus = new Map();
@@ -44,6 +48,7 @@ export class RuntimeMetrics {
 
   record(event = {}) {
     const eventType = asText(event.eventType || event.type) || "event";
+    const category = asText(event.category) || "runtime";
     const source = asText(event.source) || "unknown";
     const status = asText(event.status);
     const toolKey = asText(event.toolName || event.toolId);
@@ -62,11 +67,15 @@ export class RuntimeMetrics {
     this._totals.costUsd += costUsd;
     this._totals.retries += retryCount;
     if (asText(event.approvalId)) this._totals.approvals += 1;
+    if (asText(event.filePath || event.artifactPath || event.patchHash || event.artifactId)) this._totals.artifactMutations += 1;
+    if (asText(event.patchHash) || eventType.includes("patch")) this._totals.patchApplications += 1;
+    if (asText(event.childSessionId || event.childTaskId || event.childRunId || event.subagentId)) this._totals.subagentEvents += 1;
     if (Number.isFinite(latencyMs) && latencyMs > 0) {
       this._totals.totalLatencyMs += latencyMs;
       this._totals.measuredEvents += 1;
     }
 
+    ensureMetricEntry(this._byCategory, category, () => ({ key: category, count: 0 })).count += 1;
     ensureMetricEntry(this._byType, eventType, () => ({ key: eventType, count: 0 })).count += 1;
     ensureMetricEntry(this._bySource, source, () => ({ key: source, count: 0 })).count += 1;
     if (status) ensureMetricEntry(this._byStatus, status, () => ({ key: status, count: 0 })).count += 1;
@@ -113,6 +122,7 @@ export class RuntimeMetrics {
         ...this._totals,
         averageLatencyMs,
       },
+      byCategory: toSortedArray(this._byCategory, (left, right) => right.count - left.count),
       byType: toSortedArray(this._byType, (left, right) => right.count - left.count),
       bySource: toSortedArray(this._bySource, (left, right) => right.count - left.count),
       byStatus: toSortedArray(this._byStatus, (left, right) => right.count - left.count),
@@ -132,7 +142,11 @@ export class RuntimeMetrics {
       measuredEvents: 0,
       retries: 0,
       approvals: 0,
+      artifactMutations: 0,
+      patchApplications: 0,
+      subagentEvents: 0,
     };
+    this._byCategory.clear();
     this._byType.clear();
     this._bySource.clear();
     this._byStatus.clear();
@@ -140,4 +154,3 @@ export class RuntimeMetrics {
     this._providerMetrics.clear();
   }
 }
-
