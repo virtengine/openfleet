@@ -78,4 +78,83 @@ describe("ui-server session actions", () => {
     ).then((response) => response.json());
     expect(resumedSession.session?.status).toBe("active");
   }, 15000);
+
+  it("exports a diagnostics bundle for the requested session", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const taskStore = await import("../task/task-store.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: 0,
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const baseUrl = String(mod.getTelegramUiUrl() || `http://127.0.0.1:${port}`).trim();
+    if (baseUrl.startsWith("https://")) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    }
+    const apiUrl = (path) => new URL(path, `${baseUrl}/`).toString();
+
+    taskStore.createTask({
+      id: "TASK-DIAG-1",
+      title: "Diagnostics export",
+      status: "inprogress",
+      branch: "task/TASK-DIAG-1-export",
+      workflowRuns: [
+        {
+          runId: "run-diag-1",
+          workflowId: "wf-diag-1",
+          status: "completed",
+          primarySessionId: "session-diag-1",
+          issueAdvisor: {
+            recommendedAction: "resume_remaining",
+            summary: "Resume from Agent Plan.",
+          },
+        },
+      ],
+    });
+    await taskStore.waitForStoreWrites();
+
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "session-diag-1",
+      type: "task",
+      taskId: "TASK-DIAG-1",
+      metadata: {
+        title: "Diagnostics export",
+        workflowId: "wf-diag-1",
+        workflowName: "Diagnostics Flow",
+        branch: "task/TASK-DIAG-1-export",
+      },
+    });
+    tracker.appendEvent("session-diag-1", {
+      role: "assistant",
+      type: "agent_message",
+      content: "Collected diagnostics context.",
+      timestamp: "2026-03-04T01:00:00.000Z",
+      meta: {
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 250,
+          total_tokens: 1250,
+        },
+      },
+    });
+
+    const diagnostics = await fetch(
+      apiUrl("/api/sessions/session-diag-1/diagnostics?workspace=all"),
+    ).then((response) => response.json());
+
+    expect(diagnostics.ok).toBe(true);
+    expect(diagnostics.data?.schemaVersion).toBe(1);
+    expect(diagnostics.data?.session?.id).toBe("session-diag-1");
+    expect(diagnostics.data?.session?.tokenUsage?.totalTokens).toBe(1250);
+    expect(diagnostics.data?.linked?.task?.id).toBe("TASK-DIAG-1");
+    expect(diagnostics.data?.linked?.workflowRuns?.[0]).toMatchObject({
+      runId: "run-diag-1",
+      workflowId: "wf-diag-1",
+    });
+  }, 15000);
 });

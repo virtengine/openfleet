@@ -2767,6 +2767,32 @@ async function collectTaskLogDiagnostics(task, workspaceDir = "", limit = 8) {
   });
 }
 
+async function buildSessionLinkedTaskContext(session, reqUrl) {
+  const taskId = String(session?.taskId || "").trim();
+  const sessionId = String(session?.id || session?.sessionId || "").trim();
+  if (!taskId || taskId === sessionId) return null;
+
+  const adapter = getKanbanAdapter();
+  const task = await Promise.resolve(adapter?.getTask?.(taskId)).catch(() => null);
+  if (!task) return null;
+
+  const enriched = await applySharedStateToTasks([task]).catch(() => [task]);
+  let detailTask = enriched[0] || task;
+  const tracker = getSessionTracker();
+  const workflowRuns = await collectWorkflowRunsForTask(detailTask.id || taskId, reqUrl, 12).catch(() => []);
+  const mergedWorkflowRuns = mergeTaskWorkflowRuns(detailTask.workflowRuns, workflowRuns, 20);
+  detailTask.workflowRuns = mergedWorkflowRuns;
+
+  const linkedSessionIds = collectTaskLinkedSessionIds(detailTask, tracker);
+  const primarySessionId = linkedSessionIds[0] || null;
+  const linkedWorktreePath = await resolveTaskLinkedWorktreePath(detailTask, tracker).catch(() => null);
+  if (primarySessionId && !detailTask.primarySessionId) detailTask.primarySessionId = primarySessionId;
+  if (linkedWorktreePath) detailTask.worktreePath = linkedWorktreePath;
+  detailTask.linkedSessionIds = linkedSessionIds;
+  detailTask = withTaskRuntimeSnapshot(detailTask);
+  return detailTask;
+}
+
 async function buildTaskBlockedContext(task, options = {}) {
   const currentTask = task && typeof task === "object" ? task : {};
   const canStart = options.canStart && typeof options.canStart === "object"
@@ -26862,6 +26888,26 @@ if (path === "/api/agent-logs/context") {
             pagination: { total, offset, limit, hasMore: offset > 0 },
           });
         }
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (action === "diagnostics" && req.method === "GET") {
+      try {
+        const session = getScopedSessionRecord({ includeMessages: true });
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        const { buildSessionDiagnosticsBundle } = await import("../lib/session-insights.mjs");
+        const linkedTask = await buildSessionLinkedTaskContext(session, url).catch(() => null);
+        const data = buildSessionDiagnosticsBundle(session, {
+          exportedAt: new Date().toISOString(),
+          task: linkedTask,
+        });
+        jsonResponse(res, 200, { ok: true, data });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
