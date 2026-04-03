@@ -27,7 +27,7 @@ import {
   closeSync,
 } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { execFileSync, execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
@@ -51,6 +51,10 @@ const MONITOR_START_MAX_WAIT_MS = Math.max(
 const MONITOR_START_RETRY_MS = Math.max(
   100,
   Number(process.env.BOSUN_MONITOR_START_RETRY_MS || "500") || 500,
+);
+const DAEMON_START_STABILITY_MS = Math.max(
+  500,
+  Number(process.env.BOSUN_DAEMON_START_STABILITY_MS || "8000") || 8000,
 );
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -260,18 +264,20 @@ function isWslInteropRuntime() {
   );
 }
 
+function resolveRepoRootForCliRuntime(options = {}) {
+  const repoRootArg = getArgValue("--repo-root");
+  if (repoRootArg) return resolve(repoRootArg);
+  if (process.env.REPO_ROOT) return resolve(process.env.REPO_ROOT);
+  return resolveRepoRoot({ cwd: options.cwd || process.cwd() });
+}
+
 function resolveConfigDirForCli() {
   const configDirArg = getArgValue("--config-dir");
   if (configDirArg) return resolve(configDirArg);
   if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
 
-  const repoRootArg = getArgValue("--repo-root");
-  const repoRoot = repoRootArg
-    ? resolve(repoRootArg)
-    : process.env.REPO_ROOT
-      ? resolve(process.env.REPO_ROOT)
-      : resolveRepoRoot({ cwd: process.cwd() });
+  const repoRoot = resolveRepoRootForCliRuntime();
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
 
@@ -322,7 +328,7 @@ function printConfigLocations() {
 
 // ── Daemon Mode ──────────────────────────────────────────────────────────────
 
-const runtimeRepoRoot = resolveRepoRoot();
+const runtimeRepoRoot = resolveRepoRootForCliRuntime();
 const runtimeCacheDir = resolve(runtimeRepoRoot, ".cache");
 // Monitor singleton lock file (owned by monitor.mjs / maintenance.mjs).
 const PID_FILE = resolve(runtimeCacheDir, "bosun.pid");
@@ -762,11 +768,14 @@ function normalizeDetachedDaemonArgs(rawArgs = []) {
 }
 
 function resolveDetachedDaemonEnvOverrides() {
+  const explicitRepoRoot = getArgValue("--repo-root");
   return {
     BOSUN_DAEMON: "1",
     BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),
     ...(process.env.REPO_ROOT
-      ? {}
+      ? { REPO_ROOT: resolve(process.env.REPO_ROOT) }
+      : explicitRepoRoot
+        ? { REPO_ROOT: resolve(explicitRepoRoot) }
       : (() => {
           try {
             const gitRoot = execSync("git rev-parse --show-toplevel", {
@@ -910,11 +919,14 @@ function startDaemon() {
       launchSpec.args,
       {
         detached: true,
-        stdio: daemonLogFd == null ? "ignore" : ["ignore", daemonLogFd, daemonLogFd],
+        stdio:
+          daemonLogFd == null ? "ignore" : ["ignore", daemonLogFd, daemonLogFd],
         windowsHide: process.platform === "win32",
         env: {
           ...launchSpec.env,
-          ...(daemonLogFd == null ? {} : { BOSUN_DAEMON_STDIO_REDIRECTED: "1" }),
+          ...(daemonLogFd == null
+            ? {}
+            : { BOSUN_DAEMON_STDIO_REDIRECTED: "1" }),
         },
         // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
         cwd: launchSpec.cwd,
@@ -938,6 +950,22 @@ function startDaemon() {
   } else if (!isProcessAlive(daemonPid)) {
     closeDaemonLogFd();
     throw new Error("Detached daemon exited before writing its PID file");
+  }
+  const stabilityDeadline = Date.now() + DAEMON_START_STABILITY_MS;
+  while (Date.now() < stabilityDeadline) {
+    if (!isProcessAlive(daemonPid)) {
+      closeDaemonLogFd();
+      throw new Error(
+        "Detached daemon exited during startup stability window; Windows child-process policy is preventing a durable daemon start in this runtime.",
+      );
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
+  if (!isProcessAlive(daemonPid)) {
+    closeDaemonLogFd();
+    throw new Error(
+      "Detached daemon exited during startup stability window; Windows child-process policy is preventing a durable daemon start in this runtime.",
+    );
   }
   closeDaemonLogFd();
 
@@ -2541,6 +2569,38 @@ function tailLinesFromFile(filePath, maxLines = 200) {
   }
 }
 
+function checkPipedChildProcessLaunch() {
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["-e", "process.exit(0)"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 2000,
+      },
+    );
+    if (result?.error) {
+      return {
+        ok: false,
+        code: String(result.error?.code || "").trim().toUpperCase() || null,
+      };
+    }
+    return {
+      ok: Number(result?.status) === 0,
+      code:
+        Number(result?.status) === 0
+          ? null
+          : String(result?.status ?? "").trim() || null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      code: String(error?.code || "").trim().toUpperCase() || null,
+    };
+  }
+}
+
 function detectDaemonRestartStormSignals(options) {
   const resolvedOptions = options && typeof options === "object" ? options : {};
   const logDir = resolvedOptions.logDir || resolve(__dirname, "logs");
@@ -2583,6 +2643,20 @@ function detectDaemonRestartStormSignals(options) {
     hasSignal: reasons.length > 0,
     reasons,
   };
+}
+
+function installInlineMonitorKeepAlive() {
+  const existing = globalThis.__bosunInlineMonitorKeepAlive;
+  if (existing && typeof existing.refresh === "function") {
+    existing.refresh();
+    return existing;
+  }
+  if (existing && typeof existing.hasRef === "function" && existing.hasRef()) {
+    return existing;
+  }
+  const timer = setInterval(() => {}, 60_000);
+  globalThis.__bosunInlineMonitorKeepAlive = timer;
+  return timer;
 }
 
 function shouldPauseDaemonRestartStorm(options) {
@@ -2688,6 +2762,20 @@ function runMonitor({ restartReason = "" } = {}) {
         } else {
           delete childEnv.BOSUN_MONITOR_RESTART_REASON;
         }
+        let forceInlineMonitor = false;
+        if (process.platform === "win32") {
+          const childProcessLaunch = checkPipedChildProcessLaunch();
+          forceInlineMonitor =
+            childProcessLaunch?.ok === false &&
+            ["EPERM", "EACCES"].includes(
+              String(childProcessLaunch?.code || "").trim().toUpperCase(),
+            );
+          if (forceInlineMonitor) {
+            console.warn(
+              `\n  [cli] monitor child spawn preflight blocked (${childProcessLaunch.code}); forcing inline monitor execution`,
+            );
+          }
+        }
         const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
         const monitorArgs = [...runAsNode, monitorPath, ...process.argv.slice(2)];
         let usedWindowsShellFallback = false;
@@ -2734,6 +2822,7 @@ function runMonitor({ restartReason = "" } = {}) {
         const launchInlineMonitor = async () => {
           console.warn("\n  [cli] monitor child spawn is unavailable; falling back to inline monitor execution");
           Object.assign(process.env, childEnv);
+          installInlineMonitorKeepAlive();
           await import(`${pathToFileURL(monitorPath).href}?inline=${Date.now()}`);
         };
         const attachMonitorChildHandlers = (child) => {
@@ -2760,6 +2849,10 @@ function runMonitor({ restartReason = "" } = {}) {
           });
         };
         try {
+          if (forceInlineMonitor) {
+            launchInlineMonitor().then(resolve).catch(reject);
+            return;
+          }
           monitorChild = spawnMonitorChild(false);
         } catch (spawnErr) {
           if (process.platform === "win32" && spawnErr?.code === "EPERM") {

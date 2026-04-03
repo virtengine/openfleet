@@ -1186,6 +1186,13 @@ describe("template drift + update behavior", () => {
     expect(
       refreshed.edges.some((edge) => edge.source === "create-pr" && edge.target === "pr-created"),
     ).toBe(true);
+    const blockedRepairEdges = refreshed.edges.filter((edge) =>
+      edge.source === "annotate-blocked-wt-failed" && edge.target === "dispatch-wt-repair"
+    );
+    expect(blockedRepairEdges).toHaveLength(2);
+    expect(
+      blockedRepairEdges.map((edge) => edge.sourcePort).sort(),
+    ).toEqual(["default", "error"]);
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 

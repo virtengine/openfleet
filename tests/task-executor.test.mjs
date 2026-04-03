@@ -2125,6 +2125,90 @@ describe("task-executor", () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
+    it("falls back to repo-local workflow runs when the configured workspace mirror is stale", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs-mirror",
+        repoRoot: "/repo-root",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-repo-fallback-1",
+          title: "Workflow-owned task with repo-local run evidence",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs-mirror", "_active-runs.json"),
+          resolve("/repo-root", ".bosun", "workflow-runs", "_active-runs.json"),
+          resolve("/repo-root", ".bosun", "workflow-runs", "run-repo-fallback-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs-mirror", "_active-runs.json")) {
+          return JSON.stringify([]);
+        }
+        if (
+          targetPath ===
+          resolve("/repo-root", ".bosun", "workflow-runs", "_active-runs.json")
+        ) {
+          return JSON.stringify([
+            {
+              runId: "run-repo-fallback-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "wf-repo-fallback-1",
+              startedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+            },
+          ]);
+        }
+        if (
+          targetPath ===
+          resolve("/repo-root", ".bosun", "workflow-runs", "run-repo-fallback-1.json")
+        ) {
+          return JSON.stringify({
+            id: "run-repo-fallback-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              taskId: "wf-repo-fallback-1",
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 30 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-repo-fallback-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+        }),
+      );
+      expect(releaseTaskClaim).not.toHaveBeenCalledWith({
+        taskId: "wf-repo-fallback-1",
+        force: true,
+      });
+      expect(invalidateThread).not.toHaveBeenCalledWith("wf-repo-fallback-1");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
     it("re-reads live workflow evidence before resetting a stale shared-state claim", async () => {
       const ex = new TaskExecutor({
         projectId: "proj-1",

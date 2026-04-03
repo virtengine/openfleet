@@ -805,7 +805,7 @@ async function finalizeBufferedTurnItems(items, limits = {}) {
     Number.MAX_SAFE_INTEGER,
     Array.isArray(items) ? items.length : 1,
   );
-  const maxItemChars = clampNumeric(limits.maxItemChars, 64, 100_000, 4000);
+  const maxItemChars = clampNumeric(limits.maxItemChars, 1, 100_000, 4000);
   const initialDroppedItems = clampNumeric(limits.droppedItems, 0, Number.MAX_SAFE_INTEGER, 0);
   const sourceItems = Array.isArray(items) ? items : [];
   const hotPathResult = await bufferItemsWithBosunHotPathExec(sourceItems, {
@@ -3323,14 +3323,31 @@ async function launchOpencodeThread(prompt, cwd, timeoutMs, extra = {}) {
               PRIMARY_AGENT_SDK: "opencode-sdk",
               OPENCODE_SDK_DISABLED: null,
             },
-            async () => execOpencodePrompt(message, {
-              ...execOptions,
-              onEvent: execOptions.onEvent ?? onEvent,
-              timeoutMs: execOptions.timeoutMs ?? timeoutMs,
-              persistent,
-              sessionId: execOptions.sessionId ?? logicalSessionId,
-              abortController: execOptions.abortController ?? abortController,
-            }),
+            async () => {
+              const forwardedProviderConfig =
+                providerConfig && typeof providerConfig === "object" && !Array.isArray(providerConfig)
+                  ? { ...providerConfig }
+                  : (
+                    execOptions.providerConfig
+                    && typeof execOptions.providerConfig === "object"
+                    && !Array.isArray(execOptions.providerConfig)
+                  )
+                    ? { ...execOptions.providerConfig }
+                    : null;
+              const forwardedProvider = String(
+                normalizedProvider || execOptions.provider || "",
+              ).trim() || null;
+              return await execOpencodePrompt(message, {
+                ...execOptions,
+                onEvent: execOptions.onEvent ?? onEvent,
+                timeoutMs: execOptions.timeoutMs ?? timeoutMs,
+                persistent,
+                sessionId: execOptions.sessionId ?? logicalSessionId,
+                abortController: execOptions.abortController ?? abortController,
+                ...(forwardedProvider ? { provider: forwardedProvider } : {}),
+                ...(forwardedProviderConfig ? { providerConfig: forwardedProviderConfig } : {}),
+              });
+            },
           ),
         },
       },
@@ -4161,12 +4178,21 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   let thread;
   try {
     const sandboxPolicy = process.env.CODEX_SANDBOX || "workspace-write";
+    const resumeMetadata = {
+      sessionId:
+        String(extra.sessionId || extra.workflowSessionId || extra.taskKey || "").trim() || null,
+      taskKey: String(extra.taskKey || "").trim() || null,
+      sessionScope: String(extra.sessionScope || "task").trim() || "task",
+      sessionType: String(extra.sessionType || "task").trim() || "task",
+      cwd,
+      metadata: toPlainObject(extra.metadata),
+    };
     thread = codex.resumeThread(threadId, {
       sandboxMode: sandboxPolicy,
       workingDirectory: cwd,
       skipGitRepoCheck: true,
       approvalPolicy: "never",
-    });
+    }, resumeMetadata);
   } catch (err) {
     // Resume failed (thread expired, not found, etc.) — signal caller to start fresh
     return {

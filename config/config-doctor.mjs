@@ -238,6 +238,19 @@ function validateExecutors(raw, issues) {
   }
 }
 
+function normalizeTunnelMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "named";
+  if (["disabled", "off", "false", "0"].includes(normalized)) return "disabled";
+  if (["quick", "quick-tunnel", "ephemeral", "trycloudflare"].includes(normalized)) {
+    return "quick";
+  }
+  if (["cloudflared", "auto", "named", "permanent"].includes(normalized)) {
+    return "named";
+  }
+  return "named";
+}
+
 export function runConfigDoctor(options = {}) {
   const repoRoot = resolve(options.repoRoot || detectRepoRoot());
   const configDir = resolve(options.configDir || resolveConfigDir(repoRoot));
@@ -427,6 +440,42 @@ export function runConfigDoctor(options = {}) {
         message: "WHATSAPP_ENABLED is on but WHATSAPP_CHAT_ID is not set.",
         fix: "Set WHATSAPP_CHAT_ID to restrict accepted chat(s).",
       });
+    }
+  }
+
+  const tunnelMode = normalizeTunnelMode(effective.TELEGRAM_UI_TUNNEL);
+  if (tunnelMode === "named") {
+    const tunnelName = String(effective.CLOUDFLARE_TUNNEL_NAME || "").trim();
+    const credentialsPath = String(effective.CLOUDFLARE_TUNNEL_CREDENTIALS || "").trim();
+    const hostname = String(effective.CLOUDFLARE_TUNNEL_HOSTNAME || "").trim();
+    const baseDomain = String(effective.CLOUDFLARE_BASE_DOMAIN || "").trim();
+
+    if (!tunnelName || !credentialsPath) {
+      issues.warnings.push({
+        code: "CLOUDFLARE_NAMED_TUNNEL_CONFIG_MISSING",
+        message:
+          "TELEGRAM_UI_TUNNEL resolves to named, but CLOUDFLARE_TUNNEL_NAME/CLOUDFLARE_TUNNEL_CREDENTIALS are missing. Bosun will stay LAN-only.",
+        fix:
+          "Set CLOUDFLARE_TUNNEL_NAME and CLOUDFLARE_TUNNEL_CREDENTIALS, or switch TELEGRAM_UI_TUNNEL=quick.",
+      });
+    } else {
+      const resolvedCredentialsPath = resolve(configDir, credentialsPath);
+      if (!existsSync(resolvedCredentialsPath)) {
+        issues.warnings.push({
+          code: "CLOUDFLARE_TUNNEL_CREDENTIALS_MISSING",
+          message: `CLOUDFLARE_TUNNEL_CREDENTIALS does not exist: ${credentialsPath}`,
+          fix: "Set the credentials JSON path emitted by `cloudflared tunnel create`, or switch TELEGRAM_UI_TUNNEL=quick.",
+        });
+      }
+      if (!hostname && !baseDomain) {
+        issues.warnings.push({
+          code: "CLOUDFLARE_TUNNEL_HOSTNAME_MISSING",
+          message:
+            "Named Cloudflare tunnel is configured but neither CLOUDFLARE_TUNNEL_HOSTNAME nor CLOUDFLARE_BASE_DOMAIN is set.",
+          fix:
+            "Set CLOUDFLARE_TUNNEL_HOSTNAME explicitly, or set CLOUDFLARE_BASE_DOMAIN so Bosun can derive a hostname.",
+        });
+      }
     }
   }
 

@@ -119,6 +119,7 @@ registerNodeType("loop.for_each", {
     const indexVar = node.config?.indexVariable || "index";
     const maxConcurrent = Math.max(1, node.config?.maxConcurrent || 1);
     const subWorkflowId = node.config?.workflowId || "";
+    const subWorkflowMode = String(ctx.resolve(node.config?.mode || "sync") || "sync").trim().toLowerCase() || "sync";
 
     // Store items for downstream processing (backward compat)
     ctx.data[`_loop_${node.id}_items`] = items;
@@ -175,9 +176,27 @@ registerNodeType("loop.for_each", {
             if (scope) itemData.scope = scope;
           }
           try {
+            if (subWorkflowMode === "dispatch") {
+              Promise.resolve(engine.execute(subWorkflowId, itemData))
+                .then((runCtx) => {
+                  const status = Array.isArray(runCtx?.errors) && runCtx.errors.length > 0 ? "failed" : "completed";
+                  ctx.log(node.id, `Loop dispatch item ${itemIndex} finished with status=${status}`);
+                })
+                .catch((err) => {
+                  ctx.log(node.id, `Loop dispatch item ${itemIndex} failed: ${err?.message || err}`, "error");
+                });
+              return {
+                index: itemIndex,
+                item,
+                success: true,
+                queued: true,
+                mode: "dispatch",
+                workflowId: subWorkflowId,
+              };
+            }
             const runCtx = await engine.execute(subWorkflowId, itemData);
             const ok = !runCtx?.errors?.length;
-            return { index: itemIndex, item, success: ok, runId: runCtx?.id || null };
+            return { index: itemIndex, item, success: ok, runId: runCtx?.id || null, mode: "sync", workflowId: subWorkflowId };
           } catch (err) {
             return { index: itemIndex, item, success: false, error: err?.message || String(err) };
           }

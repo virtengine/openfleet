@@ -7,6 +7,12 @@ describe("cli daemon pid tracking", () => {
 
   it("uses a dedicated daemon pid file separate from monitor lock pid file", () => {
     expect(cliSource).toContain(
+      "function resolveRepoRootForCliRuntime(options = {}) {",
+    );
+    expect(cliSource).toContain(
+      'const runtimeRepoRoot = resolveRepoRootForCliRuntime();',
+    );
+    expect(cliSource).toContain(
       "const runtimeCacheDir = resolve(runtimeRepoRoot, \".cache\");",
     );
     expect(cliSource).toContain(
@@ -24,6 +30,7 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain(
       "readAlivePid(DAEMON_PID_FILE) || readAlivePid(LEGACY_DAEMON_PID_FILE)",
     );
+    expect(cliSource).toContain("const DAEMON_START_STABILITY_MS = Math.max(");
     expect(cliSource).toContain(
       "writeFileSync(DAEMON_PID_FILE, String(pid), \"utf8\");",
     );
@@ -80,6 +87,9 @@ describe("cli daemon pid tracking", () => {
 
   it("launches the foreground monitor as a child process instead of a worker thread", () => {
     expect(cliSource).toContain("const spawnMonitorChild = (forceWindowsShell = false) => {");
+    expect(cliSource).toContain("function checkPipedChildProcessLaunch() {");
+    expect(cliSource).toContain("stdio: [\"ignore\", \"pipe\", \"pipe\"]");
+    expect(cliSource).toContain("monitor child spawn preflight blocked");
     expect(cliSource).toContain("return spawn(");
     expect(cliSource).toContain("monitorChild = spawnMonitorChild(false);");
     expect(cliSource).toContain("[...runAsNode, monitorPath, ...process.argv.slice(2)]");
@@ -97,9 +107,13 @@ describe("cli daemon pid tracking", () => {
 
   it("propagates --config-dir/BOSUN_HOME into daemon-child env config dir", () => {
     expect(cliSource).toContain("const configDirArg = getArgValue(\"--config-dir\");");
+    expect(cliSource).toContain("const explicitRepoRoot = getArgValue(\"--repo-root\");");
     expect(cliSource).toContain("if (configDirArg) return resolve(configDirArg);");
     expect(cliSource).toContain("if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);");
+    expect(cliSource).toContain("if (repoRootArg) return resolve(repoRootArg);");
     expect(cliSource).toContain("BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),");
+    expect(cliSource).toContain("? { REPO_ROOT: resolve(process.env.REPO_ROOT) }");
+    expect(cliSource).toContain("? { REPO_ROOT: resolve(explicitRepoRoot) }");
     expect(cliSource).toContain("function normalizeDetachedDaemonArgs(rawArgs = []) {");
     expect(cliSource).toContain("...normalizeDetachedDaemonArgs(");
   });
@@ -108,6 +122,13 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("function startDaemonViaWindowsStartProcess(launchSpec) {");
     expect(cliSource).toContain("Start-Process -FilePath");
     expect(cliSource).toContain("launching daemon via PowerShell Start-Process for stable Windows detachment");
+  });
+
+  it("fails daemon startup when the detached child cannot stay alive through the stability window", () => {
+    expect(cliSource).toContain("const stabilityDeadline = Date.now() + DAEMON_START_STABILITY_MS;");
+    expect(cliSource).toContain(
+      "Detached daemon exited during startup stability window; Windows child-process policy is preventing a durable daemon start in this runtime.",
+    );
   });
 
   it("supports windows ghost daemon discovery for --daemon-status/--stop-daemon", () => {

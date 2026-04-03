@@ -107,11 +107,27 @@ function buildFlowChildInput(ctx, workflowId, data = {}) {
     workflowStack.push(parentWorkflowId);
   }
   const rootRunId = String(sourceData._workflowRootRunId || sourceData._rootRunId || ctx?.id || "").trim() || ctx?.id || null;
+  const parentSessionId = String(
+    sourceData._workflowSessionId ||
+    sourceData._workflowParentSessionId ||
+    sourceData.sessionId ||
+    sourceData.taskId ||
+    "",
+  ).trim() || null;
+  const rootSessionId = String(
+    sourceData._workflowRootSessionId ||
+    parentSessionId ||
+    sourceData.taskId ||
+    "",
+  ).trim() || parentSessionId;
   return {
     ...data,
     _parentWorkflowId: parentWorkflowId || null,
     _workflowParentRunId: ctx?.id || null,
     _workflowRootRunId: rootRunId,
+    _workflowParentSessionId: parentSessionId,
+    _workflowRootSessionId: rootSessionId,
+    _workflowDelegationDepth: Number(sourceData._workflowDelegationDepth || 0) + 1,
     _workflowStack: [...workflowStack, workflowId],
   };
 }
@@ -471,17 +487,47 @@ const UNIVERSAL_FLOW_NODE = {
       );
     }
 
-    const childInput = {
+    const childInput = buildFlowChildInput(ctx, workflowId, {
       ...inheritedInput,
       ...configuredInput,
-      _workflowStack: [...workflowStack, workflowId],
-    };
+    });
+    const trackerTaskId = String(sourceData.taskId || sourceData.task?.id || "").trim();
+    const trackerTaskTitle = String(sourceData.taskTitle || sourceData.task?.title || trackerTaskId).trim();
+    const tracker = trackerTaskId ? getSessionTracker() : null;
+    if (tracker && trackerTaskId) {
+      if (!tracker.getSessionById(trackerTaskId)) {
+        tracker.createSession({
+          id: trackerTaskId,
+          type: "task",
+          taskId: trackerTaskId,
+          metadata: {
+            title: trackerTaskTitle || trackerTaskId,
+            workspaceId: String(sourceData.workspaceId || sourceData.activeWorkspace || "").trim() || undefined,
+            workspaceDir: String(sourceData.worktreePath || sourceData.repoRoot || process.cwd()).trim() || undefined,
+            branch: String(sourceData.branch || sourceData.task?.branchName || "").trim() || undefined,
+          },
+        });
+      } else {
+        tracker.updateSessionStatus(trackerTaskId, "active");
+      }
+      tracker.recordEvent(trackerTaskId, {
+        role: "system",
+        type: "system",
+        content: `${mode === "dispatch" ? "Dispatching" : "Executing"} universal workflow \"${workflowId}\"`,
+        timestamp: new Date().toISOString(),
+        _sessionType: "task",
+      });
+    }
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching universal workflow \"${workflowId}\"`);
       let dispatched;
       try {
-        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+        dispatched = Promise.resolve(engine.execute(
+          workflowId,
+          childInput,
+          buildFlowChildRunOptions(ctx),
+        ));
       } catch (err) {
         dispatched = Promise.reject(err);
       }
@@ -489,9 +535,29 @@ const UNIVERSAL_FLOW_NODE = {
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
           ctx.log(node.id, `Dispatched universal workflow \"${workflowId}\" finished with status=${status}`);
+          if (tracker && trackerTaskId) {
+            tracker.recordEvent(trackerTaskId, {
+              role: status === "completed" ? "assistant" : "system",
+              type: status === "completed" ? "agent_message" : "error",
+              content: `Universal workflow \"${workflowId}\" finished with status=${status}`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+            tracker.endSession(trackerTaskId, status);
+          }
         })
         .catch((err) => {
           ctx.log(node.id, `Dispatched universal workflow \"${workflowId}\" failed: ${err.message}`, "error");
+          if (tracker && trackerTaskId) {
+            tracker.recordEvent(trackerTaskId, {
+              role: "system",
+              type: "error",
+              content: `Universal workflow \"${workflowId}\" failed: ${err?.message || err}`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+            tracker.endSession(trackerTaskId, "failed");
+          }
         });
 
       const output = {
@@ -506,8 +572,10 @@ const UNIVERSAL_FLOW_NODE = {
     }
 
     ctx.log(node.id, `Executing universal workflow \"${workflowId}\" (sync)`);
-    const childCtx = await engine.execute(workflowId, childInput);
+    const childCtx = await engine.execute(workflowId, childInput, buildFlowChildRunOptions(ctx));
     const errorCount = Array.isArray(childCtx?.errors) ? childCtx.errors.length : 0;
+    const terminalMessage = String(childCtx?.data?._workflowTerminalMessage || "").trim() || null;
+    const terminalOutput = childCtx?.data?._workflowTerminalOutput ?? null;
     const output = {
       success: errorCount === 0,
       queued: false,
@@ -516,7 +584,20 @@ const UNIVERSAL_FLOW_NODE = {
       runId: childCtx?.id || null,
       status: errorCount > 0 ? "failed" : "completed",
       errorCount,
+      message: terminalMessage,
+      output: terminalOutput,
     };
+    if (tracker && trackerTaskId) {
+      const statusText = output.status || (output.success ? "completed" : "failed");
+      tracker.recordEvent(trackerTaskId, {
+        role: output.success ? "assistant" : "system",
+        type: output.success ? "agent_message" : "error",
+        content: `Universal workflow \"${workflowId}\" finished with status=${statusText}`,
+        timestamp: new Date().toISOString(),
+        _sessionType: "task",
+      });
+      tracker.endSession(trackerTaskId, statusText);
+    }
     if (outputVariable) ctx.data[outputVariable] = output;
     return output;
   },

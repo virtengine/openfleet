@@ -73,7 +73,7 @@ export function node(id, type, label, config = {}, opts = {}) {
  */
 export function edge(source, target, opts = {}) {
   const e = {
-    id: `${source}->${target}`,
+    id: opts.id || `${source}->${target}`,
     source,
     target,
     sourcePort: opts.port || "default",

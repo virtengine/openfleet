@@ -66,6 +66,7 @@ export async function executeHarnessToolNode({
   });
 
   try {
+    const workflowRunId = String(ctx?.data?._runId || ctx?.data?.runId || ctx?.id || "").trim() || null;
     const toolResult = await orchestrator.execute(toolId, {
       args: resolvedArgs,
       cwd,
@@ -73,7 +74,7 @@ export async function executeHarnessToolNode({
       timeoutMs,
     }, {
       repoRoot,
-      runId: String(ctx?.id || "").trim() || null,
+      runId: workflowRunId,
       workflowId: String(ctx?.data?._workflowId || "").trim() || null,
       taskId: String(ctx?.data?.taskId || ctx?.data?.task?.id || "").trim() || null,
       taskTitle: String(ctx?.data?.taskTitle || ctx?.data?.task?.title || "").trim() || null,
@@ -151,14 +152,17 @@ export async function executeHarnessToolNode({
       output: output.data,
     });
   } catch (error) {
+    const approvalBlocked = Boolean(error?.request || error?.approval);
     return normalizeHarnessToolNodeOutput({
       success: false,
-      error: error?.message || String(error),
+      error: approvalBlocked
+        ? `Tool \"${toolId}\" requires operator approval${error?.message ? `: ${error.message}` : ""}`
+        : (error?.message || String(error)),
       toolId,
       sessionId: ctx?.data?._workflowSessionId || null,
       rootSessionId: ctx?.data?._workflowRootSessionId || null,
       parentSessionId: ctx?.data?._workflowParentSessionId || null,
-      runId: ctx?.id || null,
+      runId: ctx?.data?._runId || ctx?.data?.runId || ctx?.id || null,
       workflowId: ctx?.data?._workflowId || null,
       workflowName: ctx?.data?._workflowName || null,
       approvalRequestId: error?.request?.requestId || error?.approval?.requestId || null,

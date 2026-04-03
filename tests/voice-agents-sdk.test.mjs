@@ -9,8 +9,8 @@ vi.mock("../config/config.mjs", () => ({
   })),
 }));
 
-vi.mock("../voice/voice-auth-manager.mjs", () => ({
-  resolveVoiceOAuthToken: vi.fn(() => null),
+vi.mock("../agent/provider-auth-state.mjs", () => ({
+  resolveSharedOAuthToken: vi.fn(() => null),
 }));
 
 // ── Mock @openai/agents/realtime ────────────────────────────────────────────

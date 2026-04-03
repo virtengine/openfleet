@@ -458,6 +458,30 @@ describe("action.run_command env interpolation", () => {
     expect(result.output).toEqual([{ taskId: "t-2" }]);
   });
 
+  it("runs multiline node -e scripts through stdin without relying on command-line script transport", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const script = [
+      "const payload = {",
+      '  tasks: [{ taskId: "t-stdin-1" }],',
+      '  note: "stdin transport"',
+      "};",
+      "console.log(JSON.stringify(payload));",
+    ].join("\n");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: ["-e", script],
+      parseJson: true,
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual({
+      tasks: [{ taskId: "t-stdin-1" }],
+      note: "stdin transport",
+    });
+  });
+
   it("resolves template env values before executing commands", async () => {
     const nodeType = getNodeType("action.run_command");
     const node = makeNode("action.run_command", {

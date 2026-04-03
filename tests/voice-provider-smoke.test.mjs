@@ -2,13 +2,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Prevent disk-cached OAuth tokens in ~/.bosun/voice-auth-state.json from
+// Prevent disk-cached shared auth tokens in ~/.bosun/voice-auth-state.json from
 // leaking in and making azureAvailable=true regardless of what env vars the
 // test sets.
-vi.mock("../voice/voice-auth-manager.mjs", () => ({
-  resolveVoiceOAuthToken: vi.fn(() => null),
-  hasVoiceOAuthToken: vi.fn(() => false),
-  saveVoiceOAuthToken: vi.fn(),
+vi.mock("../agent/provider-auth-state.mjs", () => ({
+  resolveSharedOAuthToken: vi.fn(() => null),
+  hasSharedOAuthToken: vi.fn(() => false),
+  saveSharedOAuthToken: vi.fn(),
 }));
 
 // Non-existent temp dir — prevents loadDotEnv + loadConfigFile from reading

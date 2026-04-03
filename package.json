@@ -166,6 +166,7 @@
     "agent/lineage-graph.mjs",
     "agent/provider-capabilities.mjs",
     "agent/provider-auth-manager.mjs",
+    "agent/provider-auth-state.mjs",
     "agent/provider-kernel.mjs",
     "agent/auth/_shared.mjs",
     "agent/auth/anthropic-api-key.mjs",

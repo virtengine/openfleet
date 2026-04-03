@@ -37,12 +37,9 @@ vi.mock("../voice/voice-tools.mjs", () => ({
   ]),
 }));
 
-vi.mock("../voice/voice-auth-manager.mjs", () => ({
-  resolveVoiceOAuthToken: vi.fn(() => null),
-  saveVoiceOAuthToken: vi.fn(),
-  getOpenAILoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
-  getClaudeLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
-  getGeminiLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+vi.mock("../agent/provider-auth-state.mjs", () => ({
+  resolveSharedOAuthToken: vi.fn(() => null),
+  saveSharedOAuthToken: vi.fn(),
 }));
 
 vi.mock("../infra/session-tracker.mjs", () => ({

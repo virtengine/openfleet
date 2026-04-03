@@ -722,6 +722,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("set-blocked-wt-failed", "annotate-blocked-wt-failed"),
     edge("annotate-blocked-wt-failed", "dispatch-wt-repair"),
+    edge("annotate-blocked-wt-failed", "dispatch-wt-repair", {
+      id: "annotate-blocked-wt-failed->dispatch-wt-repair#error",
+      port: "error",
+    }),
     edge("dispatch-wt-repair", "release-slot-wt-failed"),
     edge("set-todo-wt-failed", "release-slot-wt-failed"),
     edge("release-slot-wt-failed", "notify-wt-failed"),

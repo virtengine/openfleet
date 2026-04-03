@@ -28,13 +28,10 @@ vi.mock("../voice/voice-tools.mjs", () => ({
   ]),
 }));
 
-// Prevent real OAuth tokens on disk from leaking into tests
-vi.mock("../voice/voice-auth-manager.mjs", () => ({
-  resolveVoiceOAuthToken: vi.fn(() => null),
-  saveVoiceOAuthToken: vi.fn(),
-  getOpenAILoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
-  getClaudeLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
-  getGeminiLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+// Prevent real shared auth state on disk from leaking into tests
+vi.mock("../agent/provider-auth-state.mjs", () => ({
+  resolveSharedOAuthToken: vi.fn(() => null),
+  saveSharedOAuthToken: vi.fn(),
 }));
 
 vi.mock("../infra/session-tracker.mjs", () => ({
@@ -66,7 +63,7 @@ afterEach(() => {
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
 const { loadConfig } = await import("../config/config.mjs");
-const { resolveVoiceOAuthToken } = await import("../voice/voice-auth-manager.mjs");
+const { resolveSharedOAuthToken } = await import("../agent/provider-auth-state.mjs");
 const {
   beginVoiceTurnTrace,
   completeVoiceTurnTrace,
@@ -510,7 +507,7 @@ describe("voice-relay", () => {
     });
 
     it("prefers OpenAI OAuth token over API key when both are present", async () => {
-      vi.mocked(resolveVoiceOAuthToken).mockImplementation((provider) =>
+      vi.mocked(resolveSharedOAuthToken).mockImplementation((provider) =>
         provider === "openai" ? { token: "oauth-openai-token" } : null,
       );
       vi.mocked(loadConfig).mockReturnValue({

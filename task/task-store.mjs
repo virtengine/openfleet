@@ -36,7 +36,10 @@ function isLikelyTestRuntime() {
   if (process.env.VITEST_POOL_ID) return true;
   if (process.env.VITEST_WORKER_ID) return true;
   if (process.env.JEST_WORKER_ID) return true;
+  if (process.env.NODE_TEST_CONTEXT) return true;
+  if (process.env.BOSUN_TEST_CACHE_DIR) return true;
   if (process.env.NODE_ENV === "test") return true;
+  if (Array.isArray(process.execArgv) && process.execArgv.includes("--test")) return true;
   const argv = Array.isArray(process.argv)
     ? process.argv.join(" ").toLowerCase()
     : "";
@@ -142,6 +145,17 @@ function resolveStorePathForRuntime(candidatePath) {
 
 function resolveDefaultStorePath() {
   return resolveStorePathForRuntime(resolvePersistentStorePath());
+}
+
+function maybeRefreshDefaultStorePathForRuntimeSignals() {
+  if (_loaded) return;
+  const nextPath = resolveDefaultStorePath();
+  if (nextPath === storePath) return;
+  storePath = nextPath;
+  storeTmpPath = storePath + ".tmp";
+  _didLogInitialLoad = false;
+  _lastLoadedMtimeMs = 0;
+  _lastLoadedSizeBytes = 0;
 }
 
 let storePath = resolveDefaultStorePath();
@@ -1423,6 +1437,7 @@ function recalcStats() {
 }
 
 function ensureLoaded() {
+  maybeRefreshDefaultStorePathForRuntimeSignals();
   if (_loaded) {
     maybeReloadStoreFromDisk();
     return;

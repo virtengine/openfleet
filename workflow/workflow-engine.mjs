@@ -156,6 +156,19 @@ function normalizeWorkflowRunText(value) {
   return repairCommonMojibake(normalized);
 }
 
+function attachWorkflowContextAlias(ctx) {
+  if (!ctx || typeof ctx !== "object" || Object.prototype.hasOwnProperty.call(ctx, "ctx")) {
+    return ctx;
+  }
+  Object.defineProperty(ctx, "ctx", {
+    value: ctx,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  return ctx;
+}
+
 const UNRESOLVED_WORKFLOW_TEMPLATE_TOKEN_RE = /\{\{[^{}]+\}\}/;
 
 function normalizeWorkflowIdentityText(value) {
@@ -2175,6 +2188,48 @@ function isConcreteTaskIdentityRequired(runSummary = null, detail = null) {
   return workflowName === "task lifecycle";
 }
 
+function resolveRunTaskIdentityForResumeGuard(runSummary = null, detail = null) {
+  return normalizeWorkflowIdentityText(
+    detail?.data?.taskId ||
+      detail?.inputData?.taskId ||
+      detail?.taskId ||
+      detail?.delegationTopology?.taskId ||
+      detail?.data?._delegationTopology?.taskId ||
+      runSummary?.taskId ||
+      "",
+  );
+}
+
+function resolveIndexedRunTaskIdentity(runSummary = null) {
+  return normalizeWorkflowIdentityText(
+    runSummary?.taskId ||
+      (Array.isArray(runSummary?.taskIds) ? runSummary.taskIds[0] : "") ||
+      runSummary?.rootTaskId ||
+      "",
+  );
+}
+
+function isTasklessScheduledResumeRun(runSummary = null, detail = null) {
+  if (resolveRunTaskIdentityForResumeGuard(runSummary, detail)) return false;
+  if (isConcreteTaskIdentityRequired(runSummary, detail)) return false;
+
+  const triggerSource = normalizeWorkflowIdentityText(
+    runSummary?.triggerSource ||
+      detail?.triggerSource ||
+      detail?.data?._workflowTriggerSource ||
+      "",
+  ).toLowerCase();
+  if (triggerSource === "schedule-poll" || triggerSource === "startup") return true;
+
+  const workflowName = normalizeWorkflowIdentityText(
+    detail?.workflowName ||
+      detail?.data?._workflowName ||
+      runSummary?.workflowName ||
+      "",
+  ).toLowerCase();
+  return workflowName === "bosun pr watchdog" || workflowName === "task batch processor";
+}
+
 function collectRunSessionIds(detail = {}, options = {}) {
   const currentRunId = normalizeWorkflowIdentityText(options?.currentRunId || "");
   const ids = [];
@@ -2650,6 +2705,7 @@ export class WorkflowEngine extends EventEmitter {
     this._loaded = false;
     this._checkpointTimers = new Map(); // runId → debounce timer
     this._resumingRuns = false;
+    this._startupInterruptedRunIds = null;
     this._taskTraceHooks = new Set();
     if (typeof opts.onTaskWorkflowEvent === "function") {
       this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
@@ -3692,6 +3748,7 @@ export class WorkflowEngine extends EventEmitter {
             ...opts,
             _slotLease: slotLease,
           });
+          attachWorkflowContextAlias(ctx);
           span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
           span.attributes["bosun.workflow.parent_run_id"] =
             ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
@@ -3760,6 +3817,7 @@ export class WorkflowEngine extends EventEmitter {
             _slotLease: slotLease,
             force: true,
           });
+          attachWorkflowContextAlias(ctx);
           span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
           span.attributes["bosun.workflow.parent_run_id"] =
             ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
@@ -4703,6 +4761,50 @@ export class WorkflowEngine extends EventEmitter {
     return Array.from(this._activeRuns.entries())
       .map(([runId, info]) => this._buildActiveRunSummary(runId, info))
       .filter(Boolean);
+  }
+
+  getTaskLifecycleSlotSnapshot(options = {}) {
+    const excludeTaskId = String(options?.excludeTaskId || "").trim();
+    const activeTaskIds = [];
+    const baseBranchSlotCounts = {};
+    let activeSlotCount = 0;
+
+    for (const info of this._activeRuns.values()) {
+      const workflowName = String(
+        info?.workflowName || info?.ctx?.data?._workflowName || "",
+      ).trim().toLowerCase();
+      if (workflowName !== "task lifecycle") continue;
+
+      const slotInfo =
+        info?.ctx?.data?._allocatedSlot
+        && typeof info.ctx.data._allocatedSlot === "object"
+          ? info.ctx.data._allocatedSlot
+          : null;
+      if (!slotInfo || String(slotInfo.status || "").trim().toLowerCase() === "released") {
+        continue;
+      }
+
+      const taskId = String(
+        slotInfo.taskId || info?.ctx?.data?.taskId || "",
+      ).trim();
+      if (!taskId || taskId === excludeTaskId) continue;
+
+      activeSlotCount += 1;
+      activeTaskIds.push(taskId);
+
+      const baseBranch = String(
+        slotInfo.baseBranch || info?.ctx?.data?.baseBranch || "",
+      ).trim().replace(/^origin\//, "");
+      if (baseBranch) {
+        baseBranchSlotCounts[baseBranch] = (baseBranchSlotCounts[baseBranch] || 0) + 1;
+      }
+    }
+
+    return {
+      activeSlotCount,
+      activeTaskIds,
+      baseBranchSlotCounts,
+    };
   }
 
   _listPersistedRunSummaries(workflowId = null, limit = MAX_PERSISTED_RUNS) {
@@ -7012,6 +7114,18 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _readRunDetailFile(runId) {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) return null;
+    const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
+    if (!existsSync(detailPath)) return null;
+    try {
+      return JSON.parse(readFileSync(detailPath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
   _readRunIndexFromStateLedger() {
     try {
       const page = listWorkflowRunSummariesPageFromStateLedger({
@@ -7595,6 +7709,7 @@ export class WorkflowEngine extends EventEmitter {
     try {
       const activeEntries = this._readActiveRunsIndex();
       const interrupted = [];
+      const interruptedRunIds = new Set();
       const now = Date.now();
       const runs = this._readRunIndex();
       const runsById = new Map(
@@ -7664,6 +7779,7 @@ export class WorkflowEngine extends EventEmitter {
           workflowId: workflowId || summary?.workflowId || null,
           workflowName: workflowName || summary?.workflowName || null,
         });
+        interruptedRunIds.add(normalizedRunId);
       };
 
       // Primary source: persisted active-runs index from the previous process.
@@ -7721,7 +7837,9 @@ export class WorkflowEngine extends EventEmitter {
         );
         this.emit("runs:interrupted", { runs: interrupted });
       }
+      this._startupInterruptedRunIds = interruptedRunIds.size > 0 ? interruptedRunIds : null;
     } catch (err) {
+      this._startupInterruptedRunIds = null;
       console.error(`${TAG} Failed to detect interrupted runs:`, err.message);
     }
   }
@@ -7738,11 +7856,32 @@ export class WorkflowEngine extends EventEmitter {
 
     try {
       const allRuns = this._readRunIndex();
-      const runs = allRuns.filter(
+      const startupInterruptedRunIds =
+        this._startupInterruptedRunIds instanceof Set && this._startupInterruptedRunIds.size > 0
+          ? new Set(this._startupInterruptedRunIds)
+          : null;
+      const pausedResumableRuns = allRuns.filter(
         (r) => r.status === WorkflowStatus.PAUSED && r.resumable,
       );
+      const latestInterruptedAt = startupInterruptedRunIds
+        ? 0
+        : pausedResumableRuns.reduce((latest, run) => {
+          const interruptedAt = Number(run?.interruptedAt || 0);
+          return interruptedAt > latest ? interruptedAt : latest;
+        }, 0);
+      const latestInterruptedCohortWindowMs = 250;
+      const runs = pausedResumableRuns.filter((run) => {
+        const runId = String(run?.runId || "").trim();
+        if (startupInterruptedRunIds) return startupInterruptedRunIds.has(runId);
+        if (latestInterruptedAt > 0) {
+          const interruptedAt = Number(run?.interruptedAt || 0);
+          return interruptedAt >= (latestInterruptedAt - latestInterruptedCohortWindowMs);
+        }
+        return true;
+      });
 
       if (!runs.length) {
+        if (startupInterruptedRunIds) this._startupInterruptedRunIds = null;
         this._resumingRuns = false;
         return;
       }
@@ -7757,55 +7896,46 @@ export class WorkflowEngine extends EventEmitter {
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
-      const ledgerTaskEntries = this._executionLedger.listTaskRunEntries();
-      const ledgerTaskIdByRunId = new Map();
       let resumeLoopCount = 0;
-      for (const entry of ledgerTaskEntries) {
-        if (!entry?.runId || !entry?.taskId) continue;
-        ledgerTaskIdByRunId.set(entry.runId, entry.taskId);
-        const previous = latestByTaskId.get(entry.taskId);
-        const entryTime = typeof entry.startedAt === "number"
-          ? entry.startedAt
-          : (Date.parse(entry.startedAt || entry.updatedAt || "") || 0);
-        const previousTime = previous
-          ? (typeof previous.startedAt === "number"
-              ? previous.startedAt
-              : (Date.parse(previous.startedAt || previous.updatedAt || "") || 0))
-          : 0;
-        const candidate = {
-          runId: entry.runId,
-          startedAt: entry.startedAt || entry.updatedAt || null,
-          updatedAt: entry.updatedAt || null,
-          status: entry.status || null,
-        };
-        if (!previous || entryTime >= previousTime) {
-          latestByTaskId.set(entry.taskId, candidate);
-        }
-        resumeLoopCount += 1;
-        await maybeYieldInterruptedResumeWork(resumeLoopCount);
-      }
       for (const run of allRuns) {
-        const dp = resolve(this.runsDir, `${run.runId}.json`);
-        if (!existsSync(dp)) continue;
-        try {
-          const d = JSON.parse(readFileSync(dp, "utf8"));
-          runDetailCache.set(run.runId, d);
-          const tid = ledgerTaskIdByRunId.get(run.runId) || this._resolveRunTaskIdentity(run, d)?.taskId || "";
-          if (!tid) continue;
-          const prev = latestByTaskId.get(tid);
-          if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
-            latestByTaskId.set(tid, run);
+        let tid = resolveIndexedRunTaskIdentity(run);
+        if (!tid && run?.status === WorkflowStatus.RUNNING) {
+          const detail = this._readRunDetailFile(run.runId);
+          if (detail) {
+            runDetailCache.set(run.runId, detail);
+            tid = this._resolveRunTaskIdentity(run, detail)?.taskId || "";
           }
-        } catch {
-          /* unreadable detail — handled in the main loop below */
+        }
+        if (!tid) continue;
+        const prev = latestByTaskId.get(tid);
+        if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
+          latestByTaskId.set(tid, run);
         }
         resumeLoopCount += 1;
         await maybeYieldInterruptedResumeWork(resumeLoopCount);
       }
 
-      // Mark older duplicate runs as not-resumable before entering the loop
-      let dedupedCount = 0;
       for (const run of runs) {
+        const d = this._readRunDetailFile(run.runId);
+        if (d) {
+          runDetailCache.set(run.runId, d);
+          const tid = this._resolveRunTaskIdentity(run, d)?.taskId || "";
+          if (tid) {
+            const prev = latestByTaskId.get(tid);
+            if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
+              latestByTaskId.set(tid, run);
+            }
+          }
+        }
+        resumeLoopCount += 1;
+        await maybeYieldInterruptedResumeWork(resumeLoopCount);
+      }
+
+      // Mark older duplicate runs as not-resumable before entering the loop.
+      // This must consider the full paused+resumable set so historical siblings
+      // outside the current startup cohort are still retired when a newer run wins.
+      let dedupedCount = 0;
+      for (const run of pausedResumableRuns) {
         const d = runDetailCache.get(run.runId);
         const tid = this._resolveRunTaskIdentity(run, d)?.taskId || "";
         if (!tid) continue;
@@ -7823,9 +7953,47 @@ export class WorkflowEngine extends EventEmitter {
         );
       }
 
+      // If an interrupted root workflow run is being resumed, do not also
+      // resume its paused descendants from the same startup cohort. The root
+      // resume will recreate or continue that family, and resuming both sides
+      // can duplicate work and amplify startup memory pressure.
+      const selectedRunIds = new Set(runs.map((run) => String(run?.runId || "").trim()).filter(Boolean));
+      let familyDedupedCount = 0;
+      for (const run of runs) {
+        const detail = runDetailCache.get(run.runId);
+        const rootRunId = normalizeWorkflowIdentityText(
+          detail?.dagState?.rootRunId ||
+          detail?.data?._workflowRootRunId ||
+          run?.rootRunId ||
+          "",
+        );
+        if (!rootRunId || rootRunId === String(run.runId || "").trim()) continue;
+        if (!selectedRunIds.has(rootRunId)) continue;
+        this._markRunUnresumable(run.runId, "covered_by_root_interrupted_run");
+        familyDedupedCount += 1;
+      }
+      if (familyDedupedCount > 0) {
+        console.log(
+          `${TAG} Skipped ${familyDedupedCount} interrupted descendant run(s) covered by a root resume`,
+        );
+      }
+
       for (const run of runs) {
         // Skip runs that were marked as duplicates above
         const _runDetail = runDetailCache.get(run.runId);
+        const _rootRunId = normalizeWorkflowIdentityText(
+          _runDetail?.dagState?.rootRunId ||
+          _runDetail?.data?._workflowRootRunId ||
+          run?.rootRunId ||
+          "",
+        );
+        if (_rootRunId && _rootRunId !== String(run.runId || "").trim() && selectedRunIds.has(_rootRunId)) {
+          continue;
+        }
+        if (isTasklessScheduledResumeRun(run, _runDetail)) {
+          this._markRunUnresumable(run.runId, "scheduled_non_task_run");
+          continue;
+        }
         if (isConcreteTaskIdentityRequired(run, _runDetail) && !this._resolveRunTaskIdentity(run, _runDetail)?.taskId) {
           this._markRunUnresumable(run.runId, "invalid_task_identity");
           continue;
@@ -7969,6 +8137,12 @@ export class WorkflowEngine extends EventEmitter {
         runs[idx].resumable = false;
         runs[idx].resumeResult = reason;
         this._writeRunIndex(runs);
+      }
+      if (this._startupInterruptedRunIds instanceof Set) {
+        this._startupInterruptedRunIds.delete(String(runId || "").trim());
+        if (this._startupInterruptedRunIds.size === 0) {
+          this._startupInterruptedRunIds = null;
+        }
       }
     } catch (err) {
       console.error(`${TAG} Failed to mark run unresumable:`, err.message);

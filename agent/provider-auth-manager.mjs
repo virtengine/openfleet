@@ -1,6 +1,13 @@
 import { getProviderCapabilities, normalizeProviderCapabilityId } from "./provider-capabilities.mjs";
 import { getProviderAuthAdapter } from "./auth/index.mjs";
 import { getBuiltinProviderEnvHints } from "./providers/index.mjs";
+import {
+  buildSharedProviderAccountSummary,
+  isClaudeOAuthTosWarningRequired,
+  resolveCodexSubscriptionAuth,
+  resolveCopilotOAuthAuth,
+  resolveSharedOAuthToken,
+} from "./provider-auth-state.mjs";
 
 const AUTH_METHOD_ORDER = Object.freeze([
   "local",
@@ -219,6 +226,116 @@ function normalizeMethodState(method, authState = {}, envState = {}, capabilitie
   };
 }
 
+function buildImplicitProviderAuthState(providerId, options = {}) {
+  const normalizedProviderId = normalizeProviderCapabilityId(providerId);
+  if (normalizedProviderId === "openai-codex-subscription") {
+    const detected = resolveCodexSubscriptionAuth(options.env || process.env);
+    if (!detected?.authenticated) return {};
+    const mode = detected.authMode === "apikey" ? "apiKey" : (detected.authMode || "oauth");
+    return {
+      mode,
+      authMode: mode,
+      accessToken: detected.token || null,
+      connected: true,
+      authenticated: true,
+      loggedIn: true,
+      sessionActive: true,
+      subscriptionActive: mode !== "apiKey",
+      accountId: detected.accountId || null,
+      authSource: detected.source || null,
+      authPath: detected.authPath || null,
+      lastRefresh: detected.lastRefresh || null,
+    };
+  }
+
+  if (normalizedProviderId === "claude-subscription-shim") {
+    const shared = resolveSharedOAuthToken("claude");
+    if (!shared?.token) return {};
+    return {
+      mode: "oauth",
+      authMode: "oauth",
+      accessToken: shared.token,
+      connected: true,
+      authenticated: true,
+      loggedIn: true,
+      sessionActive: true,
+      subscriptionActive: true,
+      authSource: shared.source || null,
+      expiresAt: shared.expiresAt || null,
+    };
+  }
+
+  if (normalizedProviderId === "copilot-oauth") {
+    const detected = resolveCopilotOAuthAuth(options.env || process.env);
+    if (!detected?.authenticated) return {};
+    return {
+      mode: "oauth",
+      authMode: "oauth",
+      accessToken: detected.token || null,
+      connected: true,
+      authenticated: true,
+      loggedIn: true,
+      sessionActive: true,
+      authSource: detected.source || null,
+      accountId: detected.login || null,
+    };
+  }
+
+  if (normalizedProviderId === "azure-openai-responses") {
+    const shared = resolveSharedOAuthToken("azure");
+    if (!shared?.token) return {};
+    return {
+      mode: "oauth",
+      authMode: "oauth",
+      accessToken: shared.token,
+      connected: true,
+      authenticated: true,
+      loggedIn: true,
+      sessionActive: true,
+      authSource: shared.source || null,
+      expiresAt: shared.expiresAt || null,
+    };
+  }
+
+  if (normalizedProviderId === "openai-responses") {
+    const shared = resolveSharedOAuthToken("openai");
+    if (!shared?.token) return {};
+    return {
+      mode: "oauth",
+      authMode: "oauth",
+      accessToken: shared.token,
+      connected: true,
+      authenticated: true,
+      loggedIn: true,
+      sessionActive: true,
+      authSource: shared.source || null,
+      expiresAt: shared.expiresAt || null,
+    };
+  }
+
+  return {};
+}
+
+function buildProviderWarnings(providerId, resolvedState = {}, preferredMethod = null) {
+  const warnings = [];
+  const normalizedProviderId = normalizeProviderCapabilityId(providerId);
+  if (
+    normalizedProviderId === "claude-subscription-shim"
+    && isClaudeOAuthTosWarningRequired({
+      enabled: resolvedState?.enabled !== false,
+      authenticated: resolvedState?.authenticated === true || preferredMethod?.configured === true,
+      mode: preferredMethod?.type || resolvedState?.preferredMode || resolvedState?.settings?.authMode || resolvedState?.settings?.mode,
+    })
+  ) {
+    warnings.push({
+      code: "claude_oauth_tos_warning",
+      severity: "warning",
+      message: "Claude OAuth tokens are intended for Anthropic first-party clients. Using Claude OAuth with Bosun tooling may violate Anthropic terms. Switch Claude integrations to API key mode if you want this warning to disappear.",
+    });
+  }
+  return warnings;
+}
+
 export function normalizeProviderAuthState(providerId, authState = {}, options = {}) {
   const normalizedProviderId = normalizeProviderCapabilityId(providerId);
   const capabilitySnapshot = options.capabilities && typeof options.capabilities === "object"
@@ -226,15 +343,22 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
     : getProviderCapabilities(normalizedProviderId);
   const settingsState = resolveAdapterSettings(normalizedProviderId, options);
   const envState = resolveProviderAuthEnv(normalizedProviderId, options.env || process.env);
+  const implicitAuthState = options.implicitAuth === false
+    ? {}
+    : buildImplicitProviderAuthState(normalizedProviderId, options);
+  const mergedAuthState = {
+    ...(implicitAuthState && typeof implicitAuthState === "object" ? implicitAuthState : {}),
+    ...(authState && typeof authState === "object" ? authState : {}),
+  };
   const supportedModes = listProviderAuthModes(normalizedProviderId, capabilitySnapshot);
   const requestedMode = normalizeMethodName(
     options.preferredMode
-    || authState.mode
-    || authState.authMode
+    || mergedAuthState.mode
+    || mergedAuthState.authMode
     || settingsState.authMode,
   );
   const methods = supportedModes
-    .map((mode) => normalizeMethodState(mode, authState, envState, capabilitySnapshot))
+    .map((mode) => normalizeMethodState(mode, mergedAuthState, envState, capabilitySnapshot))
     .sort((left, right) => AUTH_METHOD_ORDER.indexOf(left.type) - AUTH_METHOD_ORDER.indexOf(right.type));
   const preferredMethod =
     methods.find((entry) => entry.type === requestedMode)
@@ -270,6 +394,12 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
   } else {
     status = "unauthenticated";
   }
+  const warnings = buildProviderWarnings(normalizedProviderId, {
+    enabled,
+    authenticated,
+    preferredMode: preferredMethod?.type || null,
+    settings: settingsState,
+  }, preferredMethod);
   return {
     providerId: normalizedProviderId,
     status,
@@ -284,8 +414,16 @@ export function normalizeProviderAuthState(providerId, authState = {}, options =
     methods,
     lastError: preferredMethod?.lastError || null,
     expiresAt: preferredMethod?.expiresAt || null,
+    connection: {
+      authSource: toTrimmedString(mergedAuthState.authSource || "") || null,
+      accountId: toTrimmedString(mergedAuthState.accountId || "") || null,
+      authPath: toTrimmedString(mergedAuthState.authPath || "") || null,
+      lastRefresh: toTrimmedString(mergedAuthState.lastRefresh || "") || null,
+    },
     settings: settingsState,
     env: envState,
+    warnings,
+    sharedAccounts: buildSharedProviderAccountSummary(false),
   };
 }
 

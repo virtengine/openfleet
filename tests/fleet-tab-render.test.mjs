@@ -366,9 +366,12 @@ describe("executor workspace summary source", () => {
   const serverSource = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
 
   it("adds workspace-scoped slot summaries to /api/executor", () => {
-    expect(serverSource).toContain("function buildWorkspaceExecutorSummary(execStatus, workspaceContext)");
+    expect(serverSource).toContain("function buildWorkspaceExecutorSummary(execStatus, workspaceContext, workflowRunDetails = [])");
     expect(serverSource).toContain("const workspaceSummary = execStatus");
-    expect(serverSource).toContain("{ ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails: workflowRunDetails.slice(0, 20) }");
+    expect(serverSource).toContain("buildWorkspaceExecutorSummary(execStatus, workspaceContext, workflowRunDetails)");
+    expect(serverSource).toContain("activeSlots: Math.max(Number(execStatus?.activeSlots || 0) || 0, mergedActiveSlots),");
+    expect(serverSource).toContain("slots: mergedSlots,");
+    expect(serverSource).toMatch(/\{\s*\.\.\.execStatus,[\s\S]*workspaceSummary,[\s\S]*activeWorkflowRuns,[\s\S]*workflowRunDetails: workflowRunDetails\.slice\(0, 20\),/);
   });
 
   it("uses the actual request url when augmenting executor workflow counts", () => {

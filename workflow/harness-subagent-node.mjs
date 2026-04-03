@@ -34,6 +34,13 @@ export async function executeHarnessSubagentNode(node, ctx, engine, resolved = {
   const childInput = resolved.childInput && typeof resolved.childInput === "object"
     ? { ...resolved.childInput }
     : {};
+  const childRunOptions =
+    resolved.childRunOptions && typeof resolved.childRunOptions === "object"
+      ? { ...resolved.childRunOptions }
+      : {
+          _parentRunId: ctx?.id || null,
+          _rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+        };
   if (!workflowId) {
     throw new Error("action.execute_workflow: 'workflowId' is required");
   }
@@ -94,10 +101,7 @@ export async function executeHarnessSubagentNode(node, ctx, engine, resolved = {
   if (mode === "dispatch") {
     let dispatched;
     try {
-      dispatched = Promise.resolve(engine.execute(workflowId, childInput, {
-        _parentRunId: ctx?.id || null,
-        _rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
-      }));
+      dispatched = Promise.resolve(engine.execute(workflowId, childInput, childRunOptions));
     } catch (error) {
       dispatched = Promise.reject(error);
     }
@@ -137,8 +141,7 @@ export async function executeHarnessSubagentNode(node, ctx, engine, resolved = {
   }
 
   const childCtx = await engine.execute(workflowId, childInput, {
-    _parentRunId: ctx?.id || null,
-    _rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+    ...childRunOptions,
     _parentExecutionId: ctx?.id || null,
   });
   const childErrors = Array.isArray(childCtx?.errors)
@@ -148,6 +151,8 @@ export async function executeHarnessSubagentNode(node, ctx, engine, resolved = {
       }))
     : [];
   const status = childErrors.length > 0 ? "failed" : "completed";
+  const terminalMessage = normalizeText(childCtx?.data?._workflowTerminalMessage || "") || null;
+  const terminalOutput = childCtx?.data?._workflowTerminalOutput ?? null;
   sessionManager.finalizeExternalExecution(childSessionId, {
     success: status === "completed",
     status,
@@ -172,10 +177,17 @@ export async function executeHarnessSubagentNode(node, ctx, engine, resolved = {
       status,
       errorCount: childErrors.length,
       errors: childErrors,
-      terminalOutput: childCtx?.data?._workflowTerminalOutput || null,
+      message: terminalMessage,
+      output: terminalOutput,
     },
     error: childErrors[0]?.error || null,
   });
+  output.queued = false;
+  output.mode = "sync";
+  output.errorCount = childErrors.length;
+  output.errors = childErrors;
+  output.message = terminalMessage;
+  output.output = terminalOutput;
   if (outputVariable) ctx.data[outputVariable] = output;
   if (status === "failed" && failOnChildError) {
     const err = new Error(`action.execute_workflow: child workflow "${workflowId}" failed: ${childErrors[0]?.error || "child workflow failed"}`);

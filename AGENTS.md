@@ -65,3 +65,25 @@ Open the closest module `AGENTS.md` before editing.
 Workspace memory: seed auth fixtures before browser login retries.
 
 ---
+
+### [pattern] (testing) — 2026-04-03 • ref: `MEM-2`
+
+> **Agent:** workflow:test-node (workflow)
+> **Memory Scope:** workspace:workspace-1
+> **Confidence:** 0.00
+> **Related Paths:** src/auth/login.mjs
+
+Workspace memory: seed auth fixtures before browser login retries.
+
+---
+
+### [pattern] (testing) — 2026-04-03 • ref: `MEM-2`
+
+> **Agent:** workflow:test-node (workflow)
+> **Memory Scope:** workspace:workspace-1
+> **Confidence:** 0.00
+> **Related Paths:** src/auth/login.mjs
+
+Workspace memory: seed auth fixtures before browser login retries.
+
+---

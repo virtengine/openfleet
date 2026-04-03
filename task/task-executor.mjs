@@ -4606,56 +4606,58 @@ class TaskExecutor {
 
   _readActiveWorkflowEvidenceByTaskId() {
     const evidenceByTaskId = new Map();
-    if (!this.workflowRunsDir) return evidenceByTaskId;
-    const activeRunsPath = resolve(this.workflowRunsDir, WORKFLOW_ACTIVE_RUNS_INDEX);
-    if (!existsSync(activeRunsPath)) return evidenceByTaskId;
-    let activeRuns = [];
-    try {
-      const parsed = JSON.parse(readFileSync(activeRunsPath, "utf8"));
-      activeRuns = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray(parsed?.runs)
-          ? parsed.runs
-          : [];
-    } catch {
-      return evidenceByTaskId;
-    }
-
-    for (const entry of activeRuns) {
-      const runId = String(entry?.runId || entry?.id || "").trim();
-      if (!runId) continue;
-      const detail = this._readWorkflowRunDetail(runId);
-      const taskIds = new Set();
-      collectWorkflowEvidenceScalarTaskIds(
-        taskIds,
-        entry?.taskId,
-        entry?.activeTaskId,
-        detail?.taskId,
-        detail?.data?.taskId,
-        detail?.data?.activeTaskId,
-        detail?.inputData?.taskId,
-        detail?.inputData?.activeTaskId,
-      );
-      if (taskIds.size === 0) {
-        collectWorkflowEvidenceTaskIds(taskIds, entry?.taskIds);
-        collectWorkflowEvidenceTaskIds(taskIds, detail?.taskIds);
-        collectWorkflowEvidenceTaskIds(taskIds, detail?.data?.taskIds);
-        collectWorkflowEvidenceTaskIds(taskIds, detail?.inputData?.taskIds);
+    for (const workflowRunsDir of this._getWorkflowRunsDirs()) {
+      const activeRunsPath = resolve(workflowRunsDir, WORKFLOW_ACTIVE_RUNS_INDEX);
+      if (!existsSync(activeRunsPath)) continue;
+      let activeRuns = [];
+      try {
+        const parsed = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+        activeRuns = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.runs)
+            ? parsed.runs
+            : [];
+      } catch {
+        continue;
       }
-      if (taskIds.size === 0) continue;
 
-      for (const taskId of taskIds) {
-        const existing = evidenceByTaskId.get(taskId) || [];
-        if (!existing.some((candidate) => String(candidate?.runId || "").trim() === runId)) {
-          existing.push({
-            runId,
-            taskId,
-            source: "active-runs",
-            fallbackEntry: entry,
-            detail,
-          });
+      for (const entry of activeRuns) {
+        const runId = String(entry?.runId || entry?.id || "").trim();
+        if (!runId) continue;
+        const detail = this._readWorkflowRunDetail(runId, workflowRunsDir);
+        const taskIds = new Set();
+        collectWorkflowEvidenceScalarTaskIds(
+          taskIds,
+          entry?.taskId,
+          entry?.activeTaskId,
+          detail?.taskId,
+          detail?.data?.taskId,
+          detail?.data?.activeTaskId,
+          detail?.inputData?.taskId,
+          detail?.inputData?.activeTaskId,
+        );
+        if (taskIds.size === 0) {
+          collectWorkflowEvidenceTaskIds(taskIds, entry?.taskIds);
+          collectWorkflowEvidenceTaskIds(taskIds, detail?.taskIds);
+          collectWorkflowEvidenceTaskIds(taskIds, detail?.data?.taskIds);
+          collectWorkflowEvidenceTaskIds(taskIds, detail?.inputData?.taskIds);
         }
-        evidenceByTaskId.set(taskId, existing);
+        if (taskIds.size === 0) continue;
+
+        for (const taskId of taskIds) {
+          const existing = evidenceByTaskId.get(taskId) || [];
+          if (!existing.some((candidate) => String(candidate?.runId || "").trim() === runId)) {
+            existing.push({
+              runId,
+              taskId,
+              source: "active-runs",
+              fallbackEntry: entry,
+              detail,
+              workflowRunsDir,
+            });
+          }
+          evidenceByTaskId.set(taskId, existing);
+        }
       }
     }
     return evidenceByTaskId;
@@ -4689,10 +4691,15 @@ class TaskExecutor {
       candidate?.fallbackEntry && typeof candidate.fallbackEntry === "object"
         ? candidate.fallbackEntry
         : null;
+    const workflowRunsDir = String(
+      candidate?.workflowRunsDir ||
+        fallbackEntry?.workflowRunsDir ||
+        "",
+    ).trim();
     const detail =
       candidate?.detail && typeof candidate.detail === "object"
         ? candidate.detail
-        : this._readWorkflowRunDetail(runId);
+        : this._readWorkflowRunDetail(runId, workflowRunsDir);
     const dagState = detail?.data?._dagState || detail?._dagState || null;
     const taskIds = new Set();
     collectWorkflowEvidenceScalarTaskIds(
@@ -4762,6 +4769,7 @@ class TaskExecutor {
       runId,
       detail,
       fallbackEntry,
+      workflowRunsDir: workflowRunsDir || null,
       taskId: authoritativeTaskId || expectedTaskId || "",
       source,
       status,
@@ -4887,46 +4895,52 @@ class TaskExecutor {
 
   _findRecentWorkflowEvidenceEntriesByTaskId(taskId) {
     const normalizedTaskId = normalizeTaskIdKey(taskId);
-    if (!this.workflowRunsDir || !normalizedTaskId) return [];
+    if (!normalizedTaskId) return [];
 
-    const indexPath = resolve(this.workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);
-    if (!existsSync(indexPath)) return [];
+    const matches = [];
+    const seenRunIds = new Set();
+    for (const workflowRunsDir of this._getWorkflowRunsDirs()) {
+      const indexPath = resolve(workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);
+      if (!existsSync(indexPath)) continue;
 
-    try {
-      const parsed = JSON.parse(readFileSync(indexPath, "utf8"));
-      const runs = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray(parsed?.runs)
-          ? parsed.runs
-          : [];
-      const matches = [];
-      for (const entry of runs) {
-        const entryTaskId = normalizeAuthoritativeWorkflowTaskId(
-          entry?.taskId ||
-            entry?.activeTaskId,
-        );
-        if (entryTaskId !== normalizedTaskId) continue;
+      try {
+        const parsed = JSON.parse(readFileSync(indexPath, "utf8"));
+        const runs = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.runs)
+            ? parsed.runs
+            : [];
+        for (const entry of runs) {
+          const entryTaskId = normalizeAuthoritativeWorkflowTaskId(
+            entry?.taskId ||
+              entry?.activeTaskId,
+          );
+          if (entryTaskId !== normalizedTaskId) continue;
 
-        const endedAtMs = parseTimestampMs(entry?.endedAt);
-        const status = String(entry?.status || entry?.outcome || "")
-          .trim()
-          .toLowerCase();
-        if (
-          endedAtMs > 0 ||
-          TERMINAL_WORKFLOW_RUN_STATUSES.has(status)
-        ) {
-          continue;
+          const endedAtMs = parseTimestampMs(entry?.endedAt);
+          const status = String(entry?.status || entry?.outcome || "")
+            .trim()
+            .toLowerCase();
+          if (
+            endedAtMs > 0 ||
+            TERMINAL_WORKFLOW_RUN_STATUSES.has(status)
+          ) {
+            continue;
+          }
+
+          const runId = String(entry?.runId || entry?.id || "").trim();
+          if (!runId || seenRunIds.has(runId)) continue;
+          seenRunIds.add(runId);
+          matches.push({
+            ...entry,
+            workflowRunsDir,
+          });
         }
-
-        const runId = String(entry?.runId || entry?.id || "").trim();
-        if (runId) {
-          matches.push(entry);
-        }
+      } catch {
+        continue;
       }
-      return matches;
-    } catch {
-      return [];
     }
+    return matches;
   }
 
   _findRecentWorkflowEvidenceRunIdsByTaskId(taskId) {
@@ -4945,18 +4959,39 @@ class TaskExecutor {
     return this._rankWorkflowEvidenceCandidate(candidate)?.hasRecentEvidence === true;
   }
 
-  _readWorkflowRunDetail(runId) {
+  _readWorkflowRunDetail(runId, preferredWorkflowRunsDir = null) {
     const normalizedRunId = String(runId || "").trim();
-    if (!this.workflowRunsDir || !normalizedRunId) return null;
+    if (!normalizedRunId) return null;
 
-    const detailPath = resolve(this.workflowRunsDir, `${normalizedRunId}.json`);
-    if (!existsSync(detailPath)) return null;
+    const workflowRunsDirs = [];
+    const preferredDir = String(preferredWorkflowRunsDir || "").trim();
+    if (preferredDir) workflowRunsDirs.push(resolve(preferredDir));
+    workflowRunsDirs.push(...this._getWorkflowRunsDirs());
 
-    try {
-      return JSON.parse(readFileSync(detailPath, "utf8"));
-    } catch {
-      return null;
+    const seen = new Set();
+    for (const workflowRunsDir of workflowRunsDirs) {
+      const normalizedDir = String(workflowRunsDir || "").trim();
+      if (!normalizedDir || seen.has(normalizedDir)) continue;
+      seen.add(normalizedDir);
+      const detailPath = resolve(normalizedDir, `${normalizedRunId}.json`);
+      if (!existsSync(detailPath)) continue;
+
+      try {
+        return JSON.parse(readFileSync(detailPath, "utf8"));
+      } catch {
+        continue;
+      }
     }
+    return null;
+  }
+
+  _getWorkflowRunsDirs() {
+    const dirs = [];
+    if (this.workflowRunsDir) dirs.push(resolve(this.workflowRunsDir));
+    if (this.repoRoot) {
+      dirs.push(resolve(this.repoRoot, ".bosun", "workflow-runs"));
+    }
+    return [...new Set(dirs.filter(Boolean))];
   }
 
   _normalizeRecoveredWorkflowRunLink(entry) {

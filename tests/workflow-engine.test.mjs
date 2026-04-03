@@ -920,6 +920,133 @@ describe("WorkflowEngine - loop.for_each", () => {
     });
   });
 
+  it("counts only allocated task lifecycle slots during loop dispatch fan-out", async () => {
+    let startedCount = 0;
+    let releaseRuns;
+    const twoStarted = new Promise((resolve) => {
+      registerNodeType("test.slot_gate_wait", {
+        describe: () => "Hold a workflow slot open until released",
+        schema: { type: "object", properties: {} },
+        async execute() {
+          startedCount += 1;
+          if (startedCount >= 2) resolve();
+          await new Promise((innerResolve) => {
+            releaseRuns = innerResolve;
+          });
+          return { ok: true };
+        },
+      });
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        {
+          id: "trigger",
+          type: "trigger.task_available",
+          label: "Direct Task",
+          config: { maxParallel: 2, status: "todo" },
+        },
+        {
+          id: "check-slots",
+          type: "condition.slot_available",
+          label: "Slots Available?",
+          config: { maxParallel: 2 },
+        },
+        {
+          id: "allocate-slot",
+          type: "action.allocate_slot",
+          label: "Allocate Slot",
+          config: {
+            taskId: "{{taskId}}",
+            taskTitle: "{{taskTitle}}",
+            branch: "{{branch}}",
+            baseBranch: "{{baseBranch}}",
+          },
+        },
+        {
+          id: "wait",
+          type: "test.slot_gate_wait",
+          label: "Wait",
+          config: {},
+        },
+        {
+          id: "release-slot",
+          type: "action.release_slot",
+          label: "Release Slot",
+          config: { taskId: "{{taskId}}" },
+        },
+      ],
+      [
+        { id: "c1", source: "trigger", target: "check-slots" },
+        {
+          id: "c2",
+          source: "check-slots",
+          target: "allocate-slot",
+          condition: "$output?.result === true",
+        },
+        { id: "c3", source: "allocate-slot", target: "wait" },
+        { id: "c4", source: "wait", target: "release-slot" },
+      ],
+      { id: "child-slot-gate-workflow", name: "Task Lifecycle" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Tasks",
+          config: {
+            items: "$data.items",
+            variable: "currentTask",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 4,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-slot-gate-workflow", name: "Parent Slot Gate Workflow" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const ctx = await engine.execute(parent.id, {
+      items: [
+        { taskId: "slot-task-1", taskTitle: "Slot Task 1", branch: "task/slot-1" },
+        { taskId: "slot-task-2", taskTitle: "Slot Task 2", branch: "task/slot-2" },
+        { taskId: "slot-task-3", taskTitle: "Slot Task 3", branch: "task/slot-3" },
+        { taskId: "slot-task-4", taskTitle: "Slot Task 4", branch: "task/slot-4" },
+      ],
+    });
+    expect(ctx.errors).toEqual([]);
+
+    await twoStarted;
+
+    const history = engine.getRunHistory(child.id, 10);
+    const runningRuns = history.filter((entry) => entry.status === WorkflowStatus.RUNNING);
+    const completedRuns = history.filter((entry) => entry.status === WorkflowStatus.COMPLETED);
+
+    expect(runningRuns).toHaveLength(2);
+    expect(completedRuns).toHaveLength(2);
+
+    for (const entry of completedRuns) {
+      const detail = engine.getRunDetail(entry.runId);
+      expect(detail?.nodeOutputs?.["check-slots"]).toMatchObject({
+        result: false,
+        slotsAvailable: false,
+        activeSlotCount: 2,
+        maxParallel: 2,
+      });
+      expect(detail?.nodeStatuses?.["allocate-slot"]).toBe(NodeStatus.SKIPPED);
+    }
+
+    releaseRuns();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -2810,6 +2937,491 @@ describe("WorkflowEngine - run history details", () => {
     expect(older).toBeTruthy();
     expect(older.resumable).toBe(false);
     expect(older.resumeResult).toBe("duplicate_task_run");
+  });
+
+  it("only resumes runs detected in the current interrupted-run scan", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-current-scan-only", name: "Resume Current Scan Only" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const historicalPausedRunId = "run-paused-historical";
+    const freshInterruptedRunId = "run-interrupted-current";
+    const taskId = "task-current-scan-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: historicalPausedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: 1500,
+            interruptedAt: 1500,
+            resumable: true,
+          },
+          {
+            runId: freshInterruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.RUNNING,
+            startedAt: 2000,
+            endedAt: null,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${historicalPausedRunId}.json`),
+      JSON.stringify({
+        id: historicalPausedRunId,
+        startedAt: 1000,
+        endedAt: 1500,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-historical-1",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${freshInterruptedRunId}.json`),
+      JSON.stringify({
+        id: freshInterruptedRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, "_active-runs.json"),
+      JSON.stringify([
+        {
+          runId: freshInterruptedRunId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          taskId,
+        },
+      ], null, 2),
+      "utf8",
+    );
+
+    engine._detectInterruptedRuns();
+  const readSpy = vi.spyOn(engine, "_readRunDetailFile");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledWith(
+      freshInterruptedRunId,
+      expect.objectContaining({ mode: expect.any(String) }),
+    );
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const historical = index.runs.find((entry) => entry.runId === historicalPausedRunId);
+    const fresh = index.runs.find((entry) => entry.runId === freshInterruptedRunId);
+    expect(historical).toBeTruthy();
+    expect(historical.resumable).toBe(true);
+    expect(historical.resumeResult).toBeUndefined();
+    expect(fresh?.resumeResult).toBe("resumed");
+    expect(
+      readSpy.mock.calls.some(
+        ([runId]) => String(runId || "") === historicalPausedRunId,
+      ),
+    ).toBe(false);
+    readSpy.mockRestore();
+  });
+
+  it("does not load the full execution ledger during interrupted-run dedupe", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-no-ledger-sweep", name: "Resume Without Ledger Sweep" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const historicalPausedRunId = "run-ledger-old";
+    const latestPausedRunId = "run-ledger-latest";
+    const taskId = "task-ledger-scan-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: historicalPausedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: 1500,
+            interruptedAt: 1500,
+            resumable: true,
+            taskId,
+          },
+          {
+            runId: latestPausedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 2000,
+            endedAt: 2500,
+            interruptedAt: 2500,
+            resumable: true,
+            taskId,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${historicalPausedRunId}.json`),
+      JSON.stringify({
+        id: historicalPausedRunId,
+        startedAt: 1000,
+        endedAt: 1500,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${latestPausedRunId}.json`),
+      JSON.stringify({
+        id: latestPausedRunId,
+        startedAt: 2000,
+        endedAt: 2500,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const ledgerSpy = vi.spyOn(engine._executionLedger, "listTaskRunEntries").mockImplementation(() => {
+      throw new Error("full ledger sweep should not run during resume dedupe");
+    });
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(ledgerSpy).not.toHaveBeenCalled();
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledWith(
+      latestPausedRunId,
+      expect.objectContaining({ mode: expect.any(String) }),
+    );
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const historical = index.runs.find((entry) => entry.runId === historicalPausedRunId);
+    expect(historical?.resumeResult).toBe("duplicate_task_run");
+  });
+
+  it("only resumes the most recently interrupted paused cohort when no startup queue is present", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-latest-interrupted-cohort", name: "Resume Latest Interrupted Cohort" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const historicalPausedRunId = "run-paused-old-cohort";
+    const latestPausedRunId = "run-paused-latest-cohort";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: historicalPausedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: 1500,
+            interruptedAt: 1500,
+            resumable: true,
+          },
+          {
+            runId: latestPausedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 2000,
+            endedAt: 2500,
+            interruptedAt: 2500,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${historicalPausedRunId}.json`),
+      JSON.stringify({
+        id: historicalPausedRunId,
+        startedAt: 1000,
+        endedAt: 1500,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-old-cohort",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${latestPausedRunId}.json`),
+      JSON.stringify({
+        id: latestPausedRunId,
+        startedAt: 2000,
+        endedAt: 2500,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-latest-cohort",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledWith(
+      latestPausedRunId,
+      expect.objectContaining({ mode: expect.any(String) }),
+    );
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const historical = index.runs.find((entry) => entry.runId === historicalPausedRunId);
+    expect(historical).toBeTruthy();
+    expect(historical.resumable).toBe(true);
+    expect(historical.resumeResult).toBeUndefined();
+  });
+
+  it("skips interrupted descendant runs when their root run is also being resumed", async () => {
+    const root = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-root-family", name: "Resume Root Family" },
+    );
+    const child = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-child-family", name: "Resume Child Family" },
+    );
+    engine.save(root);
+    engine.save(child);
+
+    const runsDir = join(tmpDir, "runs");
+    const rootRunId = "run-root-interrupted";
+    const childRunId = "run-child-interrupted";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: rootRunId,
+            workflowId: root.id,
+            workflowName: root.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: 1500,
+            interruptedAt: 1500,
+            resumable: true,
+            rootRunId,
+            taskId: "task-family-root",
+          },
+          {
+            runId: childRunId,
+            workflowId: child.id,
+            workflowName: child.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1100,
+            endedAt: 1500,
+            interruptedAt: 1500,
+            resumable: true,
+            rootRunId,
+            taskId: "task-family-child",
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${rootRunId}.json`),
+      JSON.stringify({
+        id: rootRunId,
+        startedAt: 1000,
+        endedAt: 1500,
+        data: {
+          _workflowId: root.id,
+          _workflowName: root.name,
+          _workflowRootRunId: rootRunId,
+          taskId: "task-family-root",
+        },
+        dagState: {
+          rootRunId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${childRunId}.json`),
+      JSON.stringify({
+        id: childRunId,
+        startedAt: 1100,
+        endedAt: 1500,
+        data: {
+          _workflowId: child.id,
+          _workflowName: child.name,
+          _workflowRootRunId: rootRunId,
+          taskId: "task-family-child",
+        },
+        dagState: {
+          rootRunId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledWith(
+      rootRunId,
+      expect.objectContaining({ mode: expect.any(String) }),
+    );
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const childEntry = index.runs.find((entry) => entry.runId === childRunId);
+    expect(childEntry).toBeTruthy();
+    expect(childEntry.resumable).toBe(false);
+    expect(childEntry.resumeResult).toBe("covered_by_root_interrupted_run");
+  });
+
+  it("does not resume taskless scheduled workflows from interrupted startup state", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.schedule", label: "Poll", config: { intervalMs: 90000 } }],
+      [],
+      { id: "wf-scheduled-startup-resume-guard", name: "Bosun PR Watchdog" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-scheduled-taskless";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: 1500,
+            interruptedAt: 1500,
+            resumable: true,
+            triggerSource: "schedule-poll",
+            triggeredBy: "trigger",
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1000,
+        endedAt: 1500,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const entry = index.runs.find((item) => item.runId === runId);
+    expect(entry).toBeTruthy();
+    expect(entry.resumable).toBe(false);
+    expect(entry.resumeResult).toBe("scheduled_non_task_run");
   });
 
   it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
@@ -5801,6 +6413,41 @@ describe("Session chaining - action.run_agent", () => {
     expect(result.threadId).toBe("thread-existing-1");
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(execWithRetry).not.toHaveBeenCalled();
+  });
+
+  it("treats continue-session fallback to launchEphemeralThread as a fresh ephemeral turn", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-ephemeral-fallback-1",
+    });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "fresh fallback",
+      threadId: "thread-ephemeral-fallback-new",
+      sdk: "codex",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+    const node = {
+      id: "a-ephemeral-fallback",
+      type: "action.run_agent",
+      config: { prompt: "Continue work", continueOnSession: true, autoRecover: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-ephemeral-fallback-new");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).not.toHaveProperty("sessionId");
+    expect(launchEphemeralThread.mock.calls[0][3]).not.toHaveProperty("taskKey");
+    expect(launchEphemeralThread.mock.calls[0][3]).not.toHaveProperty("resumeThreadId");
   });
 
   it("skips continuing a stored session from a different run_agent node", async () => {

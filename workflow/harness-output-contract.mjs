@@ -62,7 +62,17 @@ export function normalizeHarnessSessionNodeOutput(payload = {}, options = {}) {
 }
 
 export function normalizeHarnessToolNodeOutput(payload = {}, options = {}) {
-  return normalizeWorkflowHarnessOutput("harness-tool", payload, options);
+  const output = normalizeWorkflowHarnessOutput("harness-tool", payload, options);
+  const exitCode = Number(payload?.exitCode);
+  return {
+    ...output,
+    toolId: normalizeText(payload?.toolId) || null,
+    exitCode: Number.isFinite(exitCode) ? exitCode : null,
+    stdout: typeof payload?.stdout === "string" ? payload.stdout : null,
+    stderr: typeof payload?.stderr === "string" ? payload.stderr : null,
+    toolTitle: normalizeText(payload?.toolTitle) || null,
+    toolCategory: normalizeText(payload?.toolCategory) || null,
+  };
 }
 
 export function normalizeHarnessApprovalNodeOutput(payload = {}, options = {}) {

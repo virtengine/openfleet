@@ -93,6 +93,7 @@ describe("provider kernel support", () => {
       inputTokens: 3,
       outputTokens: 2,
       totalTokens: 5,
+      cacheInputTokens: 0,
       costUsd: 0,
       raw: {
         prompt_tokens: 3,

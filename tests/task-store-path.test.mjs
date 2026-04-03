@@ -10,7 +10,9 @@ const TEST_ENV_KEYS = [
   "VITEST_POOL_ID",
   "VITEST_WORKER_ID",
   "NODE_ENV",
+  "NODE_TEST_CONTEXT",
   "JEST_WORKER_ID",
+  "BOSUN_TEST_CACHE_DIR",
   "BOSUN_HOME",
   "BOSUN_DIR",
   "REPO_ROOT",
@@ -126,6 +128,57 @@ describe("task-store path configuration", () => {
       expect(taskStore.getStorePath()).not.toContain(
         resolve(repoRoot, ".bosun", ".cache"),
       );
+    } finally {
+      restoreEnv(env);
+    }
+  });
+
+  it("isolates persistent store paths for node test runtime signals", async () => {
+    const env = snapshotEnv();
+    const repoRoot = makeTempDir("ve-task-store-node-test-");
+    const testCacheDir = makeTempDir("ve-task-store-node-cache-");
+    try {
+      delete process.env.VITEST;
+      process.env.NODE_TEST_CONTEXT = "1";
+      process.env.BOSUN_TEST_CACHE_DIR = testCacheDir;
+      process.env.REPO_ROOT = repoRoot;
+      delete process.env.BOSUN_HOME;
+
+      const persistentPath = resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+      const taskStore = await loadTaskStoreModule();
+
+      expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
+      expect(taskStore.getStorePath()).not.toBe(persistentPath);
+      expect(taskStore.getStorePath()).not.toContain(
+        resolve(repoRoot, ".bosun", ".cache"),
+      );
+    } finally {
+      restoreEnv(env);
+    }
+  });
+
+  it("re-evaluates store isolation when test env appears after module import", async () => {
+    const env = snapshotEnv();
+    const repoRoot = makeTempDir("ve-task-store-late-env-");
+    const testCacheDir = makeTempDir("ve-task-store-late-cache-");
+    try {
+      delete process.env.VITEST;
+      delete process.env.NODE_TEST_CONTEXT;
+      delete process.env.BOSUN_TEST_CACHE_DIR;
+      process.env.REPO_ROOT = repoRoot;
+      delete process.env.BOSUN_HOME;
+
+      const persistentPath = resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+      const taskStore = await loadTaskStoreModule();
+
+      expect(taskStore.getStorePath()).toBe(persistentPath);
+
+      process.env.NODE_TEST_CONTEXT = "1";
+      process.env.BOSUN_TEST_CACHE_DIR = testCacheDir;
+
+      expect(taskStore.getAllTasks()).toEqual([]);
+      expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
+      expect(taskStore.getStorePath()).not.toBe(persistentPath);
     } finally {
       restoreEnv(env);
     }

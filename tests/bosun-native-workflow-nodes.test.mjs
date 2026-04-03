@@ -1003,6 +1003,7 @@ describe("action.bosun_function", () => {
     expect(handler).toBeDefined();
     expect(handler.execute).toBeInstanceOf(Function);
     expect(handler.describe()).toMatch(/bosun.*function/i);
+    expect(handler.outputs.map((port) => port.name)).toEqual(["default", "error"]);
     expect(handler.schema.required).toContain("function");
     expect(handler.schema.properties.function).toBeDefined();
     expect(handler.schema.properties.args).toBeDefined();

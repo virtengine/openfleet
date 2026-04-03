@@ -198,6 +198,17 @@ describe("monitor workflow startup guards", () => {
     expect(finallyBlock).not.toContain("workflowAutomationInitDone = true;");
   });
 
+  it("blocks workflow automation startup when Node child-process launch is unavailable", () => {
+    expect(monitorSource).toContain("checkChildProcessLaunch,");
+    expect(monitorSource).toContain("const childProcessCapability = checkChildProcessLaunch();");
+    expect(monitorSource).toContain("workflow automation blocked: Node child-process launch unavailable");
+    expect(
+      monitorSource.indexOf("const childProcessCapability = checkChildProcessLaunch();"),
+    ).toBeLessThan(
+      monitorSource.indexOf("const [{ getWorkflowEngine }, { createTask, getTask }, wfNodes, workflowTemplates] = await Promise.all(["),
+    );
+  });
+
   it("defaults workflow automation to enabled when env is unset", () => {
     expect(monitorSource).toContain("process.env.WORKFLOW_AUTOMATION_ENABLED");
     expect(monitorSource).toContain("  true,");
@@ -370,7 +381,7 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     // Stale shared-state alone is only allowed to override a lingering thread
     // record; it must not override active workflow-run evidence.
     expect(executorSource).toContain("if (this.workflowOwnsTaskLifecycle) {");
-    expect(executorSource).toContain("const recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(");
+    expect(executorSource).toContain("let recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(");
     expect(executorSource).toContain("const hasWorkflowEvidence =");
     expect(executorSource).toContain("const hasWorkflowLiveness =");
     expect(executorSource).toContain("this._resolveRecentWorkflowEvidence(");
@@ -390,7 +401,7 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
   it("falls back to the workflow run index when task metadata has not yet recorded latestRunId", () => {
     expect(executorSource).toContain("_findRecentWorkflowEvidenceEntriesByTaskId(taskId)");
     expect(executorSource).toContain('const WORKFLOW_RUNS_HISTORY_INDEX = "index.json";');
-    expect(executorSource).toContain("const indexPath = resolve(this.workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);");
+    expect(executorSource).toContain("const indexPath = resolve(workflowRunsDir, WORKFLOW_RUNS_HISTORY_INDEX);");
     expect(executorSource).toContain("entry?.taskId ||");
   });
 

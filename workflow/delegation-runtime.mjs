@@ -143,7 +143,29 @@ export function recordDelegationEvent(ctx, event = {}) {
 
 export function recordDelegationAuditEvent(ctx, event = {}) {
   if (typeof ctx?.recordDelegationEvent === "function") {
-    return ctx.recordDelegationEvent(event);
+    const recorded = ctx.recordDelegationEvent(event);
+    const key = String(event?.transitionKey || event?.idempotencyKey || "").trim();
+    const normalizedType = String(event?.type || event?.eventType || "").trim();
+    const existing = key ? getDelegationTransitionGuard(ctx, key) : null;
+    if (
+      recorded?.recorded === false
+      && existing
+      && String(existing?.type || existing?.eventType || "").trim() === "claim_task"
+      && normalizedType
+      && normalizedType !== "claim_task"
+    ) {
+      const entry = normalizeDelegationEvent({
+        ...event,
+        transitionKey: event?.transitionKey || key,
+        idempotencyKey: event?.idempotencyKey || key,
+      });
+      appendDelegationAuditEvent(ctx, entry);
+      return {
+        ...entry,
+        recorded: true,
+      };
+    }
+    return recorded;
   }
   const entry = normalizeDelegationEvent({
     ...event,
@@ -165,19 +187,16 @@ export function getDelegationTransitionStore(ctx) {
   return runtimeState.delegationTransitionResults;
 }
 
-const delegationTransitionResultCache = new Map();
-
 export function getExistingDelegationTransition(ctx, transitionKey) {
   const key = String(transitionKey || "").trim();
   if (!key) return null;
-  return getDelegationTransitionStore(ctx)[key] || delegationTransitionResultCache.get(key) || null;
+  return getDelegationTransitionStore(ctx)[key] || null;
 }
 
 export function setDelegationTransitionResult(ctx, transitionKey, value) {
   const key = String(transitionKey || "").trim();
   if (!key) return null;
   getDelegationTransitionStore(ctx)[key] = value;
-  delegationTransitionResultCache.set(key, value);
   return value;
 }
 

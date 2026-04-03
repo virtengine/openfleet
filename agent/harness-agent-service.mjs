@@ -112,7 +112,18 @@ function frameInteractivePrompt(prompt, options = {}) {
   return modePrefix ? `${modePrefix}${framed}` : framed;
 }
 
+function normalizeEphemeralLaunchOptions(input = {}) {
+  const normalized = { ...input };
+  delete normalized.sessionId;
+  delete normalized.threadId;
+  delete normalized.resumeThreadId;
+  delete normalized.workflowSessionId;
+  delete normalized.taskKey;
+  return normalized;
+}
+
 function normalizeAgentPool(pool = {}) {
+  const hasInjectedPool = pool && typeof pool === "object" && Object.keys(pool).length > 0;
   return {
     addActiveSessionListener:
       typeof pool.addActiveSessionListener === "function"
@@ -125,7 +136,7 @@ function normalizeAgentPool(pool = {}) {
     continueSession:
       typeof pool.continueSession === "function"
         ? pool.continueSession.bind(pool)
-        : defaultAgentPool.continueSession,
+        : (hasInjectedPool ? undefined : defaultAgentPool.continueSession),
     createCompiledInternalHarnessSession:
       typeof pool.createCompiledInternalHarnessSession === "function"
         ? pool.createCompiledInternalHarnessSession.bind(pool)
@@ -133,7 +144,7 @@ function normalizeAgentPool(pool = {}) {
     execWithRetry:
       typeof pool.execWithRetry === "function"
         ? pool.execWithRetry.bind(pool)
-        : defaultAgentPool.execWithRetry,
+        : (hasInjectedPool ? undefined : defaultAgentPool.execWithRetry),
     execPooledPrompt:
       typeof pool.execPooledPrompt === "function"
         ? pool.execPooledPrompt.bind(pool)
@@ -157,11 +168,11 @@ function normalizeAgentPool(pool = {}) {
     launchOrResumeThread:
       typeof pool.launchOrResumeThread === "function"
         ? pool.launchOrResumeThread.bind(pool)
-        : defaultAgentPool.launchOrResumeThread,
+        : (hasInjectedPool ? undefined : defaultAgentPool.launchOrResumeThread),
     launchEphemeralThread:
       typeof pool.launchEphemeralThread === "function"
         ? pool.launchEphemeralThread.bind(pool)
-        : defaultAgentPool.launchEphemeralThread,
+        : (hasInjectedPool ? undefined : defaultAgentPool.launchEphemeralThread),
     killSession:
       typeof pool.killSession === "function"
         ? pool.killSession.bind(pool)
@@ -652,7 +663,15 @@ export function createHarnessAgentService(options = {}) {
       if (taskKey && typeof agentPool.launchOrResumeThread === "function") {
         return await agentPool.launchOrResumeThread(prompt, cwd, timeoutMs, launchOptions);
       }
-      return await agentPool.launchEphemeralThread(prompt, cwd, timeoutMs, launchOptions);
+      if (typeof agentPool.launchEphemeralThread === "function") {
+        return await agentPool.launchEphemeralThread(
+          prompt,
+          cwd,
+          timeoutMs,
+          normalizeEphemeralLaunchOptions(launchOptions),
+        );
+      }
+      throw new Error("Agent pool does not expose execWithRetry, launchOrResumeThread, or launchEphemeralThread");
     },
 
     async runBackgroundPrompt(prompt, input = {}) {
@@ -672,7 +691,12 @@ export function createHarnessAgentService(options = {}) {
 
     async launchEphemeralThread(prompt, cwd, timeoutMs, input = {}) {
       if (typeof agentPool.launchEphemeralThread === "function") {
-        return await agentPool.launchEphemeralThread(prompt, cwd, timeoutMs, input);
+        return await agentPool.launchEphemeralThread(
+          prompt,
+          cwd,
+          timeoutMs,
+          normalizeEphemeralLaunchOptions(input),
+        );
       }
       return await this.runTask(prompt, {
         ...input,
@@ -732,11 +756,10 @@ export function createHarnessAgentService(options = {}) {
       ) {
         const cwd = options.cwd || process.cwd();
         const timeoutMs = Number(options.timeoutMs || options.timeout || 60 * 60 * 1000);
-        return await rawAgentPool.launchEphemeralThread(prompt, cwd, timeoutMs, {
+        return await rawAgentPool.launchEphemeralThread(prompt, cwd, timeoutMs, normalizeEphemeralLaunchOptions({
           ...options,
-          sessionId: normalizedSessionId,
           timeoutMs,
-        });
+        }));
       }
       return await agentPool.continueSession(normalizedSessionId, prompt, options);
     },

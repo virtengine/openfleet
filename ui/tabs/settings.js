@@ -3449,7 +3449,10 @@ function VoiceEndpointsEditor() {
                   <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
                 `}
                 ${ep.authSource === "oauth" && !(oauthStatus[ep.provider]?.status === "connected" || oauthStatus[ep.provider]?.status === "complete" || oauthStatus[ep.provider]?.hasToken) && html`
-                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via Connected Accounts above to use OAuth.</div>
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via the shared OAuth account cards above to use OAuth.</div>
+                `}
+                ${ep.provider === "claude" && ep.authSource === "oauth" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">Claude OAuth with Bosun may violate Anthropic terms. Switch this endpoint to API key mode if you need the warning gone.</div>
                 `}
               </div>
             `}
@@ -3963,7 +3966,7 @@ function _OAuthLoginCard({ displayName, emoji, statusRoute, loginRoute, cancelRo
           <span style="font-size:22px">${emoji}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${displayName} Connected</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">Signed in via OAuth. Token used for API access.</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">Signed in via OAuth. Shared by Bosun Harness and Voice.</div>
           </div>
           <${Button} variant="outlined" size="small" onClick=${handleLogout}>Sign out<//>
         </div>
@@ -4036,7 +4039,7 @@ function OpenAICodexLoginCard() {
     loginRoute="/api/voice/auth/openai/login"
     cancelRoute="/api/voice/auth/openai/cancel"
     logoutRoute="/api/voice/auth/openai/logout"
-    description="Use your ChatGPT Plus, Pro, or Team subscription to access OpenAI Realtime Audio without managing API keys. Uses the same OAuth flow as the Codex CLI."
+    description="Use your ChatGPT Plus, Pro, or Team subscription across Bosun Harness and Voice without managing API keys. Uses the same OAuth flow as the Codex CLI."
     successMsg="Signed in with OpenAI!"
     signOutMsg="Signed out from OpenAI"
   />`;
@@ -4053,7 +4056,7 @@ function ClaudeLoginCard() {
     loginRoute="/api/voice/auth/claude/login"
     cancelRoute="/api/voice/auth/claude/cancel"
     logoutRoute="/api/voice/auth/claude/logout"
-    description="Sign in with your Claude.ai account to use Claude models for vision and analysis tasks. Uses the same OAuth PKCE flow as the official Claude desktop app."
+    description="Sign in with your Claude.ai account for shared Bosun Harness and Voice access. Warning: using Claude OAuth with third-party tools may violate Anthropic terms; switch Claude integrations to API keys if you want the warning to disappear."
     successMsg="Signed in with Claude!"
     signOutMsg="Signed out from Claude"
   />`;

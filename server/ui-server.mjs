@@ -28,6 +28,7 @@ import * as wsModule from "ws";
 import Ajv2020 from "ajv/dist/2020.js";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
+import { resolveSharedOAuthToken } from "../agent/provider-auth-state.mjs";
 
 const gzipAsync = promisify(zlibGzip);
 const DURABLE_ACTIVE_SESSION_EXPIRY_MS = 10 * 60 * 1000;
@@ -10563,7 +10564,22 @@ function sanitizeProviderAuthState(auth = {}) {
     supportedModes: Array.isArray(auth.supportedModes) ? auth.supportedModes.slice() : [],
     lastError: auth.lastError || null,
     expiresAt: auth.expiresAt || null,
+    connection: auth.connection && typeof auth.connection === "object"
+      ? {
+          authSource: auth.connection.authSource || null,
+          accountId: auth.connection.accountId || null,
+          authPath: auth.connection.authPath || null,
+          lastRefresh: auth.connection.lastRefresh || null,
+        }
+      : {},
     settings: auth.settings && typeof auth.settings === "object" ? { ...auth.settings } : {},
+    warnings: Array.isArray(auth.warnings)
+      ? auth.warnings.map((warning) => ({
+          code: warning?.code || null,
+          severity: warning?.severity || "warning",
+          message: warning?.message || "",
+        }))
+      : [],
     methods,
     env: auth.env && typeof auth.env === "object"
       ? Object.fromEntries(
@@ -19359,13 +19375,13 @@ async function handleApi(req, res, url) {
       Math.max(5, Number(url.searchParams.get("pageSize") || url.searchParams.get("limit") || "15")),
     );
     const includeStartGuards =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeStartGuards"), false);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeStartGuards"), true);
     const includeBlockedDiagnostics =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeBlockedDiagnostics"), false);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeBlockedDiagnostics"), true);
     const includeWorkflowRuns =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeWorkflowRuns"), false);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeWorkflowRuns"), true);
     const includeSupervisorDiagnostics =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeSupervisorDiagnostics"), false);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeSupervisorDiagnostics"), true);
     try {
       const workflowContext = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
       const adapter = getKanbanAdapter();
@@ -27543,12 +27559,8 @@ if (path === "/api/agent-logs/context") {
           testUrl = "https://api.openai.com/v1/models";
           if (apiKey && !useOAuth) headers["Authorization"] = `Bearer ${apiKey}`;
           else {
-            // Try OAuth token if no API key
-            try {
-              const { getOpenAILoginStatus } = await import("../voice/voice-auth-manager.mjs");
-              const st = getOpenAILoginStatus();
-              if (st.hasToken && st.accessToken) headers["Authorization"] = `Bearer ${st.accessToken}`;
-            } catch (_) { /* no oauth available */ }
+            const shared = resolveSharedOAuthToken("openai", true);
+            if (shared?.token) headers["Authorization"] = `Bearer ${shared.token}`;
           }
           if (!headers["Authorization"]) {
             jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
@@ -27595,11 +27607,8 @@ if (path === "/api/agent-logs/context") {
           headers["anthropic-version"] = "2023-06-01";
           if (apiKey && !useOAuth) headers["x-api-key"] = apiKey;
           else {
-            try {
-              const { getClaudeLoginStatus } = await import("../voice/voice-auth-manager.mjs");
-              const st = getClaudeLoginStatus();
-              if (st.hasToken && st.accessToken) headers["x-api-key"] = st.accessToken;
-            } catch (_) { /* no oauth available */ }
+            const shared = resolveSharedOAuthToken("claude", true);
+            if (shared?.token) headers["x-api-key"] = shared.token;
           }
           if (!headers["x-api-key"]) {
             jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
@@ -27608,11 +27617,8 @@ if (path === "/api/agent-logs/context") {
         } else if (provider === "gemini") {
           let k = (apiKey && !useOAuth) ? apiKey : null;
           if (!k) {
-            try {
-              const { getGeminiLoginStatus } = await import("../voice/voice-auth-manager.mjs");
-              const st = getGeminiLoginStatus();
-              if (st.hasToken && st.accessToken) k = st.accessToken;
-            } catch (_) { /* no oauth available */ }
+            const shared = resolveSharedOAuthToken("gemini", true);
+            if (shared?.token) k = shared.token;
           }
           if (!k) {
             jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });

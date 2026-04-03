@@ -366,6 +366,36 @@ describe("trigger.task_available", () => {
     }));
   });
 
+  it("honors explicit task context before slot saturation checks", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([]);
+    const ctx = makeCtx({
+      activeSlotCount: 1,
+      taskId: "direct-task-1",
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+      getActiveRuns: () => [{ taskId: "direct-task-1" }],
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "direct_task",
+      taskId: "direct-task-1",
+      tasks: [{ id: "direct-task-1" }],
+    });
+    expect(listTasks).not.toHaveBeenCalled();
+  });
+
   it("resolves repoRoot to matching sibling repository when task repository differs", async () => {
     const nt = getNodeType("trigger.task_available");
     const workspaceRoot = mkdtempSync(join(tmpdir(), "wf-task-repo-root-"));
@@ -1219,6 +1249,45 @@ describe("condition.slot_available", () => {
     const result = await nt.execute(node, ctx);
     // baseBranch limit 2 with 2 on "main" -> blocked
     expect(result.result).toBe(false);
+  });
+
+  it("counts only sibling task lifecycle runs from engine active runs", async () => {
+    const nt = getNodeType("condition.slot_available");
+    const ctx = makeCtx({
+      taskId: "task-current",
+    });
+    const node = makeNode("condition.slot_available", { maxParallel: 3 });
+    const engine = {
+      getActiveRuns: () => [
+        { workflowName: "Task Lifecycle", taskId: "task-current" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-1" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-2" },
+        { workflowName: "Task Batch Processor", taskId: "TASK-DIAG-LOCAL" },
+        { workflowName: "Bosun PR Watchdog", taskId: null },
+      ],
+    };
+    const result = await nt.execute(node, ctx, engine);
+    expect(result.result).toBe(true);
+    expect(result.activeSlotCount).toBe(2);
+  });
+
+  it("blocks when sibling task lifecycle runs already fill the parallel budget", async () => {
+    const nt = getNodeType("condition.slot_available");
+    const ctx = makeCtx({
+      taskId: "task-current",
+    });
+    const node = makeNode("condition.slot_available", { maxParallel: 3 });
+    const engine = {
+      getActiveRuns: () => [
+        { workflowName: "Task Lifecycle", taskId: "task-current" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-1" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-2" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-3" },
+      ],
+    };
+    const result = await nt.execute(node, ctx, engine);
+    expect(result.result).toBe(false);
+    expect(result.activeSlotCount).toBe(3);
   });
 });
 
@@ -2476,7 +2545,8 @@ describe("action.acquire_worktree", () => {
         expect(result.worktreePath).toContain(".bosun");
       } else {
         expect(result.error).toMatch(/spawnSync .*git(?:\.exe)? EPERM/i);
-        expect(result.failureKind).toBe("worktree_acquisition_failed");
+        expect(result.failureKind).toBe("host_spawn_unavailable");
+        expect(result.retryable).toBe(false);
       }
     } finally {
       cwdSpy.mockRestore();
@@ -4284,6 +4354,7 @@ describe("action.update_task_status", () => {
     const ctx = makeCtx({
       taskId: "taskid123456",
       taskTitle: "Normalize Branch Persistence",
+      branch: "task/other123456-wrong-task",
       branchName: "task/other123456-wrong-task",
     });
     const node = makeNode("action.update_task_status", {
@@ -4548,6 +4619,12 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(
+      t.edges.find((e) =>
+        e.source === "annotate-blocked-wt-failed"
+        && e.target === "dispatch-wt-repair"
+        && e.sourcePort === "error"),
+    ).toBeDefined();
     expect(t.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
   });

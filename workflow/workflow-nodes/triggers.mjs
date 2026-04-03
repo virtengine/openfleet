@@ -30,6 +30,8 @@ import {
   cfgOrCtx,
   deriveTaskBranch,
   ensureKanbanAdapterMod,
+  ensureTaskClaimsInitialized,
+  ensureTaskClaimsMod,
   ensureTaskStoreMod,
   looksLikeFilesystemPath,
   MAX_NO_COMMIT_ATTEMPTS,
@@ -632,6 +634,55 @@ registerNodeType("trigger.task_available", {
     },
   },
   async execute(node, ctx, engine) {
+    const isWorkflowPlaceholder = (value) => {
+      if (typeof value !== "string") return false;
+      const trimmed = value.trim();
+      return trimmed.startsWith("{{") && trimmed.endsWith("}}");
+    };
+    const hasStaleWorktreePlaceholders = (task) => [
+      task?.blockedReason,
+      task?.cooldownUntil,
+      task?.meta?.autoRecovery?.retryAt,
+      task?.meta?.worktreeFailure?.retryAt,
+      task?.meta?.worktreeFailure?.blockedReason,
+    ].some((value) => isWorkflowPlaceholder(value));
+    const resolveBlockedTaskRetryAtMs = (task, autoRecovery) => {
+      const candidates = [
+        autoRecovery?.retryAt,
+        task?.cooldownUntil,
+        task?.meta?.worktreeFailure?.retryAt,
+      ];
+      for (const candidate of candidates) {
+        if (!candidate || isWorkflowPlaceholder(candidate)) continue;
+        const parsed = Date.parse(String(candidate));
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      return null;
+    };
+    const shouldRecoverBlockedTask = (task, nowMs) => {
+      if (String(task?.status || "").trim().toLowerCase() !== "blocked") return false;
+      const autoRecovery = task?.meta?.autoRecovery;
+      const worktreeFailure = task?.meta?.worktreeFailure;
+      const failureKind = String(
+        worktreeFailure?.failureKind || autoRecovery?.failureKind || "",
+      ).trim();
+      const hasPlaceholder = hasStaleWorktreePlaceholders(task);
+      const isWorktreeRecovery = (
+        autoRecovery
+        && typeof autoRecovery === "object"
+        && autoRecovery.active !== false
+        && String(autoRecovery.reason || "").trim() === "worktree_failure"
+      ) || (
+        worktreeFailure
+        && typeof worktreeFailure === "object"
+      ) || hasPlaceholder;
+      if (!isWorktreeRecovery) return false;
+      if (failureKind === "branch_refresh_conflict" && !hasPlaceholder) return false;
+      const retryAtMs = resolveBlockedTaskRetryAtMs(task, autoRecovery);
+      if (Number.isFinite(retryAtMs) && retryAtMs > nowMs) return false;
+      if (!Number.isFinite(retryAtMs) && !hasPlaceholder) return false;
+      return true;
+    };
     const maxParallel = node.config?.maxParallel ?? 3;
     const singleStatus = node.config?.status ?? "todo";
     const statusesRaw = Array.isArray(node.config?.statuses) ? node.config.statuses : null;
@@ -650,31 +701,17 @@ registerNodeType("trigger.task_available", {
         ? node.config.strictStartGuardMissingTask
         : STRICT_START_GUARD_MISSING_TASK;
 
-    // Check slot availability
-    const workflowActiveRuns =
-      typeof engine?.getActiveRuns === "function"
-        ? engine.getActiveRuns()
-        : [];
-    const workflowActiveTaskIds = Array.from(new Set(
-      workflowActiveRuns
-        .map((run) => String(run?.taskId || "").trim())
-        .filter(Boolean),
-    ));
-    const activeSlotCount = Number(
-      ctx.data?.activeSlotCount
-      ?? (workflowActiveTaskIds.length > 0 ? workflowActiveTaskIds.length : 0),
-    ) || 0;
-    if (activeSlotCount >= maxParallel) {
-      ctx.log(node.id, `All ${maxParallel} slot(s) in use — skipping`);
-      return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
-    }
-
     const explicitTaskId = String(
       ctx.data?.taskId
       || ctx.data?.task?.id
       || ctx.data?.taskDetail?.id
       || "",
     ).trim();
+    const explicitTaskTitle = pickTaskString(
+      ctx.data?.taskTitle,
+      ctx.data?.task?.title,
+      ctx.data?.taskDetail?.title,
+    );
     if (explicitTaskId) {
       ctx.data.taskId = explicitTaskId;
       ctx.log(node.id, `Using provided task context for ${explicitTaskId}`);
@@ -682,8 +719,69 @@ registerNodeType("trigger.task_available", {
         triggered: true,
         reason: "direct_task",
         taskId: explicitTaskId,
+        taskTitle: explicitTaskTitle || null,
+        task: explicitTaskId ? { id: explicitTaskId, title: explicitTaskTitle || undefined } : null,
         tasks: [{ id: explicitTaskId }],
       };
+    }
+
+    // Check slot availability
+    const slotSnapshot =
+      typeof engine?.getTaskLifecycleSlotSnapshot === "function"
+        ? engine.getTaskLifecycleSlotSnapshot()
+        : null;
+    const workflowActiveRuns =
+      typeof engine?.getActiveRuns === "function"
+        ? engine.getActiveRuns()
+        : [];
+    const workflowActiveTaskIds = Array.from(new Set(
+      Array.isArray(slotSnapshot?.activeTaskIds) && slotSnapshot.activeTaskIds.length > 0
+        ? slotSnapshot.activeTaskIds
+        : workflowActiveRuns
+          .map((run) => String(run?.taskId || "").trim())
+          .filter(Boolean),
+    ));
+    const activeSlotCount = Number(
+      ctx.data?.activeSlotCount
+      ?? slotSnapshot?.activeSlotCount
+      ?? (workflowActiveTaskIds.length > 0 ? workflowActiveTaskIds.length : 0),
+    ) || 0;
+    if (
+      slotSnapshot?.baseBranchSlotCounts
+      && typeof slotSnapshot.baseBranchSlotCounts === "object"
+    ) {
+      ctx.data.baseBranchSlotCounts = slotSnapshot.baseBranchSlotCounts;
+    }
+    ctx.data.activeSlotCount = activeSlotCount;
+    ctx.data.activeTaskIds = workflowActiveTaskIds;
+    if (activeSlotCount >= maxParallel) {
+      ctx.log(node.id, `All ${maxParallel} slot(s) in use — skipping`);
+      return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
+    }
+
+    const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
+    const nowMs = Date.now();
+    if (kanban?.listTasks && typeof kanban.updateTask === "function") {
+      try {
+        const blockedTasks = await kanban.listTasks(projectId, { status: "blocked" });
+        if (Array.isArray(blockedTasks) && blockedTasks.length > 0) {
+          for (const blockedTask of blockedTasks) {
+            if (!shouldRecoverBlockedTask(blockedTask, nowMs)) continue;
+            const recoveredStatus = Boolean(
+              blockedTask?.prNumber || blockedTask?.pr_number || blockedTask?.prUrl || blockedTask?.pr_url,
+            )
+              ? "inreview"
+              : "todo";
+            await kanban.updateTask(String(blockedTask.id || blockedTask.task_id || "").trim(), {
+              status: recoveredStatus,
+              cooldownUntil: null,
+              blockedReason: null,
+            });
+          }
+        }
+      } catch (err) {
+        ctx.log(node.id, `Blocked-task recovery skipped: ${err?.message || err}`);
+      }
     }
 
     // Query kanban for each status with retry + backoff, merge results
@@ -697,7 +795,6 @@ registerNodeType("trigger.task_available", {
       let statusTasks = [];
       for (let attempt = 0; attempt <= listRetries; attempt++) {
         try {
-          const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
           if (kanban?.listTasks) {
             statusTasks = await kanban.listTasks(projectId, { status: queryStatus });
           } else {
@@ -776,6 +873,36 @@ registerNodeType("trigger.task_available", {
 
     if (tasks.length === 0) {
       return { triggered: false, reason: "all_filtered", taskCount: 0 };
+    }
+
+    let persistedOwnershipFilteredCount = 0;
+    try {
+      const claimsMod = await ensureTaskClaimsMod();
+      await ensureTaskClaimsInitialized(ctx, claimsMod);
+      if (typeof claimsMod.listClaims === "function") {
+        const activeClaims = await claimsMod.listClaims();
+        if (Array.isArray(activeClaims) && activeClaims.length > 0) {
+          const claimedTaskIds = new Set(
+            activeClaims
+              .map((claim) => String(claim?.task_id || claim?.taskId || "").trim())
+              .filter(Boolean),
+          );
+          const beforeFilterCount = tasks.length;
+          tasks = tasks.filter((task) => !claimedTaskIds.has(String(task?.id || task?.task_id || "").trim()));
+          persistedOwnershipFilteredCount = Math.max(0, beforeFilterCount - tasks.length);
+        }
+      }
+    } catch (err) {
+      ctx.log(node.id, `Persisted claim filtering skipped: ${err?.message || err}`);
+    }
+
+    if (tasks.length === 0) {
+      return {
+        triggered: false,
+        reason: persistedOwnershipFilteredCount > 0 ? "all_claimed" : "all_filtered",
+        taskCount: 0,
+        persistedOwnershipFilteredCount,
+      };
     }
 
     // DAG / sprint-order guard: only dispatch tasks that can legally start.
@@ -1026,20 +1153,35 @@ registerNodeType("trigger.task_available", {
       const baseBranch = pickTaskString(primaryTask.baseBranch, primaryTask.base_branch);
       if (baseBranch) ctx.data.baseBranch = baseBranch;
       const branch = deriveTaskBranch(primaryTask);
-      if (branch) ctx.data.branch = branch;
+      if (branch) {
+        ctx.data.branch = branch;
+        ctx.data.branchName = branch;
+      }
+      ctx.data._taskBranchBinding = {
+        taskId,
+        resolvedBranch: branch || null,
+        resolvedBaseBranch: baseBranch || null,
+        candidates: {
+          baseBranch: primaryTask?.baseBranch ?? primaryTask?.base_branch ?? null,
+          target: primaryTask?.target ?? null,
+          "meta.targetBranch": primaryTask?.meta?.targetBranch ?? primaryTask?.metadata?.targetBranch ?? null,
+        },
+      };
     }
 
     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
     return {
       triggered: true,
       tasks: toDispatch,
+      task: primaryTask,
       taskCount: toDispatch.length,
+      taskTitle: primaryTask ? pickTaskString(primaryTask.title, primaryTask.task_title) : null,
       availableSlots: remaining,
       selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",
+      persistedOwnershipFilteredCount,
       auditEvents: startGuardAuditEvents,
     };
   },
 });
 // ── condition.slot_available ────────────────────────────────────────────────
-
 

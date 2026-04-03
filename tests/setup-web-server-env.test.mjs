@@ -619,6 +619,26 @@ describe("setup web server non-blocking env defaults", () => {
     });
   });
 
+  it("auto-enables harness providers from existing Codex and Copilot auth during setup", () => {
+    const envMap = {};
+    applyNonBlockingSetupEnvDefaults(
+      envMap,
+      {},
+      {
+        OPENAI_ACCESS_TOKEN: "header.payload.signature",
+        GH_TOKEN: "gho_test_token",
+      },
+    );
+
+    expect(envMap).toMatchObject({
+      BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED: "true",
+      BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE: "oauth",
+      BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED: "true",
+      BOSUN_PROVIDER_DEFAULT: "openai-codex-subscription",
+      BOSUN_PROVIDER_ROUTING_MODE: "default-only",
+    });
+  });
+
   it("maps live compaction controls into env defaults and bounds", () => {
     const envMap = {};
     applyNonBlockingSetupEnvDefaults(

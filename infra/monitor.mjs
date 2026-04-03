@@ -128,7 +128,11 @@ import {
   hasActiveSession,
 } from "../agent/agent-pool.mjs";
 import { loadConfig } from "../config/config.mjs";
-import { formatPreflightReport, runPreflightChecks } from "./preflight.mjs";
+import {
+  checkChildProcessLaunch,
+  formatPreflightReport,
+  runPreflightChecks,
+} from "./preflight.mjs";
 import { startAutoUpdateLoop, stopAutoUpdateLoop } from "./update-check.mjs";
 import { createHeartbeatMonitor } from "./heartbeat-monitor.mjs";
 import {
@@ -845,6 +849,12 @@ async function ensureWorkflowAutomationEngine() {
 
   workflowAutomationInitPromise = (async () => {
     try {
+      const childProcessCapability = checkChildProcessLaunch();
+      if (!childProcessCapability.ok) {
+        throw new Error(
+          `workflow automation blocked: Node child-process launch unavailable (${childProcessCapability.code || "unknown"}: ${childProcessCapability.message || "child_process_launch_failed"})`,
+        );
+      }
       const [{ getWorkflowEngine }, { createTask, getTask }, wfNodes, workflowTemplates] = await Promise.all([
         import("../workflow/workflow-engine.mjs"),
         import("../kanban/kanban-adapter.mjs"),

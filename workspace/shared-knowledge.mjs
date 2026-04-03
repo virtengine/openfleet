@@ -731,7 +731,9 @@ export function validateEntry(entry) {
 
 function hashEntry(content, scope, entry = {}) {
   const scopeLevel = normalizeScopeLevel(entry.scopeLevel);
+  const repoRoot = normalizeText(resolve(knowledgeState.repoRoot || process.cwd())).toLowerCase();
   const data = [
+    repoRoot,
     normalizeText(scope),
     normalizeText(content).toLowerCase(),
     scopeLevel,
@@ -826,7 +828,19 @@ export async function appendKnowledgeEntry(entry, options = {}) {
     const ledgerResult = appendKnowledgeEntryToStateLedger(normalizedEntry, {
       repoRoot: effectiveRepoRoot,
     });
-    await syncRegistryProjectionFromLedger(effectiveRepoRoot);
+    const syncedRegistry = await syncRegistryProjectionFromLedger(effectiveRepoRoot);
+    const syncedContainsEntry = Array.isArray(syncedRegistry?.entries)
+      && syncedRegistry.entries.some((entry) => entry?.hash === normalizedEntry.hash);
+    if (!syncedContainsEntry) {
+      const legacyRegistry = await loadLegacyRegistryEntries(effectiveRepoRoot);
+      await saveRegistryEntries(effectiveRepoRoot, {
+        ...legacyRegistry,
+        entries: [
+          normalizedEntry,
+          ...legacyRegistry.entries.filter((entry) => entry?.hash !== normalizedEntry.hash),
+        ],
+      });
+    }
 
     let mirrored = true;
     let mirrorReason = null;

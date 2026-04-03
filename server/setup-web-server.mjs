@@ -31,6 +31,13 @@ import {
 } from "../workflow/workflow-templates.mjs";
 import { discoverTelegramChats } from "../telegram/get-telegram-chat-id.mjs";
 import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
+import { normalizeProviderAuthState } from "../agent/provider-auth-manager.mjs";
+import {
+  buildSharedProviderAccountSummary,
+  resolveCodexSubscriptionAuth,
+  resolveCopilotOAuthAuth,
+  resolveSharedOAuthToken,
+} from "../agent/provider-auth-state.mjs";
 import {
   buildLocalConnectionEntry,
   readRemoteConnectionConfig,
@@ -795,6 +802,15 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     pickNonEmptyValue(env.agentRuntime, envMap.BOSUN_AGENT_RUNTIME, sourceEnv.BOSUN_AGENT_RUNTIME),
     ["harness", "sdk-cli"],
     "harness",
+  );
+  envMap.BOSUN_PROVIDER_ROUTING_MODE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.providerRoutingMode,
+      envMap.BOSUN_PROVIDER_ROUTING_MODE,
+      sourceEnv.BOSUN_PROVIDER_ROUTING_MODE,
+    ),
+    ["default-only", "fallback", "spread"],
+    "default-only",
   );
   envMap.EXECUTOR_MODE = normalizeEnumValue(
     pickNonEmptyValue(env.executorMode, envMap.EXECUTOR_MODE, sourceEnv.EXECUTOR_MODE),
@@ -1602,6 +1618,113 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
   if (!envMap.ORCHESTRATOR_ARGS || String(envMap.ORCHESTRATOR_ARGS).trim() === "") {
     envMap.ORCHESTRATOR_ARGS = `-MaxParallel ${maxParallel}`;
   }
+
+  applyHarnessProviderSetupDefaults(envMap, env, sourceEnv);
+}
+
+function hasConfiguredSetupValue(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return false;
+  const lowered = normalized.toLowerCase();
+  return lowered !== "undefined" && lowered !== "null";
+}
+
+function maybeSetEnvDefault(envMap, key, value) {
+  if (!hasConfiguredSetupValue(value) || hasConfiguredSetupValue(envMap[key])) return false;
+  envMap[key] = String(value).trim();
+  return true;
+}
+
+function buildSetupHarnessProviderSummary(sourceEnv = process.env, settings = {}) {
+  const effectiveSettings = settings && typeof settings === "object" ? { ...settings } : {};
+  const providerIds = [
+    "openai-codex-subscription",
+    "openai-responses",
+    "azure-openai-responses",
+    "anthropic-messages",
+    "claude-subscription-shim",
+    "copilot-oauth",
+  ];
+  const providers = providerIds.map((providerId) => normalizeProviderAuthState(providerId, {}, {
+    env: sourceEnv,
+    settings: effectiveSettings,
+  }));
+  const preferredDefault =
+    providers.find((entry) => entry.providerId === "openai-codex-subscription" && entry.authenticated)
+    || providers.find((entry) => entry.providerId === "openai-responses" && entry.authenticated)
+    || providers.find((entry) => entry.providerId === "azure-openai-responses" && entry.authenticated)
+    || providers.find((entry) => entry.providerId === "claude-subscription-shim" && entry.authenticated)
+    || providers.find((entry) => entry.providerId === "copilot-oauth" && entry.authenticated)
+    || providers.find((entry) => entry.providerId === "anthropic-messages" && entry.authenticated)
+    || null;
+  return {
+    providers,
+    recommendedDefaultProviderId: preferredDefault?.providerId || "openai-responses",
+  };
+}
+
+function applyHarnessProviderSetupDefaults(envMap, env = {}, sourceEnv = process.env) {
+  const sharedAccounts = buildSharedProviderAccountSummary(true);
+  const codexAuth = resolveCodexSubscriptionAuth(sourceEnv);
+  const copilotAuth = resolveCopilotOAuthAuth(sourceEnv);
+
+  if (codexAuth?.authenticated) {
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED", "true");
+    if ((codexAuth.authMode || "").toLowerCase() !== "apikey") {
+      maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE", "oauth");
+    }
+  }
+
+  const openAiApiKey = pickNonEmptyValue(
+    env.openaiApiKey,
+    envMap.OPENAI_API_KEY,
+    sourceEnv.OPENAI_API_KEY,
+  );
+  if (hasConfiguredSetupValue(openAiApiKey)) {
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED", "true");
+  }
+
+  const azureEndpoint = pickNonEmptyValue(
+    env.azureOpenaiRealtimeEndpoint,
+    envMap.AZURE_OPENAI_ENDPOINT,
+    sourceEnv.AZURE_OPENAI_ENDPOINT,
+    sourceEnv.AZURE_OPENAI_REALTIME_ENDPOINT,
+  );
+  const azureApiKey = pickNonEmptyValue(
+    env.azureOpenaiRealtimeApiKey,
+    envMap.AZURE_OPENAI_API_KEY,
+    sourceEnv.AZURE_OPENAI_API_KEY,
+    sourceEnv.AZURE_OPENAI_REALTIME_API_KEY,
+  );
+  if ((hasConfiguredSetupValue(azureApiKey) || sharedAccounts.azure?.connected) && hasConfiguredSetupValue(azureEndpoint)) {
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED", "true");
+    if (sharedAccounts.azure?.connected && !hasConfiguredSetupValue(azureApiKey)) {
+      maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_AZURE_OPENAI_MODE", "oauth");
+    }
+  }
+
+  const anthropicApiKey = pickNonEmptyValue(
+    env.anthropicApiKey,
+    envMap.ANTHROPIC_API_KEY,
+    sourceEnv.ANTHROPIC_API_KEY,
+  );
+  if (hasConfiguredSetupValue(anthropicApiKey)) {
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_ANTHROPIC_ENABLED", "true");
+  }
+
+  if (sharedAccounts.claude?.connected) {
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED", "true");
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE", "oauth");
+  }
+
+  if (copilotAuth?.authenticated) {
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED", "true");
+  }
+
+  if (!hasConfiguredSetupValue(envMap.BOSUN_PROVIDER_DEFAULT)) {
+    const summary = buildSetupHarnessProviderSummary(sourceEnv, envMap);
+    maybeSetEnvDefault(envMap, "BOSUN_PROVIDER_DEFAULT", summary.recommendedDefaultProviderId);
+  }
 }
 
 function getCommandVersion(cmd) {
@@ -1925,6 +2048,9 @@ async function handleStatus() {
     desktopShortcutStatus = { ...status_, methodName: getDesktopShortcutMethodName() };
   } catch { /* ignore */ }
 
+  const sharedConnectedAccounts = buildSharedProviderAccountSummary(true);
+  const harnessProviderSetup = buildSetupHarnessProviderSummary(process.env, existingEnv);
+
   return {
     ok: true,
     configured,
@@ -1938,6 +2064,8 @@ async function handleStatus() {
     existingConfig,
     existingEnv,
     githubOAuth,
+    sharedConnectedAccounts,
+    harnessProviderSetup,
     startupStatus,
     desktopShortcutStatus,
     version: getVersion(),
@@ -2110,11 +2238,8 @@ async function handleVoiceEndpointTest(body) {
       if (apiKey && !useOAuth) {
         headers.Authorization = `Bearer ${apiKey}`;
       } else {
-        try {
-          const { getOpenAILoginStatus } = await import("../voice/voice-auth-manager.mjs");
-          const st = getOpenAILoginStatus();
-          if (st.hasToken && st.accessToken) headers.Authorization = `Bearer ${st.accessToken}`;
-        } catch (_) { /* no oauth available */ }
+        const shared = resolveSharedOAuthToken("openai", true);
+        if (shared?.token) headers.Authorization = `Bearer ${shared.token}`;
       }
       if (!headers.Authorization) {
         return { ok: false, error: "No API key or OAuth token available" };
@@ -2141,11 +2266,8 @@ async function handleVoiceEndpointTest(body) {
       if (apiKey && !useOAuth) {
         headers["x-api-key"] = apiKey;
       } else {
-        try {
-          const { getClaudeLoginStatus } = await import("../voice/voice-auth-manager.mjs");
-          const st = getClaudeLoginStatus();
-          if (st.hasToken && st.accessToken) headers["x-api-key"] = st.accessToken;
-        } catch (_) { /* no oauth available */ }
+        const shared = resolveSharedOAuthToken("claude", true);
+        if (shared?.token) headers["x-api-key"] = shared.token;
       }
       if (!headers["x-api-key"]) {
         return { ok: false, error: "No API key or OAuth token available" };
@@ -2153,11 +2275,8 @@ async function handleVoiceEndpointTest(body) {
     } else if (normalizedProvider === "gemini") {
       let k = (apiKey && !useOAuth) ? apiKey : null;
       if (!k) {
-        try {
-          const { getGeminiLoginStatus } = await import("../voice/voice-auth-manager.mjs");
-          const st = getGeminiLoginStatus();
-          if (st.hasToken && st.accessToken) k = st.accessToken;
-        } catch (_) { /* no oauth available */ }
+        const shared = resolveSharedOAuthToken("gemini", true);
+        if (shared?.token) k = shared.token;
       }
       if (!k) {
         return { ok: false, error: "No API key or OAuth token available" };

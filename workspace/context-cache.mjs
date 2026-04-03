@@ -3325,7 +3325,7 @@ function safeJsonStringify(value) {
 export function truncateCompactedPreviewText(text, options = {}) {
   const value = String(text ?? "");
   const maxChars = Number.isFinite(Number(options.maxChars))
-    ? Math.max(32, Math.trunc(Number(options.maxChars)))
+    ? Math.max(1, Math.trunc(Number(options.maxChars)))
     : 4000;
   const marker = String(options.marker ?? "…truncated");
   if (value.length <= maxChars) {
