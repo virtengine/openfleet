@@ -73,6 +73,7 @@ import {
 import { requireWorkflowActionApproval } from "../action-approval.mjs";
 import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
+import { resolveAutoCommand } from "../project-detection.mjs";
 
 /**
  * Non-blocking async replacement for execFileSync / execSync.
@@ -2517,12 +2518,14 @@ registerNodeType("action.run_command", {
     required: ["command"],
   },
   async execute(node, ctx, engine) {
-    const resolvedCommand = ctx.resolve(node.config?.command || "");
-    const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = resolveWorkflowCwdValue(
       ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd()),
       ctx.data?.worktreePath || process.cwd(),
     );
+    const resolvedCommand = ctx.resolve(node.config?.command || "");
+    const commandType = typeof node.config?.commandType === "string" ? node.config.commandType : "";
+    const autoResolvedCommand = resolveAutoCommand(resolvedCommand, commandType, cwd) || resolvedCommand;
+    const command = normalizeLegacyWorkflowCommand(autoResolvedCommand);
     const resolvedEnvConfig = resolveWorkflowDynamicObject(node.config?.env ?? {}, ctx);
     const commandEnv = applyResolvedWorkflowEnv(process.env, resolvedEnvConfig);
     const timeout = node.config?.timeoutMs || 300000;
@@ -2555,6 +2558,9 @@ registerNodeType("action.run_command", {
     const commandLabel = usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command;
     const startedAt = Date.now();
 
+    if (autoResolvedCommand !== resolvedCommand) {
+      ctx.log(node.id, `Resolved auto ${commandType || "command"}: ${autoResolvedCommand}`);
+    }
     if (command !== resolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }

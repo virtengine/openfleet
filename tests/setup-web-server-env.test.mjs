@@ -249,6 +249,7 @@ describe("setup web server non-blocking env defaults", () => {
       MAX_PARALLEL: "4",
       KANBAN_BACKEND: "internal",
       KANBAN_SYNC_POLICY: "internal-primary",
+      BOSUN_AGENT_RUNTIME: "harness",
       EXECUTOR_MODE: "internal",
       EXECUTOR_DISTRIBUTION: "primary-only",
       FAILOVER_STRATEGY: "next-in-line",
@@ -402,6 +403,7 @@ describe("setup web server non-blocking env defaults", () => {
       MAX_PARALLEL: "1",
       KANBAN_BACKEND: "internal",
       KANBAN_SYNC_POLICY: "internal-primary",
+      BOSUN_AGENT_RUNTIME: "harness",
       EXECUTOR_MODE: "internal",
       EXECUTOR_DISTRIBUTION: "primary-only",
       FAILOVER_STRATEGY: "next-in-line",
@@ -467,6 +469,7 @@ describe("setup web server non-blocking env defaults", () => {
       envMap,
       {
         maxParallel: 8,
+        agentRuntime: "sdk-cli",
         kanbanBackend: "github",
         kanbanSyncPolicy: "bidirectional",
         executorMode: "hybrid",
@@ -524,9 +527,10 @@ describe("setup web server non-blocking env defaults", () => {
 
     expect(envMap).toMatchObject({
       MAX_PARALLEL: "8",
+      BOSUN_AGENT_RUNTIME: "sdk-cli",
       KANBAN_BACKEND: "github",
       KANBAN_SYNC_POLICY: "bidirectional",
-      EXECUTOR_MODE: "hybrid",
+      EXECUTOR_MODE: "internal",
       EXECUTOR_DISTRIBUTION: "round-robin",
       FAILOVER_STRATEGY: "weighted-random",
       FAILOVER_MAX_RETRIES: "0",

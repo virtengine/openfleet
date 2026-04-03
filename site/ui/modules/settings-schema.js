@@ -13,7 +13,7 @@
  * @property {*}      [defaultVal] - Default value
  * @property {string[]} [options]  - Valid choices for 'select' type
  * @property {boolean} [sensitive] - If true, value is masked in UI and excluded from GET responses
- * @property {string}  [validate]  - Regex pattern string for validation
+ * @property {string|Function}  [validate]  - Regex pattern string or predicate for validation
  * @property {number}  [min]       - Min value for 'number' type
  * @property {number}  [max]       - Max value for 'number' type
  * @property {string}  [unit]      - Display unit (e.g., 'ms', 'min', 'sec')
@@ -38,6 +38,29 @@ export const CATEGORIES = [
   { id: "advanced",  label: "Advanced",             icon: "settings", description: "Daemon, dev mode, paths, and low-level tuning" },
   { id: "context-shredding", label: "Context Shredding",   icon: "scissors", description: "Tiered context compression to reduce token usage while preserving important history" },
 ];
+
+function validateExecutorsPoolValue(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return true;
+  const entries = raw.split(",").map((entry) => String(entry || "").trim()).filter(Boolean);
+  if (!entries.length) return true;
+  return entries.every((entry) => {
+    const parts = entry.split(":");
+    if (parts.length < 3) return false;
+    const [executor = "", variant = "", weight = "", ...modelParts] = parts;
+    if (!/^[A-Z_]+$/i.test(String(executor || "").trim())) return false;
+    if (!/^[A-Z0-9._-]+$/i.test(String(variant || "").trim())) return false;
+    if (!/^\d+$/.test(String(weight || "").trim())) return false;
+    if (!modelParts.length) return true;
+    const models = modelParts
+      .join(":")
+      .split("|")
+      .map((model) => String(model || "").trim())
+      .filter(Boolean);
+    if (!models.length) return false;
+    return models.every((model) => /^[A-Z0-9._:/-]+$/i.test(model));
+  });
+}
 
 /** @type {SettingDef[]} */
 export const SETTINGS_SCHEMA = [
@@ -100,7 +123,7 @@ export const SETTINGS_SCHEMA = [
   { key: "CLAUDE_SDK_DISABLED",            label: "Disable Claude SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Claude SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "GEMINI_SDK_DISABLED",            label: "Disable Gemini SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Gemini SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "OPENCODE_SDK_DISABLED",          label: "Disable OpenCode SDK",       category: "executor", type: "boolean", defaultVal: false, description: "When true, OpenCode SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
-  { key: "EXECUTORS",                      label: "Executor Distribution",      category: "executor", type: "string", defaultVal: "CODEX:DEFAULT:100", description: "Weighted executor configuration. Format: TYPE:VARIANT:WEIGHT[:MODEL|MODEL],... (e.g., CODEX:DEFAULT:70:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:30:claude-opus-4.6)", validate: "^[A-Z_]+:[A-Z_]+:\\d+" },
+  { key: "EXECUTORS",                      label: "Executor Distribution",      category: "executor", type: "string", defaultVal: "CODEX:DEFAULT:100", description: "Weighted executor configuration. Format: TYPE:VARIANT:WEIGHT[:MODEL|MODEL],... (e.g., CODEX:DEFAULT:70:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:30:claude-opus-4.6)", validate: validateExecutorsPoolValue },
   { key: "EXECUTOR_DISTRIBUTION",          label: "Distribution Strategy",      category: "executor", type: "select", defaultVal: "weighted", options: ["weighted", "round-robin", "primary-only"], description: "How tasks are distributed across configured executors.", advanced: true },
   { key: "FAILOVER_STRATEGY",              label: "Failover Strategy",          category: "executor", type: "select", defaultVal: "next-in-line", options: ["next-in-line", "weighted-random", "round-robin"], description: "Strategy for selecting next executor when the primary fails.", advanced: true },
   { key: "COMPLEXITY_ROUTING_ENABLED",     label: "Complexity Routing",         category: "executor", type: "boolean", defaultVal: true, description: "Automatically route tasks to different AI models based on estimated complexity.", advanced: true },
@@ -363,8 +386,13 @@ export function validateSetting(def, value) {
     default:
       if (def.validate) {
         try {
-          if (!new RegExp(def.validate).test(value))
-            return { valid: false, error: `Invalid format` };
+          if (typeof def.validate === "function") {
+            if (!def.validate(value, def)) {
+              return { valid: false, error: "Invalid format" };
+            }
+          } else if (!new RegExp(def.validate).test(value)) {
+            return { valid: false, error: "Invalid format" };
+          }
         } catch { /* ignore bad regex */ }
       }
       return { valid: true };

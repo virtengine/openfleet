@@ -961,6 +961,18 @@ function normalizePrimaryAgent(value) {
   return raw;
 }
 
+function normalizeAgentRuntime(value) {
+  return String(value || "").trim().toLowerCase() === "sdk-cli"
+    ? "sdk-cli"
+    : "harness";
+}
+
+function normalizeInternalExecutorMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "hybrid") return "internal";
+  return normalized === "internal" ? "internal" : "internal";
+}
+
 function normalizeKanbanBackend(value) {
   const backend = String(value || "")
     .trim()
@@ -1517,6 +1529,12 @@ export function loadConfig(argv = process.argv, options = {}) {
     (configData.codexEnabled !== undefined ? configData.codexEnabled : true) &&
     !isEnvEnabled(process.env.CODEX_SDK_DISABLED, false) &&
     agentSdk.primary === "codex";
+  const agentRuntime = normalizeAgentRuntime(
+    cli["agent-runtime"] ||
+      process.env.BOSUN_AGENT_RUNTIME ||
+      configData.agentRuntime ||
+      "harness",
+  );
   const primaryAgent = normalizePrimaryAgent(
     cli["primary-agent"] ||
       cli.agent ||
@@ -1552,7 +1570,8 @@ export function loadConfig(argv = process.argv, options = {}) {
     !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false);
 
   // ── Internal Executor ────────────────────────────────────
-  // Allows the monitor to run tasks via agent-pool directly. Modes: "internal" (default), "hybrid".
+  // Bosun now treats the internal queued-task engine as one mode: "internal".
+  // Legacy EXECUTOR_MODE=hybrid is accepted and normalized for compatibility.
   const kanbanBackend = normalizeKanbanBackend(
     process.env.KANBAN_BACKEND || configData.kanban?.backend || "internal",
   );
@@ -1757,11 +1776,11 @@ export function loadConfig(argv = process.argv, options = {}) {
       ),
     ),
   );
-  const executorMode = (
+  const executorMode = normalizeInternalExecutorMode(
     process.env.EXECUTOR_MODE ||
     internalExecutorConfig.mode ||
-    "internal"
-  ).toLowerCase();
+    "internal",
+  );
   const reviewAgentToggleRaw =
     process.env.INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED;
   const reviewAgentEnabled =
@@ -1805,9 +1824,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     ),
   });
   const internalExecutor = {
-    mode: ["internal", "hybrid"].includes(executorMode)
-      ? executorMode
-      : "internal",
+    mode: executorMode,
     maxParallel: Number(
       envInternalExecutorParallel ||
         internalExecutorConfig.maxParallel ||
@@ -2331,6 +2348,10 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData.harness && typeof configData.harness === "object"
       ? configData.harness
       : {};
+  const providersData =
+    configData.providers && typeof configData.providers === "object"
+      ? configData.providers
+      : {};
   const harnessValidationData =
     harnessData.validation && typeof harnessData.validation === "object"
       ? harnessData.validation
@@ -2345,7 +2366,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const harness = Object.freeze({
     enabled: isEnvEnabled(
       process.env.BOSUN_HARNESS_ENABLED ?? harnessData.enabled,
-      false,
+      agentRuntime === "harness",
     ),
     source: String(
       process.env.BOSUN_HARNESS_SOURCE ??
@@ -2357,6 +2378,9 @@ export function loadConfig(argv = process.argv, options = {}) {
         ? harnessValidationModeRaw
         : "report",
     }),
+  });
+  const providers = Object.freeze({
+    ...(providersData || {}),
   });
 
   // ── Status file ──────────────────────────────────────────
@@ -2426,6 +2450,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     preflightEnabled,
     preflightRetryMs,
     codexEnabled,
+    agentRuntime,
     agentPoolEnabled,
     primaryAgent,
     primaryAgentEnabled,
@@ -2511,6 +2536,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Workflow template defaults + opt-in typed workflow entries
     workflowDefaults: Object.freeze(workflowDefaults),
     harness,
+    providers,
 
     // Paths
     statusPath,

@@ -6727,6 +6727,12 @@ function parseExecutorsValue(value) {
     const parts = entries[i].split(":").map((part) => part.trim());
     if (parts.length < 2) continue;
     const weight = parts[2] ? Number(parts[2]) : Math.floor(100 / entries.length);
+    const models = parts
+      .slice(3)
+      .join(":")
+      .split("|")
+      .map((model) => model.trim())
+      .filter(Boolean);
     executors.push({
       name: `${parts[0].toLowerCase()}-${parts[1].toLowerCase()}`,
       executor: parts[0].toUpperCase(),
@@ -6734,6 +6740,7 @@ function parseExecutorsValue(value) {
       weight: Number.isFinite(weight) ? weight : 0,
       role: roles[i] || `executor-${i + 1}`,
       enabled: true,
+      ...(models.length > 0 ? { models } : {}),
     });
   }
   return executors.length ? executors : value;
@@ -8653,6 +8660,7 @@ const INTERNAL_EXECUTOR_MAP = {
   STREAM_MAX_ITEM_CHARS: ["internalExecutor", "stream", "maxItemChars"],
 };
 const CONFIG_PATH_OVERRIDES = {
+  BOSUN_AGENT_RUNTIME: ["agentRuntime"],
   EXECUTOR_MODE: ["internalExecutor", "mode"],
   PROJECT_REQUIREMENTS_PROFILE: ["projectRequirements", "profile"],
   BOSUN_HARNESS_ENABLED: ["harness", "enabled"],
@@ -8660,6 +8668,7 @@ const CONFIG_PATH_OVERRIDES = {
   BOSUN_HARNESS_VALIDATION_MODE: ["harness", "validation", "mode"],
   SELF_RESTART_QUIET_MS: ["monitor", "selfRestartQuietMs"],
   BOSUN_PROVIDER_DEFAULT: ["providers", "defaultProvider"],
+  BOSUN_PROVIDER_ROUTING_MODE: ["providers", "routingMode"],
   BOSUN_PROVIDER_DEFAULT_MODEL: ["providers", "defaultModel"],
   BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED: ["providers", "openai", "enabled"],
   BOSUN_PROVIDER_OPENAI_RESPONSES_MODEL: ["providers", "openai", "defaultModel"],
@@ -10329,7 +10338,7 @@ const SETTINGS_KNOWN_KEYS = [
   "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_GLOBAL_PER_MIN", "TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES",
   "TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS", "TELEGRAM_UI_FALLBACK_AUTH_ROTATE_DAYS",
   "TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS",
-  "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
+  "BOSUN_AGENT_RUNTIME", "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
   "INTERNAL_EXECUTOR_TIMEOUT_MS", "INTERNAL_EXECUTOR_MAX_RETRIES", "INTERNAL_EXECUTOR_POLL_MS",
   "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
   "INTERNAL_EXECUTOR_STREAM_MAX_RETRIES", "INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS",
@@ -10338,7 +10347,7 @@ const SETTINGS_KNOWN_KEYS = [
   "CODEX_SDK_DISABLED", "COPILOT_SDK_DISABLED", "CLAUDE_SDK_DISABLED",
   "PRIMARY_AGENT", "EXECUTORS", "EXECUTOR_DISTRIBUTION", "FAILOVER_STRATEGY",
   "COMPLEXITY_ROUTING_ENABLED", "PROJECT_REQUIREMENTS_PROFILE",
-  "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL",
+  "BOSUN_PROVIDER_ROUTING_MODE", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL",
   "CODEX_MODEL_PROFILE", "CODEX_MODEL_PROFILE_SUBAGENT",
   "CODEX_MODEL_PROFILE_XL_PROVIDER", "CODEX_MODEL_PROFILE_XL_MODEL", "CODEX_MODEL_PROFILE_XL_BASE_URL", "CODEX_MODEL_PROFILE_XL_API_KEY",
   "CODEX_MODEL_PROFILE_M_PROVIDER", "CODEX_MODEL_PROFILE_M_MODEL", "CODEX_MODEL_PROFILE_M_BASE_URL", "CODEX_MODEL_PROFILE_M_API_KEY",
@@ -10597,8 +10606,12 @@ function buildProviderInventory(settings = null) {
   const defaultProviderId = items.find((entry) => entry.providerId === requestedDefaultProviderId)?.providerId
     || items[0]?.providerId
     || null;
+  const routingModeRaw = String(effectiveSettings.BOSUN_PROVIDER_ROUTING_MODE || "default-only").trim().toLowerCase();
   return {
     defaultProviderId,
+    routingMode: ["default-only", "fallback", "spread"].includes(routingModeRaw)
+      ? routingModeRaw
+      : "default-only",
     items,
   };
 }
@@ -20875,7 +20888,7 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, {
           ok: false,
           error:
-            "Internal executor not enabled. Set EXECUTOR_MODE=internal or hybrid.",
+            "Internal executor not enabled. Set EXECUTOR_MODE=internal.",
         });
         return;
       }

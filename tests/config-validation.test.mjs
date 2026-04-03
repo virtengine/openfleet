@@ -39,6 +39,7 @@ const ENV_KEYS = [
   "EXECUTORS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "KANBAN_BACKEND",
+  "BOSUN_AGENT_RUNTIME",
   "WATCH_PATH",
   "ORCHESTRATOR_SCRIPT",
   "PRIMARY_AGENT",
@@ -655,6 +656,37 @@ describe("loadConfig validation and edge cases", () => {
     ]);
 
     expect(config.primaryAgent).toBe("gemini-sdk");
+  });
+
+  it("defaults agent runtime to harness and normalizes legacy hybrid executor mode", () => {
+    process.env.EXECUTOR_MODE = "hybrid";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.agentRuntime).toBe("harness");
+    expect(config.internalExecutor.mode).toBe("internal");
+  });
+
+  it("accepts BOSUN_AGENT_RUNTIME=sdk-cli", () => {
+    process.env.BOSUN_AGENT_RUNTIME = "sdk-cli";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.agentRuntime).toBe("sdk-cli");
   });
 
   it("keeps trigger system disabled by default", () => {

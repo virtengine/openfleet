@@ -2221,6 +2221,109 @@ describe("WorkflowEngine - run history details", () => {
     ]));
   });
 
+  it("preserves sibling active-runs entries when one run is cleared", () => {
+    const firstCtx = new WorkflowContext({
+      taskId: "task-one",
+      taskTitle: "Task One",
+      task: { id: "task-one", title: "Task One" },
+    });
+    firstCtx.id = "run-one";
+    firstCtx.startedAt = Date.now() - 1000;
+
+    const secondCtx = new WorkflowContext({
+      taskId: "task-two",
+      taskTitle: "Task Two",
+      task: { id: "task-two", title: "Task Two" },
+    });
+    secondCtx.id = "run-two";
+    secondCtx.startedAt = Date.now() - 500;
+
+    engine._activeRuns.set("run-one", {
+      ctx: firstCtx,
+      workflowId: "template-task-lifecycle",
+      workflowName: "Task Lifecycle",
+      status: WorkflowStatus.RUNNING,
+    });
+    engine._persistActiveRunState("run-one", "template-task-lifecycle", "Task Lifecycle", firstCtx);
+
+    engine._activeRuns.set("run-two", {
+      ctx: secondCtx,
+      workflowId: "template-task-lifecycle",
+      workflowName: "Task Lifecycle",
+      status: WorkflowStatus.RUNNING,
+    });
+    engine._persistActiveRunState("run-two", "template-task-lifecycle", "Task Lifecycle", secondCtx);
+
+    engine._clearActiveRunState("run-one");
+    engine._activeRuns.delete("run-one");
+
+    const activeRunsPath = join(tmpDir, "runs", "_active-runs.json");
+    const entries = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+    expect(entries).toEqual([
+      expect.objectContaining({
+        runId: "run-two",
+        taskId: "task-two",
+        taskIds: ["task-two"],
+        taskTitle: "Task Two",
+      }),
+    ]);
+  });
+
+  it("scopes persisted run summaries to the current run identity", () => {
+    const detail = {
+      startedAt: 100,
+      endedAt: 200,
+      duration: 100,
+      data: {
+        _workflowRootRunId: "root-run-1",
+        _workflowRootTaskId: "task-current",
+        _workflowParentTaskId: "task-current",
+        taskId: "task-current",
+        taskTitle: "Current Task",
+        sessionId: "session-current",
+        _taskWorkflowEvents: [
+          {
+            runId: "run-current",
+            taskId: "task-current",
+            taskTitle: "Current Task",
+            sessionId: "session-current",
+          },
+          {
+            runId: "run-other",
+            taskId: "task-other",
+            taskTitle: "Other Task",
+            sessionId: "session-other",
+          },
+        ],
+      },
+      nodeStatuses: {},
+      nodeStatusEvents: [],
+      logs: [],
+      errors: [],
+    };
+
+    const summary = engine._buildSummaryFromDetail({
+      runId: "run-current",
+      workflowId: "template-task-lifecycle",
+      workflowName: "Task Lifecycle",
+      status: WorkflowStatus.COMPLETED,
+      detail,
+    });
+
+    expect(summary.taskId).toBe("task-current");
+    expect(summary.taskIds).toEqual(["task-current"]);
+    expect(summary.taskTitle).toBe("Current Task");
+    expect(summary.sessionId).toBe("session-current");
+    expect(summary.sessionIds).toEqual(["session-current"]);
+    expect(summary.delegationTopology).toEqual(expect.objectContaining({
+      runId: "run-current",
+      taskId: "task-current",
+      taskIds: ["task-current"],
+      sessionId: "session-current",
+      sessionIds: ["session-current"],
+    }));
+  });
+
   it("sanitizes live timeout handles before checkpoint persistence", async () => {
     const runId = "run-timeout-checkpoint";
     const timer = setTimeout(() => {}, 60_000);

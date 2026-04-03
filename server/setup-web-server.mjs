@@ -791,9 +791,14 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     ["internal-primary", "bidirectional"],
     "internal-primary",
   );
+  envMap.BOSUN_AGENT_RUNTIME = normalizeEnumValue(
+    pickNonEmptyValue(env.agentRuntime, envMap.BOSUN_AGENT_RUNTIME, sourceEnv.BOSUN_AGENT_RUNTIME),
+    ["harness", "sdk-cli"],
+    "harness",
+  );
   envMap.EXECUTOR_MODE = normalizeEnumValue(
     pickNonEmptyValue(env.executorMode, envMap.EXECUTOR_MODE, sourceEnv.EXECUTOR_MODE),
-    ["internal", "hybrid"],
+    ["internal"],
     "internal",
   );
   envMap.EXECUTOR_DISTRIBUTION = normalizeEnumValue(
@@ -1958,12 +1963,14 @@ function handleDefaults() {
       workspacesDir,
     }),
     agentArchitecture: buildAgentConfigurationGuide({
+      BOSUN_AGENT_RUNTIME: "harness",
       PRIMARY_AGENT: "codex-sdk",
       INTERNAL_EXECUTOR_SDK: "auto",
       EXECUTOR_MODE: "internal",
       EXECUTOR_DISTRIBUTION: "primary-only",
       EXECUTORS: "CODEX:DEFAULT:100",
       BOSUN_PROVIDER_DEFAULT: "openai-responses",
+      BOSUN_PROVIDER_ROUTING_MODE: "default-only",
     }),
   };
 }
@@ -2379,6 +2386,7 @@ function handleApply(body) {
 
     // ── Optional setup values ───────────────────────────────────────────────
     if (env.primaryAgent)               envMap.PRIMARY_AGENT                 = env.primaryAgent;
+    if (env.agentRuntime)               envMap.BOSUN_AGENT_RUNTIME           = env.agentRuntime;
     if (env.orchestratorScript)         envMap.ORCHESTRATOR_SCRIPT           = env.orchestratorScript;
 
     // ── Codex model profile settings ───────────────────────────────────────

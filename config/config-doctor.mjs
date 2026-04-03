@@ -358,11 +358,27 @@ export function runConfigDoctor(options = {}) {
   }
 
   const mode = String(effective.EXECUTOR_MODE || "internal").toLowerCase();
-  if (!["internal", "hybrid"].includes(mode)) {
+  if (!["internal", "hybrid", ""].includes(mode)) {
     issues.errors.push({
       code: "EXECUTOR_MODE",
       message: `Invalid EXECUTOR_MODE: ${effective.EXECUTOR_MODE}`,
-      fix: "Use one of: internal, hybrid",
+      fix: "Use internal. Legacy hybrid is accepted only for backward compatibility and now behaves the same as internal.",
+    });
+  }
+  if (mode === "hybrid") {
+    issues.warnings.push({
+      code: "EXECUTOR_MODE_DEPRECATED",
+      message: "EXECUTOR_MODE=hybrid is deprecated and now behaves the same as internal.",
+      fix: "Switch to EXECUTOR_MODE=internal and use BOSUN_AGENT_RUNTIME to choose Harness vs SDK/CLI.",
+    });
+  }
+
+  const agentRuntime = String(effective.BOSUN_AGENT_RUNTIME || "harness").toLowerCase();
+  if (!["harness", "sdk-cli"].includes(agentRuntime)) {
+    issues.errors.push({
+      code: "BOSUN_AGENT_RUNTIME",
+      message: `Invalid BOSUN_AGENT_RUNTIME: ${effective.BOSUN_AGENT_RUNTIME}`,
+      fix: "Use one of: harness, sdk-cli",
     });
   }
 

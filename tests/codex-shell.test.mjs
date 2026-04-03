@@ -260,6 +260,45 @@ describe("codex-shell stream safeguards", () => {
     expect(first.finalResponse).toContain("first session completed");
   });
 
+  it("returns normalized usage from streamed turn completion events", async () => {
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-usage",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "usage-aware result" },
+            };
+            yield {
+              type: "turn.completed",
+              usage: {
+                input_tokens: 210,
+                output_tokens: 45,
+                total_tokens: 255,
+                input_tokens_details: { cached_tokens: 33 },
+              },
+            };
+          },
+        },
+      }),
+    }));
+
+    const result = await execCodexPrompt("capture usage", {
+      persistent: true,
+      sessionId: "usage-session",
+      timeoutMs: 5000,
+    });
+
+    expect(result.finalResponse).toContain("usage-aware result");
+    expect(result.usage).toEqual(expect.objectContaining({
+      inputTokens: 210,
+      outputTokens: 45,
+      totalTokens: 255,
+      cacheInputTokens: 33,
+    }));
+  });
+
   it("retries when first stream event never arrives", async () => {
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS = "1000";
 

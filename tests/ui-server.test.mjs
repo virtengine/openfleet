@@ -131,6 +131,7 @@ describeUiServer("ui-server mini app", () => {
     "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
     "GITHUB_PROJECT_WEBHOOK_PATH",
     "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD",
+    "BOSUN_AGENT_RUNTIME",
     "EXECUTOR_MODE",
     "INTERNAL_EXECUTOR_PARALLEL",
     "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
@@ -144,6 +145,7 @@ describeUiServer("ui-server mini app", () => {
     "BOSUN_HARNESS_ENABLED",
     "BOSUN_HARNESS_SOURCE",
     "BOSUN_HARNESS_VALIDATION_MODE",
+    "BOSUN_PROVIDER_ROUTING_MODE",
     "OPENAI_API_KEY",
     "STATUS_FILE",
     "BOSUN_FLOW_REQUIRE_REVIEW",
@@ -1433,6 +1435,7 @@ describeUiServer("ui-server mini app", () => {
           GITHUB_PROJECT_MODE: "kanban",
           GITHUB_PROJECT_WEBHOOK_PATH: "/api/webhooks/github/project-sync",
           GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD: "5",
+          BOSUN_AGENT_RUNTIME: "harness",
           EXECUTOR_MODE: "internal",
           INTERNAL_EXECUTOR_PARALLEL: "5",
           INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED: "false",
@@ -1441,6 +1444,7 @@ describeUiServer("ui-server mini app", () => {
           BOSUN_HARNESS_ENABLED: "true",
           BOSUN_HARNESS_SOURCE: ".bosun/harness/internal-harness.md",
           BOSUN_HARNESS_VALIDATION_MODE: "enforce",
+          BOSUN_PROVIDER_ROUTING_MODE: "spread",
           TELEGRAM_UI_PORT: "4400",
           TELEGRAM_INTERVAL_MIN: "15",
           FLEET_ENABLED: "false",
@@ -1459,6 +1463,7 @@ describeUiServer("ui-server mini app", () => {
         "GITHUB_PROJECT_MODE",
         "GITHUB_PROJECT_WEBHOOK_PATH",
         "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD",
+        "BOSUN_AGENT_RUNTIME",
         "EXECUTOR_MODE",
         "INTERNAL_EXECUTOR_PARALLEL",
         "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
@@ -1467,6 +1472,7 @@ describeUiServer("ui-server mini app", () => {
         "BOSUN_HARNESS_ENABLED",
         "BOSUN_HARNESS_SOURCE",
         "BOSUN_HARNESS_VALIDATION_MODE",
+        "BOSUN_PROVIDER_ROUTING_MODE",
         "TELEGRAM_UI_PORT",
         "TELEGRAM_INTERVAL_MIN",
         "FLEET_ENABLED",
@@ -1484,6 +1490,7 @@ describeUiServer("ui-server mini app", () => {
     expect(config.kanban?.github?.project?.mode).toBe("kanban");
     expect(config.kanban?.github?.project?.webhook?.path).toBe("/api/webhooks/github/project-sync");
     expect(config.kanban?.github?.project?.syncMonitoring?.alertFailureThreshold).toBe(5);
+    expect(config.agentRuntime).toBe("harness");
     expect(config.internalExecutor?.mode).toBe("internal");
     expect(config.internalExecutor?.maxParallel).toBe(5);
     expect(config.internalExecutor?.reviewAgentEnabled).toBe(false);
@@ -1492,6 +1499,7 @@ describeUiServer("ui-server mini app", () => {
     expect(config.harness?.enabled).toBe(true);
     expect(config.harness?.source).toBe(".bosun/harness/internal-harness.md");
     expect(config.harness?.validation?.mode).toBe("enforce");
+    expect(config.providers?.routingMode).toBe("spread");
     expect(config.telegramUiPort).toBe(4400);
     expect(config.telegramIntervalMin).toBe(15);
     expect(config.fleetEnabled).toBe(false);
@@ -1501,6 +1509,54 @@ describeUiServer("ui-server mini app", () => {
       expect.arrayContaining([
         expect.objectContaining({ executor: "CODEX", variant: "DEFAULT", weight: 70 }),
         expect.objectContaining({ executor: "COPILOT", variant: "DEFAULT", weight: 30 }),
+      ]),
+    );
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("accepts executor pool variants with dots and preserves model allow-lists on settings save", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-executors-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        changes: {
+          EXECUTORS: "CODEX:GPT-5.4:70:gpt-5.4|gpt-5.3-codex,COPILOT:DEFAULT:30",
+        },
+      }),
+    });
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.updatedConfig).toEqual(expect.arrayContaining(["EXECUTORS"]));
+
+    const raw = readFileSync(configPath, "utf8");
+    const config = JSON.parse(raw);
+    expect(config.executors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          executor: "CODEX",
+          variant: "GPT-5.4",
+          weight: 70,
+          models: ["gpt-5.4", "gpt-5.3-codex"],
+        }),
+        expect.objectContaining({
+          executor: "COPILOT",
+          variant: "DEFAULT",
+          weight: 30,
+        }),
       ]),
     );
 
@@ -1527,7 +1583,9 @@ describeUiServer("ui-server mini app", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           changes: {
+            BOSUN_AGENT_RUNTIME: "harness",
             BOSUN_PROVIDER_DEFAULT: "openai-compatible",
+            BOSUN_PROVIDER_ROUTING_MODE: "spread",
             BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true",
             BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL: "qwen2.5-coder:latest",
             BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:4000/v1",
@@ -1545,7 +1603,9 @@ describeUiServer("ui-server mini app", () => {
       expect(response.status).toBe(200);
       expect(json.ok).toBe(true);
       expect(json.updatedConfig).toEqual(expect.arrayContaining([
+        "BOSUN_AGENT_RUNTIME",
         "BOSUN_PROVIDER_DEFAULT",
+        "BOSUN_PROVIDER_ROUTING_MODE",
         "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED",
         "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL",
         "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL",
@@ -1559,8 +1619,10 @@ describeUiServer("ui-server mini app", () => {
       ]));
 
       const config = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(config.agentRuntime).toBe("harness");
       expect(config.providers).toEqual(expect.objectContaining({
         defaultProvider: "openai-compatible",
+        routingMode: "spread",
         chatgptCodex: expect.objectContaining({
           enabled: true,
           workspace: "chatgpt-team-alpha",

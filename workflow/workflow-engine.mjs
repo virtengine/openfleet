@@ -2175,7 +2175,8 @@ function isConcreteTaskIdentityRequired(runSummary = null, detail = null) {
   return workflowName === "task lifecycle";
 }
 
-function collectRunSessionIds(detail = {}) {
+function collectRunSessionIds(detail = {}, options = {}) {
+  const currentRunId = normalizeWorkflowIdentityText(options?.currentRunId || "");
   const ids = [];
   const seen = new Set();
   const push = (value) => {
@@ -2201,6 +2202,10 @@ function collectRunSessionIds(detail = {}) {
   }
 
   for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    if (currentRunId) {
+      const eventRunId = normalizeWorkflowIdentityText(event?.runId);
+      if (eventRunId && eventRunId !== currentRunId) continue;
+    }
     for (const value of [
       event?.sessionId,
       event?.threadId,
@@ -2215,9 +2220,14 @@ function collectRunSessionIds(detail = {}) {
 }
 
 function buildRunDelegationTopology({ runId = null, detail = {}, runGraph = null } = {}) {
-  const taskIds = collectRunTaskIds(detail);
-  const sessionIds = collectRunSessionIds(detail);
-  const requestedRunId = String(runId || detail?.id || "").trim() || null;
+  const currentRunId = String(runId || detail?.id || "").trim();
+  const taskIds = collectRunTaskIds(detail, {
+    currentRunId,
+  });
+  const sessionIds = collectRunSessionIds(detail, {
+    currentRunId,
+  });
+  const requestedRunId = currentRunId || null;
   const requestedRun =
     Array.isArray(runGraph?.runs) && requestedRunId
       ? runGraph.runs.find((entry) => String(entry?.runId || "") === requestedRunId) || null
@@ -7251,8 +7261,12 @@ export class WorkflowEngine extends EventEmitter {
         : identityValidation?.code === "invalid_task_identity"
           ? false
           : null;
-    const taskIds = collectRunTaskIds(detail);
-    const sessionIds = collectRunSessionIds(detail);
+    const taskIds = collectRunTaskIds(detail, {
+      currentRunId: runId,
+    });
+    const sessionIds = collectRunSessionIds(detail, {
+      currentRunId: runId,
+    });
     const taskTitle = normalizeWorkflowRunText(resolveRunTaskTitle(detail));
     const delegationTopology = buildRunDelegationTopology({ runId, detail });
     const governanceState = buildWorkflowGovernanceState(detail?.data || detail || {});
@@ -7424,6 +7438,42 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _snapshotActiveRunIndexEntries(options = {}) {
+    const omitRunId = String(options?.omitRunId || "").trim();
+    const includeRunId = String(options?.includeRunId || "").trim();
+    const includeWorkflowId = String(options?.includeWorkflowId || "").trim();
+    const includeWorkflowName = String(options?.includeWorkflowName || "").trim();
+    const includeCtx = options?.includeCtx || null;
+    const entries = [];
+    for (const [runId, info] of this._activeRuns.entries()) {
+      if (omitRunId && runId === omitRunId) continue;
+      const workflowId = String(info?.workflowId || "").trim();
+      const workflowName = String(info?.workflowName || "").trim();
+      const ctx = info?.ctx || null;
+      if (!workflowId || !ctx) continue;
+      entries.push(buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx));
+    }
+    if (
+      includeRunId &&
+      includeWorkflowId &&
+      includeCtx &&
+      !(omitRunId && includeRunId === omitRunId) &&
+      !entries.some((entry) => String(entry?.runId || "").trim() === includeRunId)
+    ) {
+      entries.push(buildActiveRunIndexEntry(
+        includeRunId,
+        includeWorkflowId,
+        includeWorkflowName,
+        includeCtx,
+      ));
+    }
+    return entries.sort(
+      (left, right) =>
+        Number(left?.startedAt || 0) - Number(right?.startedAt || 0) ||
+        String(left?.runId || "").localeCompare(String(right?.runId || "")),
+    );
+  }
+
   /**
    * Persist a run to the active-runs index AND write an initial detail file.
    * Called at the very start of execute() / retryRun() so the run is on disk
@@ -7433,10 +7483,14 @@ export class WorkflowEngine extends EventEmitter {
     try {
       this._ensureDirs();
 
-      // Add to active-runs index
-      const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      entries.push(buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx));
-      this._writeActiveRunsIndex(entries);
+      // Active-runs is derived from the authoritative in-memory map so
+      // concurrent run start/finish events cannot erase sibling entries.
+      this._writeActiveRunsIndex(this._snapshotActiveRunIndexEntries({
+        includeRunId: runId,
+        includeWorkflowId: workflowId,
+        includeWorkflowName: workflowName,
+        includeCtx: ctx,
+      }));
 
       // Write initial detail file so we can resume from it
       const detail = this._serializeRunContext(ctx, true);
@@ -7495,9 +7549,8 @@ export class WorkflowEngine extends EventEmitter {
         clearTimeout(timer);
         this._checkpointTimers.delete(runId);
       }
-      // Remove from active-runs index
-      const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      this._writeActiveRunsIndex(entries);
+      // Snapshot from the current active map and omit the run being finalized.
+      this._writeActiveRunsIndex(this._snapshotActiveRunIndexEntries({ omitRunId: runId }));
     } catch (err) {
       console.error(`${TAG} Failed to clear active run state:`, err.message);
     }

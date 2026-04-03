@@ -32,6 +32,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { normalizeProviderUsageMetadata } from "../agent/providers/provider-usage-normalizer.mjs";
 import { createShellSessionCompat } from "./shell-session-compat.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -1252,6 +1253,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
         let finalResponse = "";
         const allItems = [];
+        let finalUsage = null;
         let turnFailedErr = null;
         let firstEventTimer = null;
         let eventCount = 0;
@@ -1342,6 +1344,12 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
           // Track usage
           if (event.type === "turn.completed") {
+            finalUsage = normalizeProviderUsageMetadata(
+              event.usage
+              || event.turn?.usage
+              || event.result?.usage
+              || finalUsage,
+            ) || finalUsage;
             state.turnCount++;
             if (persistent) {
               await persistSessionState(persistentSessionId, state, { activate: true, status: "active" });
@@ -1386,13 +1394,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
         const compressedItems = await maybeCompressSessionItems(allItems, {
           sessionType: persistent ? "primary" : "task",
           agentType: "codex-sdk",
+          sessionId: persistent ? persistentSessionId : logicalSessionId,
         });
 
         return {
           finalResponse:
             finalResponse.trim() || "(Agent completed with no text output)",
           items: compressedItems,
-          usage: null,
+          usage: finalUsage,
         };
       } catch (err) {
         clearTimeout(timer);

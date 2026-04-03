@@ -137,5 +137,12 @@ describe("chat session regressions", () => {
     expect(source).toContain("providerSelection: messageAgent");
     expect(source).toContain("model: messageModel");
   });
+
+  it("records codex lab compression stats against the owning session id and returns usage", () => {
+    const source = read("shell/codex-shell.mjs");
+    expect(source).toContain("sessionId: persistent ? persistentSessionId : logicalSessionId");
+    expect(source).toContain("finalUsage = normalizeProviderUsageMetadata(");
+    expect(source).toContain("usage: finalUsage");
+  });
 });
 

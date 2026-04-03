@@ -13,7 +13,7 @@
  * @property {*}      [defaultVal] - Default value
  * @property {string[]} [options]  - Valid choices for 'select' type
  * @property {boolean} [sensitive] - If true, value is masked in UI and excluded from GET responses
- * @property {string}  [validate]  - Regex pattern string for validation
+ * @property {string|Function}  [validate]  - Regex pattern string or predicate for validation
  * @property {number}  [min]       - Min value for 'number' type
  * @property {number}  [max]       - Max value for 'number' type
  * @property {string}  [unit]      - Display unit (e.g., 'ms', 'min', 'sec')
@@ -25,7 +25,7 @@
 export const CATEGORIES = [
   { id: "telegram",  label: "Telegram Bot",         icon: "phone", description: "Bot token, chat, polling, and notification settings" },
   { id: "miniapp",   label: "Mini App / UI",        icon: "monitor", description: "Web UI server, port, auth, and tunnel settings" },
-  { id: "executor",  label: "Agent Architecture",   icon: "cpu", description: "How interactive shell runtimes, internal task runners, weighted executor routing, and harness providers are wired together" },
+  { id: "executor",  label: "Agent Architecture",   icon: "cpu", description: "Choose Bosun's primary agent runtime, configure harness providers, and manage legacy SDK compatibility only when needed" },
   { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice endpoints, provider routing, and voice behavior settings" },
   { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
   { id: "gates",     label: "Gates / Safeguards",   icon: "shield", description: "PR trust, merge gates, execution posture, and runtime safeguards" },
@@ -38,6 +38,29 @@ export const CATEGORIES = [
   { id: "advanced",  label: "Advanced",             icon: "settings", description: "Daemon, dev mode, paths, and low-level tuning" },
   { id: "context-shredding", label: "Context Shredding",   icon: "scissors", description: "Tiered context compression to reduce token usage while preserving important history" },
 ];
+
+function validateExecutorsPoolValue(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return true;
+  const entries = raw.split(",").map((entry) => String(entry || "").trim()).filter(Boolean);
+  if (!entries.length) return true;
+  return entries.every((entry) => {
+    const parts = entry.split(":");
+    if (parts.length < 3) return false;
+    const [executor = "", variant = "", weight = "", ...modelParts] = parts;
+    if (!/^[A-Z_]+$/i.test(String(executor || "").trim())) return false;
+    if (!/^[A-Z0-9._-]+$/i.test(String(variant || "").trim())) return false;
+    if (!/^\d+$/.test(String(weight || "").trim())) return false;
+    if (!modelParts.length) return true;
+    const models = modelParts
+      .join(":")
+      .split("|")
+      .map((model) => String(model || "").trim())
+      .filter(Boolean);
+    if (!models.length) return false;
+    return models.every((model) => /^[A-Z0-9._:/-]+$/i.test(model));
+  });
+}
 
 /** @type {SettingDef[]} */
 export const SETTINGS_SCHEMA = [
@@ -83,32 +106,35 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS", label: "Fallback Cooldown", category: "miniapp", type: "number", defaultVal: 5000, min: 1000, max: 60000, unit: "ms", description: "Cooldown when fallback auth backend returns transient errors.", advanced: true },
 
   // ── Executor / AI ──────────────────────────────────────────
-  { key: "EXECUTOR_MODE",                  label: "Task Runner Mode",           category: "executor", type: "select", defaultVal: "internal", options: ["internal", "hybrid"], description: "Controls how Bosun executes queued tasks. 'internal' uses the built-in task runner, while 'hybrid' keeps the internal runner active but allows additional routing strategies.", restart: true },
-  { key: "INTERNAL_EXECUTOR_PARALLEL",     label: "Internal Task Slots",        category: "executor", type: "number", defaultVal: 3, min: 1, max: 20, description: "Maximum number of concurrent task-runner slots inside the internal executor pool." },
-  { key: "INTERNAL_EXECUTOR_SDK",          label: "Queued Task SDK Family",     category: "executor", type: "select", defaultVal: "auto", options: ["auto", "codex", "copilot", "claude", "gemini", "opencode"], description: "Default SDK family used by the queued internal task runner. This is separate from the direct-session transport and separate from provider-kernel-backed harness execution." },
-  { key: "INTERNAL_EXECUTOR_TIMEOUT_MS",   label: "Task Timeout",               category: "executor", type: "number", defaultVal: 5400000, min: 60000, max: 14400000, unit: "ms", description: "Maximum time a single task execution can run (default: 90 min)." },
-  { key: "INTERNAL_EXECUTOR_MAX_RETRIES",  label: "Max Retries",                category: "executor", type: "number", defaultVal: 2, min: 0, max: 10, description: "Number of automatic retries per task before marking as failed." },
-  { key: "INTERNAL_EXECUTOR_POLL_MS",      label: "Poll Interval",              category: "executor", type: "number", defaultVal: 30000, min: 5000, max: 300000, unit: "ms", description: "How often the executor polls the kanban board for new tasks.", advanced: true },
-  { key: "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", label: "PR Review Agent",    category: "executor", type: "boolean", defaultVal: true, description: "Enable automatic PR review handoff after task completion." },
-  { key: "INTERNAL_EXECUTOR_REPLENISH_ENABLED", label: "Auto Replenish Backlog", category: "executor", type: "boolean", defaultVal: false, description: "Automatically generate new tasks when backlog is low." },
-  { key: "BOSUN_HARNESS_ENABLED",         label: "Enable Internal Harness",     category: "executor", section: "Harness Control Plane", type: "boolean", defaultVal: false, description: "Turns on the Bosun-native harness control plane for provider-backed execution, shared tool orchestration, and first-class observability." },
-  { key: "BOSUN_HARNESS_SOURCE",          label: "Internal Harness Source",     category: "executor", section: "Harness Control Plane", type: "string", description: "Path to the JSON or markdown-fenced JSON profile file that defines Bosun harness stages and control-plane behavior." },
+  { key: "BOSUN_AGENT_RUNTIME",           label: "Primary Agent Runtime",       category: "executor", type: "select", defaultVal: "harness", options: ["harness", "sdk-cli"], description: "Choose the main runtime Bosun should use for interactive sessions and agent execution. 'harness' uses the Bosun-native provider kernel, shared tools, and observability spine. 'sdk-cli' keeps the legacy shell and SDK stack as the primary runtime.", restart: true },
+  { key: "BOSUN_HARNESS_ENABLED",         label: "Harness Control Plane Enabled", category: "executor", section: "Harness Control Plane", type: "boolean", defaultVal: true, description: "Turns on the Bosun-native harness control plane for provider-backed execution, shared tool orchestration, and first-class observability." },
+  { key: "BOSUN_HARNESS_SOURCE",          label: "Harness Profile Source",      category: "executor", section: "Harness Control Plane", type: "string", description: "Path to the JSON or markdown-fenced JSON profile file that defines Bosun harness stages and control-plane behavior." },
   { key: "BOSUN_HARNESS_VALIDATION_MODE", label: "Harness Validation Policy",   category: "executor", section: "Harness Control Plane", type: "select", defaultVal: "report", options: ["off", "report", "enforce"], description: "off records compile output without blocking, report returns validation issues, and enforce blocks invalid harness compile or activate requests." },
-  { key: "PRIMARY_AGENT",                  label: "Direct Session Transport",   category: "executor", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Legacy compatibility transport used for direct interactive sessions and resume flows that have not fully cut over to the provider kernel yet." },
+  { key: "BOSUN_PROVIDER_DEFAULT",         label: "Primary Harness Provider",   category: "executor", section: "Harness Provider Fabric", type: "select", defaultVal: "openai-responses", options: ["openai-responses", "openai-codex-subscription", "azure-openai-responses", "anthropic-messages", "claude-subscription-shim", "openai-compatible", "ollama", "copilot-oauth"], description: "Primary provider used by the Bosun harness when no session-specific provider is chosen. Enable and authenticate this provider before making it primary." },
+  { key: "BOSUN_PROVIDER_ROUTING_MODE",    label: "Harness Provider Routing",   category: "executor", section: "Harness Provider Fabric", type: "select", defaultVal: "default-only", options: ["default-only", "fallback", "spread"], description: "default-only keeps all harness runs on the primary provider, fallback retries other enabled providers when the primary cannot run, and spread distributes new harness sessions across enabled providers." },
+  { key: "BOSUN_PROVIDER_DEFAULT_MODEL",   label: "Harness Default Model",      category: "executor", section: "Harness Provider Fabric", type: "string", description: "Optional global default model override applied when a provider-specific model is not set.", advanced: true },
+  { key: "INTERNAL_EXECUTOR_PARALLEL",     label: "Queued Task Slots",          category: "executor", section: "Queued Task Execution", type: "number", defaultVal: 3, min: 1, max: 20, description: "Maximum number of concurrent queued-task slots Bosun can run at once." },
+  { key: "INTERNAL_EXECUTOR_TIMEOUT_MS",   label: "Queued Task Timeout",        category: "executor", section: "Queued Task Execution", type: "number", defaultVal: 5400000, min: 60000, max: 14400000, unit: "ms", description: "Maximum time a single queued task execution can run (default: 90 min)." },
+  { key: "INTERNAL_EXECUTOR_MAX_RETRIES",  label: "Queued Task Retries",        category: "executor", section: "Queued Task Execution", type: "number", defaultVal: 2, min: 0, max: 10, description: "Number of automatic retries per queued task before marking it failed." },
+  { key: "INTERNAL_EXECUTOR_POLL_MS",      label: "Queue Poll Interval",        category: "executor", section: "Queued Task Execution", type: "number", defaultVal: 30000, min: 5000, max: 300000, unit: "ms", description: "How often Bosun polls the task source for new queued work.", advanced: true },
+  { key: "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", label: "Queued Review Agent", category: "executor", section: "Queued Task Execution", type: "boolean", defaultVal: true, description: "Enable automatic PR review handoff after queued task completion." },
+  { key: "INTERNAL_EXECUTOR_REPLENISH_ENABLED", label: "Auto Replenish Backlog", category: "executor", section: "Queued Task Execution", type: "boolean", defaultVal: false, description: "Automatically generate new tasks when backlog is low." },
+  { key: "INTERNAL_EXECUTOR_SDK",          label: "Queued Task SDK/CLI Family", category: "executor", section: "SDK/CLI Compatibility", type: "select", defaultVal: "auto", options: ["auto", "codex", "copilot", "claude", "gemini", "opencode"], description: "Legacy SDK family used for queued tasks only when the primary runtime is set to SDK/CLI." },
+  { key: "PRIMARY_AGENT",                  label: "Primary SDK/CLI Runtime",    category: "executor", section: "SDK/CLI Compatibility", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Legacy compatibility transport used when Bosun runs in SDK/CLI mode." },
   { key: "CODEX_SDK_DISABLED",             label: "Disable Codex SDK",          category: "executor", type: "boolean", defaultVal: false, description: "When true, Codex SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "COPILOT_SDK_DISABLED",           label: "Disable Copilot SDK",        category: "executor", type: "boolean", defaultVal: false, description: "When true, Copilot SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "CLAUDE_SDK_DISABLED",            label: "Disable Claude SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Claude SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "GEMINI_SDK_DISABLED",            label: "Disable Gemini SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Gemini SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "OPENCODE_SDK_DISABLED",          label: "Disable OpenCode SDK",       category: "executor", type: "boolean", defaultVal: false, description: "When true, OpenCode SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
-  { key: "EXECUTORS",                      label: "Weighted Task Routing Pool", category: "executor", type: "string", defaultVal: "CODEX:DEFAULT:100", description: "Optional weighted pool for routing queued tasks across multiple runtimes. Format: TYPE:VARIANT:WEIGHT[:MODEL|MODEL],... (e.g., CODEX:DEFAULT:70:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:30:claude-opus-4.6). This does not configure the harness provider kernel.", validate: "^[A-Z_]+:[A-Z_]+:\\d+" },
-  { key: "EXECUTOR_DISTRIBUTION",          label: "Task Routing Strategy",      category: "executor", type: "select", defaultVal: "weighted", options: ["weighted", "round-robin", "primary-only"], description: "How queued tasks are distributed across the weighted executor pool.", advanced: true },
-  { key: "FAILOVER_STRATEGY",              label: "Task Routing Failover",      category: "executor", type: "select", defaultVal: "next-in-line", options: ["next-in-line", "weighted-random", "round-robin"], description: "How Bosun selects the next routing target when the preferred executor fails.", advanced: true },
-  { key: "COMPLEXITY_ROUTING_ENABLED",     label: "Complexity Routing",         category: "executor", type: "boolean", defaultVal: true, description: "Automatically route tasks to different AI models based on estimated complexity.", advanced: true },
-  { key: "PROJECT_REQUIREMENTS_PROFILE",   label: "Requirements Profile",       category: "executor", type: "select", defaultVal: "feature", options: ["simple-feature", "feature", "large-feature", "system", "multi-system"], description: "Project complexity profile for task generation and planning." },
+  { key: "EXECUTORS",                      label: "SDK/CLI Routing Pool",       category: "executor", section: "SDK/CLI Compatibility", type: "string", defaultVal: "CODEX:DEFAULT:100", description: "Optional weighted pool for routing queued tasks across multiple SDK/CLI runtimes. Format: TYPE:VARIANT:WEIGHT[:MODEL|MODEL],... (e.g., CODEX:DEFAULT:70:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:30:claude-opus-4.6). This does not configure harness providers.", validate: validateExecutorsPoolValue },
+  { key: "EXECUTOR_DISTRIBUTION",          label: "SDK/CLI Routing Strategy",   category: "executor", section: "SDK/CLI Compatibility", type: "select", defaultVal: "weighted", options: ["weighted", "round-robin", "primary-only"], description: "How Bosun distributes queued tasks across the SDK/CLI routing pool.", advanced: true },
+  { key: "FAILOVER_STRATEGY",              label: "SDK/CLI Failover",           category: "executor", section: "SDK/CLI Compatibility", type: "select", defaultVal: "next-in-line", options: ["next-in-line", "weighted-random", "round-robin"], description: "How Bosun selects the next SDK/CLI runtime when the preferred executor fails.", advanced: true },
+  { key: "COMPLEXITY_ROUTING_ENABLED",     label: "SDK/CLI Complexity Routing", category: "executor", section: "SDK/CLI Compatibility", type: "boolean", defaultVal: true, description: "Automatically route queued SDK/CLI tasks to different model families based on estimated complexity.", advanced: true },
+  { key: "PROJECT_REQUIREMENTS_PROFILE",   label: "Planning Requirements Profile", category: "executor", section: "Queued Task Execution", type: "select", defaultVal: "feature", options: ["simple-feature", "feature", "large-feature", "system", "multi-system"], description: "Project complexity profile for task generation and planning." },
 
   // ── AI Provider Keys ────────────────────────────────────────
-  { key: "OPENAI_API_KEY",                 label: "OpenAI API Key",             category: "executor", type: "secret", sensitive: true, description: "OpenAI API key for Codex SDK. Required if using Codex executor." },
-  { key: "AZURE_OPENAI_API_KEY",           label: "Azure API Key",              category: "executor", type: "secret", sensitive: true, description: "Azure OpenAI API key (used when provider/profile is azure)." },
+  { key: "OPENAI_API_KEY",                 label: "OpenAI API Key",             category: "executor", section: "Harness Provider Credentials", type: "secret", sensitive: true, description: "OpenAI API key used by OpenAI Responses and any OpenAI-backed Bosun integrations that require manual credentials." },
+  { key: "AZURE_OPENAI_API_KEY",           label: "Azure OpenAI API Key",       category: "executor", section: "Harness Provider Credentials", type: "secret", sensitive: true, description: "Azure OpenAI API key used when Azure OpenAI Responses runs in key-based mode." },
   { key: "CODEX_MODEL",                    label: "Codex Model",                category: "executor", type: "string", defaultVal: "gpt-4o", description: "Model for Codex SDK. E.g., gpt-4o, o3, o4-mini." },
   { key: "CODEX_MODEL_PROFILE",            label: "Active Model Profile",       category: "executor", type: "select", defaultVal: "xl", options: ["xl", "m"], description: "Select active Codex model profile for runtime sessions." },
   { key: "CODEX_MODEL_PROFILE_SUBAGENT",   label: "Subagent Profile",           category: "executor", type: "select", defaultVal: "m", options: ["xl", "m"], description: "Default profile to prefer for subagent-style delegated work." },
@@ -121,10 +147,10 @@ export const SETTINGS_SCHEMA = [
   { key: "CODEX_MODEL_PROFILE_M_BASE_URL", label: "M Base URL",                 category: "executor", type: "string", description: "Optional base URL override for M profile.", validate: "^$|^https?://" },
   { key: "CODEX_MODEL_PROFILE_M_API_KEY", label: "M API Key",                  category: "executor", type: "secret", sensitive: true, description: "Optional profile-scoped API key for M profile." },
   { key: "CODEX_SUBAGENT_MODEL",           label: "Subagent Model",             category: "executor", type: "string", defaultVal: "gpt-5.1-codex-mini", description: "Preferred lightweight model for delegated/subagent work." },
-  { key: "ANTHROPIC_API_KEY",              label: "Anthropic API Key",          category: "executor", type: "secret", sensitive: true, description: "Anthropic API key for Claude SDK. Required if using Claude executor." },
+  { key: "ANTHROPIC_API_KEY",              label: "Anthropic API Key",          category: "executor", section: "Harness Provider Credentials", type: "secret", sensitive: true, description: "Anthropic API key used by the Anthropic Messages provider and any Anthropic-backed Bosun integrations that require manual credentials." },
   { key: "CLAUDE_MODEL",                   label: "Claude Model",               category: "executor", type: "string", defaultVal: "claude-opus-4-6", description: "Model for Claude SDK. E.g., claude-opus-4-6, claude-sonnet-4.6, claude-haiku-4.5." },
-  { key: "GEMINI_API_KEY",                 label: "Gemini API Key",             category: "executor", type: "secret", sensitive: true, description: "Google AI Studio key for Gemini SDK (alternative: GOOGLE_API_KEY)." },
-  { key: "GOOGLE_API_KEY",                 label: "Google API Key",             category: "executor", type: "secret", sensitive: true, description: "Alternative key env used by Gemini SDK." },
+  { key: "GEMINI_API_KEY",                 label: "Gemini API Key",             category: "executor", section: "Harness Provider Credentials", type: "secret", sensitive: true, description: "Google AI Studio key used by Gemini integrations when manual credentials are required (alternative: GOOGLE_API_KEY)." },
+  { key: "GOOGLE_API_KEY",                 label: "Google API Key",             category: "executor", section: "Harness Provider Credentials", type: "secret", sensitive: true, description: "Alternative Google API key env used by Gemini integrations." },
   { key: "GEMINI_MODEL",                   label: "Gemini Model",               category: "executor", type: "string", defaultVal: "gemini-3.1-pro", description: "Model for Gemini SDK sessions (for example gemini-3.1-pro)." },
   { key: "GEMINI_TRANSPORT",               label: "Gemini Transport",           category: "executor", type: "select", defaultVal: "auto", options: ["auto", "sdk", "cli"], description: "Gemini adapter transport. 'auto' uses SDK then falls back to CLI." },
   { key: "OPENCODE_MODEL",                 label: "OpenCode Model",             category: "executor", type: "string", defaultVal: "gpt-5.2-codex", description: "Model override passed to OpenCode sessions." },
@@ -132,35 +158,33 @@ export const SETTINGS_SCHEMA = [
   { key: "COPILOT_CLI_TOKEN",              label: "Copilot CLI Token",          category: "executor", type: "secret", sensitive: true, description: "Auth token for Copilot CLI remote mode." },
 
   // ── Harness Provider Kernel ────────────────────────────────
-  { key: "BOSUN_PROVIDER_DEFAULT",         label: "Default Harness Provider",   category: "executor", section: "Provider Kernel", type: "select", defaultVal: "openai-responses", options: ["openai-responses", "openai-codex-subscription", "azure-openai-responses", "anthropic-messages", "claude-subscription-shim", "openai-compatible", "ollama", "copilot-oauth"], description: "Default provider used by the internal harness and shared provider-backed surfaces when no provider is selected explicitly. After setting this, enable and authenticate the matching provider fields below." },
-  { key: "BOSUN_PROVIDER_DEFAULT_MODEL",   label: "Global Default Model",       category: "executor", section: "Provider Kernel", type: "string", description: "Optional global default model override applied when a provider-specific model is not set.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED", label: "Enable OpenAI Responses", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: true, description: "Enable the direct OpenAI Responses provider in the Bosun provider kernel." },
-  { key: "BOSUN_PROVIDER_OPENAI_RESPONSES_MODEL", label: "OpenAI Responses Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "gpt-5.4", description: "Default model for the OpenAI Responses provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED", label: "Enable ChatGPT Codex", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: false, description: "Explicitly enable the ChatGPT Codex subscription provider path.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE", label: "ChatGPT Codex Auth Mode", category: "executor", section: "Provider Kernel", type: "select", defaultVal: "subscription", options: ["subscription", "oauth", "apiKey"], description: "Preferred auth mode for the ChatGPT Codex subscription provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODEL", label: "ChatGPT Codex Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "gpt-5.4", description: "Default model for the ChatGPT Codex subscription provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE", label: "ChatGPT Codex Workspace", category: "executor", section: "Provider Kernel", type: "string", description: "Optional ChatGPT Codex workspace or organization scope for subscription routing.", advanced: true },
-  { key: "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED", label: "Enable Azure OpenAI", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: false, description: "Explicitly enable the Azure OpenAI provider path.", advanced: true },
-  { key: "BOSUN_PROVIDER_AZURE_OPENAI_MODE", label: "Azure Auth Mode", category: "executor", section: "Provider Kernel", type: "select", defaultVal: "apiKey", options: ["apiKey", "oauth"], description: "Preferred auth mode for Azure OpenAI.", advanced: true },
-  { key: "BOSUN_PROVIDER_AZURE_OPENAI_MODEL", label: "Azure Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "gpt-5.4", description: "Default model for Azure OpenAI.", advanced: true },
-  { key: "BOSUN_PROVIDER_AZURE_OPENAI_ENDPOINT", label: "Azure Endpoint", category: "executor", section: "Provider Kernel", type: "string", description: "Azure OpenAI endpoint URL.", validate: "^$|^https?://", advanced: true },
-  { key: "BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT", label: "Azure Deployment", category: "executor", section: "Provider Kernel", type: "string", description: "Azure OpenAI deployment name.", advanced: true },
-  { key: "BOSUN_PROVIDER_AZURE_OPENAI_API_VERSION", label: "Azure API Version", category: "executor", section: "Provider Kernel", type: "string", description: "Azure OpenAI API version override.", advanced: true },
-  { key: "BOSUN_PROVIDER_ANTHROPIC_ENABLED", label: "Enable Anthropic Messages", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: true, description: "Enable the direct Anthropic Messages provider." },
-  { key: "BOSUN_PROVIDER_ANTHROPIC_MODEL", label: "Anthropic Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "claude-opus-4.1", description: "Default model for the Anthropic Messages provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED", label: "Enable Claude Subscription", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: false, description: "Explicitly enable the Claude subscription shim provider path.", advanced: true },
-  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE", label: "Claude Subscription Auth", category: "executor", section: "Provider Kernel", type: "select", defaultVal: "subscription", options: ["subscription", "oauth"], description: "Preferred auth mode for the Claude subscription provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODEL", label: "Claude Subscription Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "claude-opus-4.1", description: "Default model for the Claude subscription provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE", label: "Claude Subscription Workspace", category: "executor", section: "Provider Kernel", type: "string", description: "Optional Claude subscription workspace or organization scope for subscription routing.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED", label: "Enable OpenAI-Compatible", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: false, description: "Explicitly enable a custom OpenAI-compatible provider endpoint.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODE", label: "Compatible Auth Mode", category: "executor", section: "Provider Kernel", type: "select", defaultVal: "apiKey", options: ["apiKey", "local"], description: "Preferred auth mode for the OpenAI-compatible provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL", label: "Compatible Model", category: "executor", section: "Provider Kernel", type: "string", description: "Default model for the OpenAI-compatible provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL", label: "Compatible Base URL", category: "executor", section: "Provider Kernel", type: "string", description: "Base URL for the OpenAI-compatible endpoint.", validate: "^$|^https?://", advanced: true },
-  { key: "BOSUN_PROVIDER_OLLAMA_ENABLED", label: "Enable Ollama", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: false, description: "Explicitly enable the local Ollama provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OLLAMA_MODEL", label: "Ollama Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "qwen2.5-coder:latest", description: "Default model for the Ollama provider.", advanced: true },
-  { key: "BOSUN_PROVIDER_OLLAMA_BASE_URL", label: "Ollama Base URL", category: "executor", section: "Provider Kernel", type: "string", description: "Optional base URL override for Ollama.", validate: "^$|^https?://", advanced: true },
-  { key: "BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED", label: "Enable Copilot OAuth", category: "executor", section: "Provider Kernel", type: "boolean", defaultVal: false, description: "Explicitly enable the Copilot OAuth provider path.", advanced: true },
-  { key: "BOSUN_PROVIDER_COPILOT_OAUTH_MODEL", label: "Copilot OAuth Model", category: "executor", section: "Provider Kernel", type: "string", defaultVal: "gpt-4o", description: "Default model for the Copilot OAuth provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_OPENAI_RESPONSES_ENABLED", label: "Enable OpenAI Responses", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: true, description: "Enable the OpenAI Responses provider in the Bosun harness." },
+  { key: "BOSUN_PROVIDER_OPENAI_RESPONSES_MODEL", label: "OpenAI Responses Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "gpt-5.4", description: "Default model for the OpenAI Responses provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_ENABLED", label: "Enable ChatGPT Codex Subscription", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: false, description: "Enable the ChatGPT Codex subscription provider path." },
+  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODE", label: "ChatGPT Codex Auth Mode", category: "executor", section: "Harness Provider Fabric", type: "select", defaultVal: "subscription", options: ["subscription", "oauth", "apiKey"], description: "Preferred auth mode for the ChatGPT Codex subscription provider." },
+  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_MODEL", label: "ChatGPT Codex Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "gpt-5.4", description: "Default model for the ChatGPT Codex subscription provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_OPENAI_CODEX_SUBSCRIPTION_WORKSPACE", label: "ChatGPT Codex Workspace", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Optional ChatGPT Codex workspace or organization scope for subscription routing." },
+  { key: "BOSUN_PROVIDER_AZURE_OPENAI_ENABLED", label: "Enable Azure OpenAI Responses", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: false, description: "Enable the Azure OpenAI Responses provider path." },
+  { key: "BOSUN_PROVIDER_AZURE_OPENAI_MODE", label: "Azure Auth Mode", category: "executor", section: "Harness Provider Fabric", type: "select", defaultVal: "apiKey", options: ["apiKey", "oauth"], description: "Preferred auth mode for Azure OpenAI Responses." },
+  { key: "BOSUN_PROVIDER_AZURE_OPENAI_MODEL", label: "Azure Default Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "gpt-5.4", description: "Default model for Azure OpenAI Responses.", advanced: true },
+  { key: "BOSUN_PROVIDER_AZURE_OPENAI_ENDPOINT", label: "Azure Endpoint", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Azure OpenAI endpoint URL.", validate: "^$|^https?://" },
+  { key: "BOSUN_PROVIDER_AZURE_OPENAI_DEPLOYMENT", label: "Azure Deployment", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Azure OpenAI deployment name." },
+  { key: "BOSUN_PROVIDER_AZURE_OPENAI_API_VERSION", label: "Azure API Version", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Azure OpenAI API version override.", advanced: true },
+  { key: "BOSUN_PROVIDER_ANTHROPIC_ENABLED", label: "Enable Anthropic Messages", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: true, description: "Enable the Anthropic Messages provider." },
+  { key: "BOSUN_PROVIDER_ANTHROPIC_MODEL", label: "Anthropic Default Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "claude-opus-4.1", description: "Default model for the Anthropic Messages provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_ENABLED", label: "Enable Claude Subscription Shim", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: false, description: "Enable the Claude subscription shim provider path." },
+  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODE", label: "Claude Subscription Auth", category: "executor", section: "Harness Provider Fabric", type: "select", defaultVal: "subscription", options: ["subscription", "oauth"], description: "Preferred auth mode for the Claude subscription provider." },
+  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_MODEL", label: "Claude Subscription Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "claude-opus-4.1", description: "Default model for the Claude subscription provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_CLAUDE_SUBSCRIPTION_WORKSPACE", label: "Claude Subscription Workspace", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Optional Claude subscription workspace or organization scope for subscription routing." },
+  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_ENABLED", label: "Enable OpenAI-Compatible Endpoint", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: false, description: "Enable a custom OpenAI-compatible provider endpoint." },
+  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODE", label: "Compatible Auth Mode", category: "executor", section: "Harness Provider Fabric", type: "select", defaultVal: "apiKey", options: ["apiKey", "local"], description: "Preferred auth mode for the OpenAI-compatible provider." },
+  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_MODEL", label: "Compatible Default Model", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Default model for the OpenAI-compatible provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_OPENAI_COMPATIBLE_BASE_URL", label: "Compatible Base URL", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Base URL for the OpenAI-compatible endpoint.", validate: "^$|^https?://" },
+  { key: "BOSUN_PROVIDER_OLLAMA_ENABLED", label: "Enable Ollama", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: false, description: "Enable the local Ollama provider." },
+  { key: "BOSUN_PROVIDER_OLLAMA_MODEL", label: "Ollama Default Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "qwen2.5-coder:latest", description: "Default model for the Ollama provider.", advanced: true },
+  { key: "BOSUN_PROVIDER_OLLAMA_BASE_URL", label: "Ollama Base URL", category: "executor", section: "Harness Provider Fabric", type: "string", description: "Optional base URL override for Ollama.", validate: "^$|^https?://" },
+  { key: "BOSUN_PROVIDER_COPILOT_OAUTH_ENABLED", label: "Enable GitHub Copilot OAuth", category: "executor", section: "Harness Provider Fabric", type: "boolean", defaultVal: false, description: "Enable the GitHub Copilot OAuth provider path." },
+  { key: "BOSUN_PROVIDER_COPILOT_OAUTH_MODEL", label: "Copilot OAuth Model", category: "executor", section: "Harness Provider Fabric", type: "string", defaultVal: "gpt-4o", description: "Default model for the Copilot OAuth provider.", advanced: true },
 
   // ── Voice Assistant ──────────────────────────────────────────
   { key: "VOICE_ENABLED",                  label: "Enable Voice Mode",          category: "voice", type: "boolean", defaultVal: true, description: "Enable the real-time voice assistant in the chat UI." },
@@ -405,8 +429,13 @@ export function validateSetting(def, value) {
     default:
       if (def.validate) {
         try {
-          if (!new RegExp(def.validate).test(value))
-            return { valid: false, error: `Invalid format` };
+          if (typeof def.validate === "function") {
+            if (!def.validate(value, def)) {
+              return { valid: false, error: "Invalid format" };
+            }
+          } else if (!new RegExp(def.validate).test(value)) {
+            return { valid: false, error: "Invalid format" };
+          }
         } catch { /* ignore bad regex */ }
       }
       return { valid: true };

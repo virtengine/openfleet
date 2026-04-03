@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
@@ -526,6 +526,32 @@ describe("action.run_command env interpolation", () => {
     expect(Array.isArray(result.items)).toBe(true);
     expect(result.items.length).toBe(1);
   });
+
+  it("resolves auto quality-gate commands before execution", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-auto-quality-gate-"));
+    try {
+      writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+        name: "wf-auto-quality-gate",
+        version: "1.0.0",
+        scripts: {
+          "prepush:check": "node -e \"process.stdout.write('quality gate ok')\"",
+        },
+      }, null, 2));
+
+      const nodeType = getNodeType("action.run_command");
+      const node = makeNode("action.run_command", {
+        command: "auto",
+        commandType: "qualityGate",
+        cwd: repoRoot,
+      });
+
+      const result = await nodeType.execute(node, makeCtx({ worktreePath: repoRoot }));
+      expect(result.success).toBe(true);
+      expect(String(result.output)).toContain("quality gate ok");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 30000);
 });
 
 describe("workflow validation output compaction", () => {

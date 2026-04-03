@@ -841,56 +841,106 @@ function maskValue(val) {
 }
 
 const EXECUTOR_SECTION_ORDER = [
-  "Interactive Shell & Task Runner",
-  "Weighted Routing & Planning",
-  "Internal Harness",
-  "SDK Availability",
-  "Provider Credentials",
-  "Codex Models",
-  "Claude Models",
-  "Gemini Models",
+  "Primary Runtime",
+  "Harness Control Plane",
+  "Harness Provider Fabric",
+  "Harness Provider Credentials",
+  "Queued Task Execution",
+  "SDK/CLI Compatibility",
+  "SDK/CLI Availability",
+  "SDK/CLI Model Profiles",
   "Other",
 ];
 
 const EXECUTOR_SECTION_DESCRIPTIONS = {
-  "Interactive Shell & Task Runner": "Primary interactive shell runtime plus the default SDK family and slot limits for Bosun's built-in task runner.",
-  "Weighted Routing & Planning": "How Bosun distributes queued tasks, chooses fallback executors, and shapes planning behavior.",
-  "Internal Harness": "Deterministic harness control plane settings and provider-backed activation workflow.",
-  "SDK Availability": "Enable or disable SDK families from the runtime picker and task execution pool.",
-  "Provider Credentials": "API credentials used by executor backends.",
-  "Codex Models": "Codex-specific model, profile, and subagent settings.",
-  "Claude Models": "Claude-specific model settings.",
-  "Gemini Models": "Gemini-specific model settings.",
+  "Primary Runtime": "Choose whether Bosun runs primarily on the Bosun-native Harness or the legacy SDK/CLI stack.",
+  "Harness Control Plane": "Harness activation, profile source, and validation settings for the Bosun-native runtime.",
+  "Harness Provider Fabric": "Choose the primary harness provider, enable eligible providers, and define how Harness routes across them.",
+  "Harness Provider Credentials": "Credentials used by harness providers when they run via API keys or endpoint-specific auth.",
+  "Queued Task Execution": "Concurrency, timeouts, retries, review handoff, and planning posture for Bosun's queued task engine.",
+  "SDK/CLI Compatibility": "Legacy shell runtime selection, SDK family pinning, and routing behavior used only when SDK/CLI mode is primary.",
+  "SDK/CLI Availability": "Disable legacy SDK families you never want Bosun to consider in compatibility mode.",
+  "SDK/CLI Model Profiles": "Legacy SDK-specific model and profile settings. Hidden while Harness is primary.",
   "Other": "Additional executor settings.",
 };
 
-function getExecutorSection(def) {
-  const key = String(def?.key || "");
-  if (!key) return "Other";
-  if ([
-    "EXECUTOR_MODE",
-    "INTERNAL_EXECUTOR_PARALLEL",
-    "INTERNAL_EXECUTOR_SDK",
-    "INTERNAL_EXECUTOR_TIMEOUT_MS",
-    "INTERNAL_EXECUTOR_MAX_RETRIES",
-    "INTERNAL_EXECUTOR_POLL_MS",
+function normalizeAgentRuntimeValue(value) {
+  return String(value || "").trim().toLowerCase() === "sdk-cli"
+    ? "sdk-cli"
+    : "harness";
+}
+
+function isSdkOnlyExecutorKey(key) {
+  if (!key) return false;
+  return [
     "PRIMARY_AGENT",
-  ].includes(key)) return "Interactive Shell & Task Runner";
-  if ([
-    "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
-    "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+    "INTERNAL_EXECUTOR_SDK",
     "EXECUTORS",
     "EXECUTOR_DISTRIBUTION",
     "FAILOVER_STRATEGY",
     "COMPLEXITY_ROUTING_ENABLED",
+    "CODEX_SDK_DISABLED",
+    "COPILOT_SDK_DISABLED",
+    "CLAUDE_SDK_DISABLED",
+    "GEMINI_SDK_DISABLED",
+    "OPENCODE_SDK_DISABLED",
+    "CODEX_MODEL",
+    "CODEX_MODEL_PROFILE",
+    "CODEX_MODEL_PROFILE_SUBAGENT",
+    "CODEX_MODEL_PROFILE_XL_PROVIDER",
+    "CODEX_MODEL_PROFILE_XL_MODEL",
+    "CODEX_MODEL_PROFILE_XL_BASE_URL",
+    "CODEX_MODEL_PROFILE_XL_API_KEY",
+    "CODEX_MODEL_PROFILE_M_PROVIDER",
+    "CODEX_MODEL_PROFILE_M_MODEL",
+    "CODEX_MODEL_PROFILE_M_BASE_URL",
+    "CODEX_MODEL_PROFILE_M_API_KEY",
+    "CODEX_SUBAGENT_MODEL",
+    "CLAUDE_MODEL",
+    "GEMINI_MODEL",
+    "GEMINI_TRANSPORT",
+    "OPENCODE_MODEL",
+    "COPILOT_MODEL",
+    "COPILOT_CLI_TOKEN",
+  ].includes(key);
+}
+
+function isExecutorSettingVisible(def, runtime = "harness") {
+  const key = String(def?.key || "");
+  if (!key) return true;
+  if (key === "EXECUTOR_MODE") return false;
+  if (runtime === "harness" && isSdkOnlyExecutorKey(key)) return false;
+  return true;
+}
+
+function getExecutorSection(def) {
+  const key = String(def?.key || "");
+  if (!key) return "Other";
+  if (key === "BOSUN_AGENT_RUNTIME") return "Primary Runtime";
+  if (def?.section === "Harness Control Plane") return "Harness Control Plane";
+  if (def?.section === "Harness Provider Fabric") return "Harness Provider Fabric";
+  if (def?.section === "Harness Provider Credentials") return "Harness Provider Credentials";
+  if (def?.section === "Queued Task Execution") return "Queued Task Execution";
+  if (def?.section === "SDK/CLI Compatibility") return "SDK/CLI Compatibility";
+  if ([
+    "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
+    "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+    "INTERNAL_EXECUTOR_PARALLEL",
+    "INTERNAL_EXECUTOR_TIMEOUT_MS",
+    "INTERNAL_EXECUTOR_MAX_RETRIES",
+    "INTERNAL_EXECUTOR_POLL_MS",
     "PROJECT_REQUIREMENTS_PROFILE",
-  ].includes(key)) return "Weighted Routing & Planning";
-  if (key.startsWith("BOSUN_HARNESS_")) return "Internal Harness";
-  if (key.endsWith("_SDK_DISABLED")) return "SDK Availability";
-  if (key.endsWith("API_KEY")) return "Provider Credentials";
-  if (key.startsWith("CODEX_")) return "Codex Models";
-  if (key.startsWith("CLAUDE_")) return "Claude Models";
-  if (key.startsWith("GEMINI_") || key.startsWith("GOOGLE_")) return "Gemini Models";
+  ].includes(key)) return "Queued Task Execution";
+  if (key.endsWith("_SDK_DISABLED")) return "SDK/CLI Availability";
+  if (
+    key.startsWith("CODEX_")
+    || key.startsWith("CLAUDE_")
+    || key.startsWith("GEMINI_")
+    || key.startsWith("GOOGLE_")
+    || key === "COPILOT_MODEL"
+    || key === "COPILOT_CLI_TOKEN"
+    || key === "OPENCODE_MODEL"
+  ) return "SDK/CLI Model Profiles";
   return "Other";
 }
 
@@ -917,18 +967,20 @@ function formatCountdownSeconds(ms) {
 
 function AgentArchitectureGuide({ architecture }) {
   if (!architecture) return null;
-  const sections = [
-    architecture.shellRuntime,
-    architecture.taskRunner,
-    architecture.routingPool,
-    architecture.providerLayer,
-  ].filter(Boolean);
+  const sections = Array.isArray(architecture.sections)
+    ? architecture.sections.filter(Boolean)
+    : [
+        architecture.runtimeArchitecture,
+        architecture.providerFabric,
+        architecture.queuedExecution,
+        architecture.sdkCompatibility,
+      ].filter(Boolean);
   if (sections.length === 0) return null;
   return html`
     <${Card}>
-      <div class="card-subtitle mb-sm" style="font-size:13px;font-weight:700">How Bosun Agent Wiring Works</div>
+      <div class="card-subtitle mb-sm" style="font-size:13px;font-weight:700">Bosun Runtime Architecture</div>
       <div class="meta-text mb-sm">
-        These settings configure different layers. Pick the layer you mean first, then adjust the matching fields below.
+        Pick the primary runtime first. When Harness is primary, only harness-native provider and task controls stay visible; legacy SDK/CLI compatibility settings stay out of the way until you switch back.
       </div>
       <div class="settings-arch-grid">
         ${sections.map((section) => html`
@@ -977,7 +1029,7 @@ function parseExecutorRoutingPool(rawValue = "") {
             .map((entry) => String(entry || "").trim())
             .filter(Boolean);
         return {
-          id: `executor-pool-${index}-${chunk.executor || chunk.type || "runtime"}`,
+          id: `executor-pool-${index}`,
           executor: String(chunk.executor || chunk.type || "").trim().toUpperCase() || "CODEX",
           variant: String(chunk.variant || chunk.family || "").trim().toUpperCase() || "DEFAULT",
           weight: Math.max(0, Number.parseInt(String(chunk.weight || "0"), 10) || 0),
@@ -987,7 +1039,7 @@ function parseExecutorRoutingPool(rawValue = "") {
       const [executor = "", variant = "", weight = "", ...modelParts] = String(chunk || "").split(":");
       const models = modelParts.join(":").split("|").map((entry) => String(entry || "").trim()).filter(Boolean);
       return {
-        id: `executor-pool-${index}-${executor}-${variant}`,
+        id: `executor-pool-${index}`,
         executor: String(executor || "").trim().toUpperCase() || "CODEX",
         variant: String(variant || "").trim().toUpperCase() || "DEFAULT",
         weight: Math.max(0, Number.parseInt(String(weight || "0"), 10) || 0),
@@ -1195,6 +1247,14 @@ function ServerConfigMode() {
     const category = String(def?.category || "").toLowerCase();
     return category === "context-shredding" || category === "context_shredding";
   }, []);
+  const activeAgentRuntime = useMemo(
+    () => normalizeAgentRuntimeValue(
+      Object.prototype.hasOwnProperty.call(edits, "BOSUN_AGENT_RUNTIME")
+        ? edits.BOSUN_AGENT_RUNTIME
+        : serverData?.BOSUN_AGENT_RUNTIME,
+    ),
+    [edits, serverData],
+  );
 
   /* Filtered settings when searching */
   const filteredSettings = useMemo(() => {
@@ -1202,11 +1262,12 @@ function ServerConfigMode() {
     const results = [];
     for (const def of SETTINGS_SCHEMA) {
       if (!showAdvanced && def.advanced && !isContextShreddingSetting(def)) continue;
+      if (def.category === "executor" && !isExecutorSettingVisible(def, activeAgentRuntime)) continue;
       const haystack = `${def.key} ${def.label} ${def.description || ""}`;
       if (fuzzyMatch(searchQuery, haystack)) results.push(def);
     }
     return results;
-  }, [searchQuery, showAdvanced, isContextShreddingSetting]);
+  }, [searchQuery, showAdvanced, isContextShreddingSetting, activeAgentRuntime]);
 
   /* ─── Value resolution: edited value → server value → empty ─── */
   const normalizeSettingTextValue = useCallback(
@@ -1931,7 +1992,9 @@ function ServerConfigMode() {
       /* ── Category browsing mode ── */
       const catDefs = activeCategory === "context-shredding"
         ? SETTINGS_SCHEMA.filter((def) => isContextShreddingSetting(def))
-        : (grouped.get(activeCategory) || []);
+        : (grouped.get(activeCategory) || []).filter((def) => (
+            activeCategory !== "executor" || isExecutorSettingVisible(def, activeAgentRuntime)
+          ));
       const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
       return html`
