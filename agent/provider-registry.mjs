@@ -70,12 +70,40 @@ function resolveProviderAuth(providerId, fields, options) {
   const readAuthState = typeof options.readAuthState === "function"
     ? options.readAuthState
     : () => ({});
-  return authManager.resolve(providerId, readAuthState(providerId, fields) || {}, {
+  const resolved = authManager.resolve(providerId, readAuthState(providerId, fields) || {}, {
     capabilities: buildCapabilities({}, providerId, null),
     enabled: fields.enabled,
     settings: options.settings || options.env || process.env,
     env: options.env || process.env,
   });
+  const settings = {
+    ...(resolved?.settings && typeof resolved.settings === "object" ? resolved.settings : {}),
+  };
+  const overrideFields = [
+    "authMode",
+    "defaultModel",
+    "endpoint",
+    "baseUrl",
+    "deployment",
+    "apiVersion",
+    "workspace",
+    "organization",
+    "project",
+  ];
+  for (const field of overrideFields) {
+    const value = toTrimmedString(fields?.[field]);
+    if (!value) continue;
+    settings[field] = value;
+    settings[`${field}Source`] = "executor";
+  }
+  if (fields?.transportConfig && typeof fields.transportConfig === "object") {
+    settings.transport = JSON.parse(JSON.stringify(fields.transportConfig));
+  }
+  return {
+    ...resolved,
+    preferredMode: toTrimmedString(fields?.authMode) || resolved?.preferredMode || null,
+    settings,
+  };
 }
 
 function resolveProviderEnabled(providerId, explicitEnabled, options = {}) {
@@ -113,13 +141,21 @@ function buildProviderEntry(providerId, definition, adapter, fields, options) {
     variant: fields.variant,
     adapterId: definition?.adapterId || normalizeProviderAdapterName(providerId),
     transport: definition?.transport || null,
+    transportConfig: fields.transportConfig || null,
+    apiStyle: fields.apiStyle || definition?.transport?.apiStyle || null,
     available: fields.available,
     enabled: fields.enabled !== false,
     busy: fields.busy,
+    source: fields.source || null,
+    weight: fields.weight || 0,
     models: configuredModels.length > 0
       ? configuredModels
       : modelCatalog.models.map((entry) => entry.id),
     defaultModel: fields.defaultModel || modelCatalog.defaultModel,
+    endpoint: fields.endpoint || null,
+    baseUrl: fields.baseUrl || null,
+    deployment: fields.deployment || null,
+    apiVersion: fields.apiVersion || null,
     modelCatalog,
     auth: resolveProviderAuth(providerId, fields, options),
     capabilities,
@@ -177,6 +213,18 @@ function buildConfiguredProviders(options = {}) {
         busy: available ? readBusy(adapter) : false,
         models: configuredModels,
         defaultModel: entry?.defaultModel || definition?.defaultModel || null,
+        authMode: entry?.authMode || null,
+        endpoint: entry?.endpoint || null,
+        baseUrl: entry?.baseUrl || null,
+        deployment: entry?.deployment || null,
+        apiVersion: entry?.apiVersion || null,
+        workspace: entry?.workspace || null,
+        organization: entry?.organization || null,
+        project: entry?.project || null,
+        source: entry?.source || "configured",
+        weight: entry?.weight || 0,
+        apiStyle: entry?.apiStyle || null,
+        transportConfig: entry?.transport || entry?.transportConfig || null,
       },
       options,
     );

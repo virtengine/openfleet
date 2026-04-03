@@ -2376,6 +2376,7 @@ describe("action.resolve_executor", () => {
     const handler = getNodeType("action.run_agent");
     const ctx = makeCtx({
       worktreePath: "/tmp/opencode-workflow",
+      repoRoot: "/tmp/opencode-repo",
       resolvedSdk: "opencode",
       resolvedModel: "openrouter/moonshotai/kimi-k2",
       resolvedProvider: "openrouter",
@@ -2431,6 +2432,15 @@ describe("action.resolve_executor", () => {
         },
       }),
     );
+    const launchEnv = launchEphemeralThread.mock.calls[0][3]?.env || {};
+    const configCount = Number.parseInt(String(launchEnv.GIT_CONFIG_COUNT || "0"), 10);
+    const safeDirectories = [];
+    for (let index = 0; index < configCount; index += 1) {
+      if (launchEnv[`GIT_CONFIG_KEY_${index}`] !== "safe.directory") continue;
+      safeDirectories.push(launchEnv[`GIT_CONFIG_VALUE_${index}`]);
+    }
+    expect(safeDirectories.map((value) => resolve(value))).toContain(resolve("/tmp/opencode-workflow"));
+    expect(safeDirectories.map((value) => resolve(value))).toContain(resolve("/tmp/opencode-repo"));
   });
 
   it("forwards OpenCode restart config through action.restart_agent execution", async () => {

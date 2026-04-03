@@ -68,11 +68,22 @@ export function normalizeProviderInventoryEntry(entry = {}) {
     variant: toTrimmedString(entry.variant) || null,
     adapterId: toTrimmedString(entry.adapterId) || null,
     transport: toTrimmedString(entry.transport) || null,
+    transportConfig:
+      entry.transportConfig && typeof entry.transportConfig === "object"
+        ? cloneJson(entry.transportConfig)
+        : null,
+    apiStyle: toTrimmedString(entry.apiStyle) || null,
     available: entry.available !== false,
     enabled: entry.enabled !== false,
     busy: entry.busy === true,
+    source: toTrimmedString(entry.source) || null,
+    weight: Number.isFinite(Number(entry.weight)) ? Number(entry.weight) : 0,
     models: Array.isArray(entry.models) ? [...entry.models] : [],
     defaultModel: toTrimmedString(entry.defaultModel) || null,
+    endpoint: toTrimmedString(entry.endpoint) || null,
+    baseUrl: toTrimmedString(entry.baseUrl) || null,
+    deployment: toTrimmedString(entry.deployment) || null,
+    apiVersion: toTrimmedString(entry.apiVersion) || null,
     modelCatalog:
       entry.modelCatalog && typeof entry.modelCatalog === "object"
         ? cloneJson(entry.modelCatalog)

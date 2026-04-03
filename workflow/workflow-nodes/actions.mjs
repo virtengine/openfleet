@@ -2864,6 +2864,15 @@ registerNodeType("action.run_agent", {
         const delegateTrackerSessionId = explicitTaskBackedRun
           ? String(managedSessionId || "").trim() || null
           : null;
+        const agentGitEnv = makeIsolatedGitEnv({}, {
+          cwd,
+          safeDirectories: [
+            cwd,
+            ctx.data?.repoRoot,
+            ctx.data?.worktreePath,
+            ctx.data?.task?.worktreePath,
+          ],
+        });
 
         if (tracker && trackedTaskId) {
           const existing = tracker.getSessionById(trackedTaskId);
@@ -3085,9 +3094,10 @@ registerNodeType("action.run_agent", {
                 ...(providerConfigOverride ? { providerConfig: providerConfigOverride } : {}),
                 slotOwnerKey,
                 slotMeta,
-                onSlotQueued: launchExtra.onSlotQueued,
-                onSlotAcquired: launchExtra.onSlotAcquired,
-              });
+              onSlotQueued: launchExtra.onSlotQueued,
+              onSlotAcquired: launchExtra.onSlotAcquired,
+              env: agentGitEnv,
+            });
               if (result?.success) {
                 ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
               } else {
@@ -3160,6 +3170,7 @@ registerNodeType("action.run_agent", {
               slotMeta,
               onSlotQueued: launchExtra.onSlotQueued,
               onSlotAcquired: launchExtra.onSlotAcquired,
+              env: agentGitEnv,
             };
             const preferEphemeralLaunch = autoRecover === false
               && !sessionId
@@ -3195,6 +3206,7 @@ registerNodeType("action.run_agent", {
                 ...baseRunTaskOptions,
                 autoRecover: false,
                 sessionId: freshSessionId,
+                env: agentGitEnv,
               };
               result = preferEphemeralLaunch
                 ? await harnessAgentService.launchEphemeralThread(passPrompt, cwd, timeoutMs, freshOptions)

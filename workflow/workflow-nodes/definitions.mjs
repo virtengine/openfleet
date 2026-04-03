@@ -64,7 +64,39 @@ export function listBuiltinNodeDefinitions() {
   }));
 }
 
-function makeIsolatedGitEnv(extra = {}) {
+function appendSafeDirectoryGitConfig(env, safeDirectories = []) {
+  const normalizedDirectories = Array.from(new Set(
+    (Array.isArray(safeDirectories) ? safeDirectories : [safeDirectories])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((value) => resolve(value)),
+  ));
+  if (normalizedDirectories.length === 0) return env;
+
+  const nextEnv = { ...env };
+  let configCount = Number.parseInt(String(nextEnv.GIT_CONFIG_COUNT || "0"), 10);
+  if (!Number.isFinite(configCount) || configCount < 0) configCount = 0;
+
+  const existingSafeDirectories = new Set();
+  for (let index = 0; index < configCount; index += 1) {
+    if (String(nextEnv[`GIT_CONFIG_KEY_${index}`] || "").trim() !== "safe.directory") continue;
+    const existingValue = String(nextEnv[`GIT_CONFIG_VALUE_${index}`] || "").trim();
+    if (existingValue) existingSafeDirectories.add(resolve(existingValue));
+  }
+
+  for (const directory of normalizedDirectories) {
+    if (existingSafeDirectories.has(directory)) continue;
+    nextEnv[`GIT_CONFIG_KEY_${configCount}`] = "safe.directory";
+    nextEnv[`GIT_CONFIG_VALUE_${configCount}`] = directory;
+    existingSafeDirectories.add(directory);
+    configCount += 1;
+  }
+
+  nextEnv.GIT_CONFIG_COUNT = String(configCount);
+  return nextEnv;
+}
+
+function makeIsolatedGitEnv(extra = {}, options = {}) {
   const env = { ...process.env, ...extra };
   for (const key of [
     "GIT_DIR",
@@ -77,7 +109,11 @@ function makeIsolatedGitEnv(extra = {}) {
   ]) {
     delete env[key];
   }
-  return env;
+  const safeDirectories = [
+    ...(Array.isArray(options?.safeDirectories) ? options.safeDirectories : []),
+    options?.cwd,
+  ];
+  return appendSafeDirectoryGitConfig(env, safeDirectories);
 }
 
 function resolveGitCandidates(env = process.env) {
@@ -1246,6 +1282,7 @@ export {
   buildGitExecutionEnv,
   buildTaskContextBlock,
   buildWorkflowAgentToolContract,
+  appendSafeDirectoryGitConfig,
   collectWakePhraseCandidates,
   condenseAgentItems,
   createKanbanTaskWithProject,

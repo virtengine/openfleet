@@ -1087,6 +1087,10 @@ async function openWorkflowCopilotChat(prompt, opts = {}) {
     const created = await createSession({
       type: "primary",
       reuseFresh: false,
+      workspaceId: activeWorkspaceId.value || undefined,
+      source: "workflow-copilot",
+      visibility: "hidden",
+      hiddenInLists: true,
       ...(opts?.title ? { title: String(opts.title) } : {}),
     });
     const session = created?.session || null;

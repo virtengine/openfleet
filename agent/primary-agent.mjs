@@ -23,6 +23,7 @@ import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from ".
 import { execPooledPrompt } from "./agent-pool.mjs";
 import { executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
 import { createProviderKernel } from "./provider-kernel.mjs";
+import { readHarnessExecutorFabric } from "./harness-executor-config.mjs";
 import { createQueryEngine } from "./query-engine.mjs";
 import {
   createHarnessFailoverController,
@@ -591,6 +592,8 @@ function resolvePrimaryAgent(nameOrConfig) {
     return resolvePrimarySelectionToken(nameOrConfig);
   }
   if (nameOrConfig && typeof nameOrConfig === "object") {
+    const harnessPrimary = resolvePrimarySelectionToken(nameOrConfig?.harness?.primaryExecutor || "");
+    if (harnessPrimary) return harnessPrimary;
     const configuredDefault = normalizeProviderDefinitionId(
       nameOrConfig?.providers?.defaultProvider || "",
       "",
@@ -605,6 +608,8 @@ function resolvePrimaryAgent(nameOrConfig) {
     );
   }
   const cfg = loadConfig();
+  const harnessPrimary = resolvePrimarySelectionToken(cfg?.harness?.primaryExecutor || "");
+  if (harnessPrimary) return harnessPrimary;
   const configuredDefault = normalizeProviderDefinitionId(
     cfg?.providers?.defaultProvider || process.env.BOSUN_PROVIDER_DEFAULT || "",
     "",
@@ -1377,6 +1382,20 @@ export function getAvailableAgents() {
     ...entry,
     adapterId: normalizeProviderAdapterName(entry.adapterId || entry.id),
   }));
+}
+
+try {
+  const bootConfig = loadConfig() || {};
+  const preferredSelection = resolvePrimaryAgent(bootConfig);
+  if (preferredSelection) {
+    setPrimaryAgent(preferredSelection);
+  } else {
+    const fabric = readHarnessExecutorFabric(bootConfig);
+    if (fabric.primaryExecutorId) {
+      setPrimaryAgent(fabric.primaryExecutorId);
+    }
+  }
+} catch {
 }
 
 /**

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
@@ -468,6 +468,8 @@ describe("task-claims", () => {
       ({ initTaskClaims, claimTask, listClaims } = await import(
         "../task/task-claims.mjs"
       ));
+      const { listActiveInstances } = vi.mocked(await import("../infra/presence.mjs"));
+      listActiveInstances.mockReturnValue([]);
       await initTaskClaims({ repoRoot: tempRoot });
     });
 
@@ -513,6 +515,33 @@ describe("task-claims", () => {
 
       expect(claims).toHaveLength(1);
       expect(claims[0].task_id).toBe("task-1");
+    });
+
+    it("excludes stale claims by default and rewrites the registry", async () => {
+      const { _test } = await import("../task/task-claims.mjs");
+
+      await claimTask({ taskId: "task-1", instanceId: "instance-1" });
+
+      const registry = await _test.loadClaimsRegistry();
+      registry.claims["task-stale"] = {
+        task_id: "task-stale",
+        instance_id: "instance-stale",
+        claim_token: "token-stale",
+        claimed_at: new Date(Date.now() - 10_000).toISOString(),
+        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        ttl_minutes: 60,
+        metadata: {
+          host: hostname(),
+          pid: 999999,
+        },
+      };
+      await _test.saveClaimsRegistry(registry);
+
+      const claims = await listClaims();
+
+      expect(claims).toHaveLength(1);
+      expect(claims[0].task_id).toBe("task-1");
+      expect(await _test.loadClaimsRegistry()).not.toHaveProperty(["claims", "task-stale"]);
     });
 
     it("includes expired claims when requested", async () => {

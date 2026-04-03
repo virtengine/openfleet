@@ -2163,6 +2163,60 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 15000);
 
+  it("falls back to the requested workspace root when a session is created without a resolved repo path", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-chat-workspace-root-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRoot = join(tmpDir, "workspaces", "chatws");
+    mkdirSync(workspaceRoot, { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          workspaces: [
+            {
+              id: "chatws",
+              name: "Chat Workspace",
+              activeRepo: "virtengine",
+              repos: [{ name: "virtengine", primary: true }],
+              path: workspaceRoot,
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    try {
+      const port = server.address().port;
+      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "primary", workspaceId: "chatws", prompt: "hello" }),
+      });
+      const createJson = await createResponse.json();
+      expect(createResponse.status).toBe(200);
+      expect(createJson.ok).toBe(true);
+      expect(createJson.session.metadata.workspaceId).toBe("chatws");
+      expect(createJson.session.metadata.workspaceDir).toBe(workspaceRoot);
+      expect(createJson.session.metadata.workspaceRoot).toBe(workspaceRoot);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 15000);
+
   it("stops an in-flight session turn via /api/sessions/:id/stop", async () => {
     let rejectTurn = null;
     const execPrimaryPrompt = vi.fn().mockImplementation((_content, opts = {}) => {
@@ -2834,6 +2888,75 @@ describeUiServer("ui-server mini app", () => {
         await new Promise((resolve) => server.close(resolve));
       }
       await settleUiRuntimeCleanup();
+    }
+  }, 20000);
+
+  it("reaps persisted generated workflow copilot sessions that were detached from the real workspace", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-leak-"));
+    const leakedSessionId = "primary-1775248227611-umxvdy";
+    const leakedSessionPath = join(persistDir, `${leakedSessionId}.json`);
+    const now = Date.now();
+    writeFileSync(
+      leakedSessionPath,
+      JSON.stringify({
+        id: leakedSessionId,
+        taskId: leakedSessionId,
+        title: "Ask about workflow run ba5e1e85-d750-4ccf-9f18-48dab7016395",
+        taskTitle: "Ask about workflow run ba5e1e85-d750-4ccf-9f18-48dab7016395",
+        sessionKey: `${leakedSessionId}:${now - 600000}:abc12345`,
+        type: "primary",
+        status: "completed",
+        createdAt: new Date(now - 600000).toISOString(),
+        lastActiveAt: new Date(now - 540000).toISOString(),
+        startedAt: now - 600000,
+        endedAt: now - 540000,
+        turnCount: 1,
+        totalEvents: 1,
+        messages: [
+          {
+            id: "msg-1",
+            role: "user",
+            content: "workflow analysis prompt",
+            timestamp: new Date(now - 540000).toISOString(),
+            turnIndex: 0,
+          },
+        ],
+        metadata: {
+          workspaceId: "virtengine-gh",
+          workspaceDir: process.cwd(),
+          workspaceRoot: join(process.cwd(), ".bosun", "workspaces", "virtengine-gh"),
+          hidden: false,
+          hiddenInLists: false,
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const { _resetSingleton } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir });
+    const mod = await import("../server/ui-server.mjs");
+    let server = null;
+    server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    try {
+      const port = server.address().port;
+      const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all&includeHidden=1`);
+      const listJson = await listRes.json();
+      expect(listRes.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      expect(listJson.sessions.some((session) => session.id === leakedSessionId)).toBe(false);
+      expect(existsSync(leakedSessionPath)).toBe(false);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      rmSync(persistDir, { recursive: true, force: true });
     }
   }, 20000);
 
@@ -8515,6 +8638,7 @@ describeUiServer("ui-server mini app", () => {
       expect(secondSubtask.parentTaskId || secondSubtask?.meta?.parentTaskId).toBe(parentTask.data.id);
       const taskStore = await import("../task/task-store.mjs");
       const storedSecond = taskStore.getTask(secondSubtask.id);
+      const storedParent = taskStore.getTask(parentTask.data.id);
       expect(storedSecond.dependencyTaskIds || storedSecond.dependsOn).toEqual(
         expect.arrayContaining([firstSubtask.id, baseTask.data.id]),
       );
@@ -8523,14 +8647,9 @@ describeUiServer("ui-server mini app", () => {
       expect(apply.task.meta?.plannerState?.latestReplan?.createdTaskIds).toEqual(
         expect.arrayContaining([firstSubtask.id, secondSubtask.id]),
       );
-
-      const detail = await fetch(
-        "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-      ).then((r) => r.json());
-      expect(detail.ok).toBe(true);
-      expect(detail.data.meta?.replanProposal?.status).toBe("applied");
-      expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(2);
-      expect(detail.data.meta?.replanProposal?.queuePlan?.counts?.createdTaskCount).toBe(2);
+      expect(storedParent?.meta?.replanProposal?.status).toBe("applied");
+      expect(storedParent?.meta?.plannerState?.latestReplan?.subtaskCount).toBe(2);
+      expect(storedParent?.meta?.replanProposal?.queuePlan?.counts?.createdTaskCount).toBe(2);
     } finally {
       if (server) {
         await new Promise((resolve) => server.close(resolve));
@@ -8649,12 +8768,10 @@ describeUiServer("ui-server mini app", () => {
       expect(propose.task.meta?.replanProposal?.summary).toContain("Decompose the ingestion epic");
       expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
 
-      const persistedBeforeApply = await fetch(
-        "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-      ).then((r) => r.json());
-      expect(persistedBeforeApply.ok).toBe(true);
-      expect(persistedBeforeApply.data.meta?.replanProposal?.status).toBe("proposed");
-      expect(persistedBeforeApply.data.meta?.replanProposal?.subtasks).toHaveLength(3);
+      const taskStore = await import("../task/task-store.mjs");
+      const persistedBeforeApply = taskStore.getTask(parentTask.data.id);
+      expect(persistedBeforeApply?.meta?.replanProposal?.status).toBe("proposed");
+      expect(persistedBeforeApply?.meta?.replanProposal?.subtasks).toHaveLength(3);
 
       const apply = await postDedicatedDecompose(port, "apply", { taskId: parentTask.data.id });
 
@@ -8673,14 +8790,10 @@ describeUiServer("ui-server mini app", () => {
         expect(subtask.meta?.replan?.proposalId).toBe(apply.proposal.proposalId);
         expect(subtask.meta?.replan?.parentTaskId).toBe(parentTask.data.id);
       }
-
-      const detail = await fetch(
-        "http://127.0.0.1:" + port + "/api/tasks/detail?taskId=" + encodeURIComponent(parentTask.data.id),
-      ).then((r) => r.json());
-      expect(detail.ok).toBe(true);
-      expect(detail.data.meta?.replanProposal?.status).toBe("applied");
-      expect(detail.data.meta?.plannerState?.latestReplan?.subtaskCount).toBe(3);
-      expect(detail.data.meta?.replanProposal?.queuePlan?.counts?.createdTaskCount).toBe(3);
+      const persistedAfterApply = taskStore.getTask(parentTask.data.id);
+      expect(persistedAfterApply?.meta?.replanProposal?.status).toBe("applied");
+      expect(persistedAfterApply?.meta?.plannerState?.latestReplan?.subtaskCount).toBe(3);
+      expect(persistedAfterApply?.meta?.replanProposal?.queuePlan?.counts?.createdTaskCount).toBe(3);
 
       const listedChildren = await fetch(
         "http://127.0.0.1:" + port + "/api/tasks/subtasks?parentTaskId=" + encodeURIComponent(parentTask.data.id),

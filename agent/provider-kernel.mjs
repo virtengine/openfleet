@@ -9,6 +9,7 @@
 import { createProviderRegistry } from "./provider-registry.mjs";
 import { createProviderSession } from "./provider-session.mjs";
 import { createToolOrchestrator } from "./tool-orchestrator.mjs";
+import { readHarnessExecutorFabric } from "./harness-executor-config.mjs";
 import { getBuiltInProviderDriver, normalizeProviderDefinitionId } from "./providers/index.mjs";
 import { ProviderConfigurationError } from "./providers/provider-errors.mjs";
 import {
@@ -109,9 +110,12 @@ function createRegistryFactory(options = {}) {
       return options.providerRegistry;
     }
     const config = resolveKernelConfig(options);
-    const configExecutors = Array.isArray(config?.executorConfig?.executors)
-      ? config.executorConfig.executors
-      : [];
+    const harnessFabric = readHarnessExecutorFabric(config);
+    const configExecutors = harnessFabric.hasExplicitExecutors
+      ? harnessFabric.explicitExecutors
+      : Array.isArray(config?.executorConfig?.executors)
+        ? config.executorConfig.executors
+        : [];
     const settings = buildProviderKernelSettings(config);
     return createProviderRegistry({
       adapters: options.adapters || {},
@@ -120,9 +124,9 @@ function createRegistryFactory(options = {}) {
         normalizeProviderDefinitionId(
           settings.BOSUN_PROVIDER_DEFAULT || options.env?.BOSUN_PROVIDER_DEFAULT || process.env.BOSUN_PROVIDER_DEFAULT || "",
           "",
-        ) || undefined,
+      ) || undefined,
       env: options.env || process.env,
-      includeBuiltins: options.includeBuiltins !== false,
+      includeBuiltins: harnessFabric.hasExplicitExecutors ? false : options.includeBuiltins !== false,
       settings,
       readBusy: options.readBusy,
       getAdapterCapabilities: options.getAdapterCapabilities,

@@ -5,7 +5,9 @@ function toTrimmedString(value) {
 function buildProviderSelectionPayload(deps = {}) {
   return {
     poolSdk: toTrimmedString(deps.getPoolSdkName?.() || "") || null,
-    primaryAgent: toTrimmedString(deps.getPrimaryAgentName?.() || "") || null,
+    primaryAgent:
+      toTrimmedString(deps.getPrimaryAgentSelection?.() || deps.getPrimaryAgentName?.() || "")
+      || null,
     availableSdks: Array.isArray(deps.getAvailableSdks?.())
       ? deps.getAvailableSdks()
       : [],
@@ -22,7 +24,13 @@ export async function tryHandleHarnessProviderRoutes(context = {}) {
     jsonResponse,
     buildResolvedSettingsState,
     buildProviderInventory,
+    buildHarnessExecutorInventory,
     readJsonBody,
+    readConfigDocument,
+    writeJsonFileAtomic,
+    emitConfigReload,
+    invalidateApiCache,
+    broadcastUiEvent,
   } = deps;
 
   if (path === "/api/providers" && req.method === "GET") {
@@ -31,6 +39,72 @@ export async function tryHandleHarnessProviderRoutes(context = {}) {
       jsonResponse(res, 200, {
         ok: true,
         ...buildProviderInventory(rawValues),
+        selection: buildProviderSelectionPayload(deps),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  if (path === "/api/harness/executors" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      const { rawValues } = buildResolvedSettingsState();
+      const providerInventory = buildProviderInventory(rawValues);
+      jsonResponse(res, 200, {
+        ok: true,
+        ...buildHarnessExecutorInventory(configData, rawValues, providerInventory),
+        selection: buildProviderSelectionPayload(deps),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  if (path === "/api/harness/executors" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const executors = Array.isArray(body?.executors) ? body.executors : null;
+      const primaryExecutor = toTrimmedString(body?.primaryExecutor || "");
+      const routingMode = toTrimmedString(body?.routingMode || "").toLowerCase();
+      if (!executors) {
+        jsonResponse(res, 400, { ok: false, error: "executors array required" });
+        return true;
+      }
+      const { configPath, configData } = readConfigDocument();
+      if (!configData.harness || typeof configData.harness !== "object") {
+        configData.harness = {};
+      }
+      configData.harness.executors = executors;
+      if (primaryExecutor) {
+        configData.harness.primaryExecutor = primaryExecutor;
+      } else {
+        delete configData.harness.primaryExecutor;
+      }
+      if (["default-only", "fallback", "spread"].includes(routingMode)) {
+        configData.harness.routingMode = routingMode;
+      } else if (routingMode === "") {
+        delete configData.harness.routingMode;
+      }
+      writeJsonFileAtomic(configPath, configData);
+      emitConfigReload?.({
+        reason: "harness-executors-updated",
+        source: "harness-providers-route",
+      });
+      invalidateApiCache?.("status");
+      invalidateApiCache?.("server-state");
+      invalidateApiCache?.("infra");
+      broadcastUiEvent?.(["settings", "overview", "sessions"], "invalidate", {
+        reason: "harness-executors-updated",
+      });
+      const { rawValues } = buildResolvedSettingsState();
+      const providerInventory = buildProviderInventory(rawValues);
+      jsonResponse(res, 200, {
+        ok: true,
+        configPath,
+        ...buildHarnessExecutorInventory(configData, rawValues, providerInventory),
         selection: buildProviderSelectionPayload(deps),
       });
     } catch (err) {

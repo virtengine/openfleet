@@ -4362,6 +4362,26 @@ export class WorkflowEngine extends EventEmitter {
     return { retryRunId, mode, originalRunId: runId, ctx };
   }
 
+  async _shouldResumeTaskScopedRunFromScratch(run, detail, def) {
+    const taskId = this._resolveRunTaskIdentity(run, detail)?.taskId || "";
+    if (!taskId) return false;
+
+    const nodes = Array.isArray(def?.nodes) ? def.nodes : [];
+    const hasClaimNode = nodes.some(
+      (node) => String(node?.type || "").trim().toLowerCase() === "action.claim_task",
+    );
+    if (!hasClaimNode) return false;
+
+    try {
+      const { listClaims } = await import("../task/task-claims.mjs");
+      if (typeof listClaims !== "function") return false;
+      const activeClaims = await listClaims();
+      return !activeClaims.some((claim) => String(claim?.task_id || "").trim() === taskId);
+    } catch {
+      return false;
+    }
+  }
+
   // ── Auto-retry escalating strategy ───────────────────────────────────
 
   /**
@@ -8160,9 +8180,15 @@ export class WorkflowEngine extends EventEmitter {
             continue;
           }
 
-          const retryDecision = watchdogDecision || this._chooseRetryModeFromDetail(detail, {
-            fallbackMode: "from_scratch",
-          });
+          const forceTaskRestart = await this._shouldResumeTaskScopedRunFromScratch(run, detail, def);
+          const retryDecision = forceTaskRestart
+            ? {
+                mode: "from_scratch",
+                reason: "task_claim_missing_on_resume",
+              }
+            : (watchdogDecision || this._chooseRetryModeFromDetail(detail, {
+                fallbackMode: "from_scratch",
+              }));
 
           console.log(
             `${TAG} Resuming run ${run.runId} via retryRun(${retryDecision.mode}) ` +

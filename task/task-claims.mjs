@@ -502,6 +502,34 @@ function sweepExpiredClaims(registry, now = new Date()) {
   return { registry, expiredCount };
 }
 
+function sweepInactiveClaims(
+  registry,
+  {
+    now = new Date(),
+    includeExpired = false,
+    ownerStaleTtlMs = DEFAULT_OWNER_STALE_TTL_MS,
+  } = {},
+) {
+  let expiredCount = 0;
+  let staleCount = 0;
+
+  for (const [taskId, claim] of Object.entries(registry.claims || {})) {
+    if (!includeExpired && isClaimExpired(claim, now)) {
+      delete registry.claims[taskId];
+      expiredCount += 1;
+      continue;
+    }
+
+    const staleCheck = shouldTreatClaimAsStale(claim, ownerStaleTtlMs);
+    if (staleCheck.stale) {
+      delete registry.claims[taskId];
+      staleCount += 1;
+    }
+  }
+
+  return { registry, expiredCount, staleCount };
+}
+
 // ── Duplicate Claim Resolution ───────────────────────────────────────────────
 
 /**
@@ -1111,13 +1139,23 @@ export async function getClaim(taskId) {
  */
 export async function listClaims(opts = {}) {
   ensureInitialized();
-  const { instanceId, includeExpired = false } = opts;
+  const {
+    instanceId,
+    includeExpired = false,
+    ownerStaleTtlMs = parseDuration(
+      opts.ownerStaleTtlMs ?? process.env.TASK_CLAIM_OWNER_STALE_TTL_MS,
+      DEFAULT_OWNER_STALE_TTL_MS,
+    ),
+  } = opts;
 
   let registry = await loadClaimsRegistry();
-
-  if (!includeExpired) {
-    const sweepResult = sweepExpiredClaims(registry);
-    registry = sweepResult.registry;
+  const sweepResult = sweepInactiveClaims(registry, {
+    includeExpired,
+    ownerStaleTtlMs,
+  });
+  registry = sweepResult.registry;
+  if (sweepResult.expiredCount > 0 || sweepResult.staleCount > 0) {
+    await saveClaimsRegistry(registry);
   }
 
   let claims = Object.values(registry.claims);
@@ -1179,6 +1217,7 @@ export async function getClaimStats() {
 // For testing
 export const _test = {
   sweepExpiredClaims,
+  sweepInactiveClaims,
   resolveDuplicateClaim,
   isClaimExpired,
   loadClaimsRegistry,

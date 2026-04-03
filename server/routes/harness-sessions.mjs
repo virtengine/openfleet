@@ -15,6 +15,77 @@ function trimText(value, maxLength = 400) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
+function isPathWithinPath(normalizeCandidatePath, parentPath, childPath) {
+  const normalizedParent = normalizeCandidatePath(parentPath);
+  const normalizedChild = normalizeCandidatePath(childPath);
+  if (!normalizedParent || !normalizedChild) return false;
+  if (normalizedParent === normalizedChild) return true;
+  const parentWithSlash = normalizedParent.replace(/[\\/]+$/, "");
+  const childLower = process.platform === "win32" ? normalizedChild.toLowerCase() : normalizedChild;
+  const parentLower = process.platform === "win32" ? parentWithSlash.toLowerCase() : parentWithSlash;
+  return childLower.startsWith(`${parentLower}/`) || childLower.startsWith(`${parentLower}\\`);
+}
+
+function looksLikeReapableHistoricSessionLeak(session, {
+  normalizeCandidatePath,
+  repoRoot,
+} = {}) {
+  if (!session || typeof session !== "object") return false;
+  const metadata =
+    session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const normalizedType = String(session.type || session.sessionType || metadata.type || "").trim().toLowerCase();
+  if (!["primary", "manual", "chat"].includes(normalizedType)) return false;
+  const normalizedStatus = String(
+    session.lifecycleStatus || session.status || session.runtimeState || "",
+  ).trim().toLowerCase();
+  if (normalizedStatus === "active" || normalizedStatus === "paused" || normalizedStatus === "recent") {
+    return false;
+  }
+  const identifiers = [
+    session.id,
+    session.taskId,
+    session.title,
+    session.taskTitle,
+  ].map((value) => String(value || "").trim());
+  const hasGeneratedCopilotIdentifier = identifiers.some((value) =>
+    /^(?:Ask about workflow run|Fix failed workflow run|Ask Bosun about node)\b/i.test(value)
+  );
+  const normalizedWorkspaceDir = normalizeCandidatePath(session.workspaceDir || metadata.workspaceDir);
+  const normalizedWorkspaceRoot = normalizeCandidatePath(session.workspaceRoot || metadata.workspaceRoot);
+  const normalizedRepoRoot = normalizeCandidatePath(repoRoot);
+  const detachedManagedWorkspaceSession =
+    Boolean(normalizedWorkspaceDir)
+    && Boolean(normalizedWorkspaceRoot)
+    && normalizedWorkspaceDir !== normalizedWorkspaceRoot
+    && !isPathWithinPath(normalizeCandidatePath, normalizedWorkspaceRoot, normalizedWorkspaceDir);
+  if (hasGeneratedCopilotIdentifier) return true;
+  if (
+    detachedManagedWorkspaceSession
+    && normalizedRepoRoot
+    && normalizedWorkspaceDir === normalizedRepoRoot
+    && identifiers.some((value) => /^primary-\d+-[a-z0-9]+$/i.test(value))
+  ) {
+    return true;
+  }
+  const normalizedPreview = String(
+    session.preview || session.lastMessage || metadata.preview || "",
+  ).trim();
+  const turnCount = Number(session.turnCount || 0);
+  const totalEvents = Number(session.totalEvents || session.eventCount || 0);
+  const createdAtMs = Date.parse(
+    String(session.createdAt || session.startedAt || session.lastActiveAt || ""),
+  );
+  return !normalizedWorkspaceDir
+    && !normalizedWorkspaceRoot
+    && turnCount <= 0
+    && totalEvents <= 0
+    && !normalizedPreview
+    && Number.isFinite(createdAtMs)
+    && (Date.now() - createdAtMs) >= (5 * 60 * 1000);
+}
+
 function compactSessionMetadata(metadata = {}) {
   if (!metadata || typeof metadata !== "object") return {};
   const compact = {};
@@ -309,6 +380,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     getCompactDiffSummary,
     getRecentCommits,
     resolveActiveWorkspaceExecutionContext,
+    resolveWorkspaceContextById,
   } = deps;
 
   if (path === "/api/harness/sessions" && req.method === "GET") {
@@ -432,6 +504,42 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           }), workspaceContext, {
             allowLegacyWithoutWorkspace,
           });
+      const reapableSessionIds = sessions
+        .filter((session) => looksLikeReapableHistoricSessionLeak(session, {
+          normalizeCandidatePath,
+          repoRoot,
+        }))
+        .map((session) => String(session?.id || session?.sessionId || session?.taskId || "").trim())
+        .filter(Boolean);
+      if (reapableSessionIds.length > 0) {
+        for (const candidateSessionId of reapableSessionIds) {
+          try {
+            tracker.removeSession(candidateSessionId);
+          } catch {
+            try {
+              deleteSessionRecordFromStateLedger(candidateSessionId, resolveUiStateLedgerOptions(workspaceContext));
+            } catch {
+            }
+          }
+        }
+        invalidateDurableSessionListCache();
+        const refreshedLiveSessions = tracker.listAllSessions({
+          includePersisted: false,
+          includeRuntimeProgress: wantsFull,
+          lightweight: lightweightList,
+        });
+        const refreshedDurableSessions = typeof listDurableSessionsFromLedger === "function"
+          ? listDurableSessionsFromLedger(workspaceContext, {
+              allowLegacyWithoutWorkspace,
+              summaryOnly: lightweightList,
+            })
+          : [];
+        sessions = refreshedDurableSessions.length > 0 || refreshedLiveSessions.length > 0
+          ? mergeSessionListItems(refreshedLiveSessions, refreshedDurableSessions, mergeSessionRecords)
+          : mergeTrackerAndLedgerSessions(refreshedLiveSessions, workspaceContext, {
+              allowLegacyWithoutWorkspace,
+            });
+      }
       if (!includeHidden) {
         sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
       }
@@ -487,13 +595,26 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const body = await readJsonBody(req);
       const type = body?.type || "manual";
       const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const workspaceContext = resolveActiveWorkspaceExecutionContext();
       const requestedWorkspaceId = toTrimmedString(body?.workspaceId || "");
       const requestedWorkspaceDir = normalizeCandidatePath(body?.workspaceDir);
       const requestedWorkspaceRoot = normalizeCandidatePath(body?.workspaceRoot);
-      const resolvedWorkspaceId = requestedWorkspaceId || workspaceContext.workspaceId;
-      const resolvedWorkspaceDir = requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
-      const resolvedWorkspaceRoot = requestedWorkspaceRoot || workspaceContext.workspaceRoot || resolvedWorkspaceDir;
+      const workspaceContext =
+        (requestedWorkspaceId && typeof resolveWorkspaceContextById === "function"
+          ? resolveWorkspaceContextById(requestedWorkspaceId)
+          : null)
+        || resolveActiveWorkspaceExecutionContext();
+      const baseWorkspaceRoot = normalizeCandidatePath(workspaceContext?.workspaceRoot);
+      const baseWorkspaceDir = normalizeCandidatePath(workspaceContext?.workspaceDir);
+      const resolvedWorkspaceId = requestedWorkspaceId || toTrimmedString(workspaceContext?.workspaceId || "");
+      const resolvedWorkspaceRoot = requestedWorkspaceRoot || baseWorkspaceRoot || baseWorkspaceDir || repoRoot;
+      const resolvedWorkspaceDir =
+        requestedWorkspaceDir
+        || (baseWorkspaceDir && isPathWithinPath(normalizeCandidatePath, resolvedWorkspaceRoot, baseWorkspaceDir)
+          ? baseWorkspaceDir
+          : "")
+        || baseWorkspaceRoot
+        || baseWorkspaceDir
+        || repoRoot;
       const requestedAgentProfileId = toTrimmedString(body?.agentProfileId || "");
       const requestedAgent = toTrimmedString(body?.providerSelection || body?.agent || "") || getPrimaryAgentName();
       const requestedModel = toTrimmedString(body?.model || "") || undefined;

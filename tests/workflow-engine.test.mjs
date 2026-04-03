@@ -3811,6 +3811,87 @@ describe("WorkflowEngine - run history details", () => {
     expect(interrupted?.resumeResult).toContain("delegation_watchdog_exhausted");
   });
 
+  it("restarts interrupted task-scoped runs from scratch when no active claim remains", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "claim-task", type: "action.claim_task", label: "Claim Task", config: {} },
+        { id: "run-agent-tests", type: "action.run_agent", label: "Agent Tests", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "claim-task" },
+        { id: "e2", source: "claim-task", target: "run-agent-tests" },
+      ],
+      { id: "wf-interrupted-task-claim", name: "Interrupted Task Claim Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-task-claim";
+    const { initTaskClaims } = await import("../task/task-claims.mjs");
+    await initTaskClaims({ repoRoot: tmpDir });
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-claim-missing-1",
+        },
+        nodeStatuses: {
+          trigger: NodeStatus.COMPLETED,
+          "claim-task": NodeStatus.COMPLETED,
+          "run-agent-tests": NodeStatus.RUNNING,
+        },
+        nodeOutputs: {
+          trigger: { triggered: true },
+          "claim-task": { success: true, taskId: "task-claim-missing-1" },
+        },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retryRunSpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
+      retryRunId: "retry-interrupted-task-claim",
+      mode: "from_scratch",
+      originalRunId: interruptedRunId,
+      ctx: { id: "retry-interrupted-task-claim" },
+    });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retryRunSpy).toHaveBeenCalledTimes(1);
+    expect(retryRunSpy).toHaveBeenCalledWith(interruptedRunId, expect.objectContaining({
+      mode: "from_scratch",
+      _decisionReason: "task_claim_missing_on_resume",
+    }));
+  });
+
   it("resumes interrupted runs with replan_from_failed when issue-advisor requests replanning", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],

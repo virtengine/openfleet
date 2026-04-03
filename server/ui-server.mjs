@@ -29,6 +29,11 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
 import { resolveSharedOAuthToken } from "../agent/provider-auth-state.mjs";
+import {
+  listHarnessExecutorProviderOptions,
+  normalizeHarnessExecutor,
+  readHarnessExecutorFabric,
+} from "../agent/harness-executor-config.mjs";
 
 const gzipAsync = promisify(zlibGzip);
 const DURABLE_ACTIVE_SESSION_EXPIRY_MS = 10 * 60 * 1000;
@@ -593,6 +598,14 @@ async function ensureTaskStoreApi() {
 
 function getTaskStoreApiSync() {
   return resolveInjectedTaskStoreApi() || taskStoreApi;
+}
+
+function findTaskStoreFunction(api, candidates = []) {
+  if (!api || typeof api !== "object") return null;
+  for (const name of candidates) {
+    if (typeof api?.[name] === "function") return name;
+  }
+  return null;
 }
 
 function getAllInternalTasks() {
@@ -3567,8 +3580,8 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
   const needsDependencyWrites = proposal.subtasks.some((entry) => entry.dependsOnIndexes.length > 0 || entry.dependsOnTaskIds.length > 0)
     || proposal.dependencyPatches.length > 0;
   if (needsDependencyWrites) {
-    const probe = await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [taskId, taskId]);
-    if (!probe?.found) {
+    const taskStoreApi = await ensureTaskStoreApi();
+    if (!findTaskStoreFunction(taskStoreApi, TASK_STORE_DEPENDENCY_EXPORTS.add)) {
       return { status: 501, body: { ok: false, error: "Task dependency graph writes are unavailable." } };
     }
   }
@@ -6922,6 +6935,18 @@ function normalizeCandidatePath(input) {
   }
 }
 
+function isPathWithinPath(parentPath, childPath) {
+  const normalizedParent = normalizeCandidatePath(parentPath);
+  const normalizedChild = normalizeCandidatePath(childPath);
+  if (!normalizedParent || !normalizedChild) return false;
+  if (normalizedParent === normalizedChild) return true;
+  const parentWithSep = normalizedParent.endsWith(sep) ? normalizedParent : `${normalizedParent}${sep}`;
+  if (process.platform === "win32") {
+    return normalizedChild.toLowerCase().startsWith(parentWithSep.toLowerCase());
+  }
+  return normalizedChild.startsWith(parentWithSep);
+}
+
 function resolveWorkspaceRepoLocation(repo) {
   if (!repo || typeof repo !== "object") return "";
   return normalizeCandidatePath(
@@ -7047,8 +7072,8 @@ function resolveActiveWorkspaceExecutionContext() {
   }
 
   const workspaceId = String(workspace.id || "").trim();
-  const workspaceDir = pickWorkspaceRepoDir(workspace) || fallback.workspaceDir;
-  const workspaceRoot = normalizeCandidatePath(workspace.path) || workspaceDir || fallback.workspaceRoot;
+  const workspaceRoot = normalizeCandidatePath(workspace.path) || fallback.workspaceRoot;
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || workspaceRoot || fallback.workspaceDir;
   return {
     workspaceId,
     workspaceDir,
@@ -7242,8 +7267,8 @@ function resolveWorkspaceContextById(workspaceId = "") {
   );
   if (!workspace) return null;
   const id = String(workspace.id || "").trim();
-  const workspaceDir = pickWorkspaceRepoDir(workspace) || repoRoot;
-  const workspaceRoot = normalizeCandidatePath(workspace.path) || workspaceDir || repoRoot;
+  const workspaceRoot = normalizeCandidatePath(workspace.path) || repoRoot;
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || workspaceRoot || repoRoot;
   return {
     workspaceId: id,
     workspaceDir,
@@ -10632,6 +10657,25 @@ function buildProviderInventory(settings = null) {
   };
 }
 
+function buildHarnessExecutorInventory(configData = null, rawSettings = null, providerInventory = null) {
+  const effectiveConfig = configData && typeof configData === "object"
+    ? configData
+    : readConfigDocument().configData;
+  const effectiveSettings = rawSettings && typeof rawSettings === "object"
+    ? rawSettings
+    : buildResolvedSettingsState().rawValues;
+  const effectiveProviderInventory = providerInventory || buildProviderInventory(effectiveSettings);
+  const fabric = readHarnessExecutorFabric(effectiveConfig, {
+    providerInventory: effectiveProviderInventory,
+    providerRoutingMode: effectiveProviderInventory?.routingMode || effectiveSettings?.BOSUN_PROVIDER_ROUTING_MODE,
+  });
+  return {
+    ...fabric,
+    providerOptions: listHarnessExecutorProviderOptions(),
+    providers: effectiveProviderInventory,
+  };
+}
+
 function buildEnvOverrideMapForConfigEditor(schema) {
   const overrides = new Map();
   for (const key of SETTINGS_SCHEMA_KEYS) {
@@ -11166,6 +11210,7 @@ function shouldHideSessionFromDefaultList(session) {
   const normalizedType = String(session.type || session.sessionType || metadata.type || "").trim().toLowerCase();
   const normalizedWorkspaceDir = normalizeCandidatePath(session.workspaceDir || metadata.workspaceDir);
   const normalizedWorkspaceRoot = normalizeCandidatePath(session.workspaceRoot || metadata.workspaceRoot);
+  const normalizedRepoRoot = normalizeCandidatePath(repoRoot);
   if (
     metadata.hiddenInLists === true
     || metadata.hidden === true
@@ -11180,6 +11225,12 @@ function shouldHideSessionFromDefaultList(session) {
     session.title,
     session.taskTitle,
   ];
+  const hasGeneratedCopilotIdentifier = identifiers.some((value) =>
+    /^(?:Ask about workflow run|Fix failed workflow run|Ask Bosun about node)\b/i.test(
+      String(value || "").trim(),
+    )
+  );
+  if (hasGeneratedCopilotIdentifier) return true;
   const internalTransportSession =
     normalizedSource === "voice-http"
     || normalizedSource === "voice-http-tool"
@@ -11201,6 +11252,11 @@ function shouldHideSessionFromDefaultList(session) {
     Boolean(normalizedWorkspaceId)
     || Boolean(normalizedWorkspaceDir)
     || Boolean(normalizedWorkspaceRoot);
+  const detachedManagedWorkspaceSession =
+    Boolean(normalizedWorkspaceDir)
+    && Boolean(normalizedWorkspaceRoot)
+    && normalizedWorkspaceDir !== normalizedWorkspaceRoot
+    && !isPathWithinPath(normalizedWorkspaceRoot, normalizedWorkspaceDir);
   const tempWorkspacePattern = /(?:\\|\/)(?:temp|tmp)(?:\\|\/)/i;
   const looksTemporaryWorkspace =
     tempWorkspacePattern.test(normalizedWorkspaceDir)
@@ -11235,6 +11291,16 @@ function shouldHideSessionFromDefaultList(session) {
       || "",
     ),
   );
+  const staleBlankPrimaryWithoutWorkspacePaths =
+    ["primary", "manual", "chat"].includes(normalizedType) &&
+    !normalizedWorkspaceDir &&
+    !normalizedWorkspaceRoot &&
+    turnCount <= 0 &&
+    totalEvents <= 0 &&
+    !normalizedPreview &&
+    Number.isFinite(createdAtMs) &&
+    (Date.now() - createdAtMs) >= (5 * 60 * 1000);
+  if (staleBlankPrimaryWithoutWorkspacePaths) return true;
   const staleEmptyPrimaryAgeMs = 30 * 60 * 1000;
   const staleEmptyPrimarySession =
     ["primary", "manual", "chat"].includes(normalizedType) &&
@@ -11249,6 +11315,15 @@ function shouldHideSessionFromDefaultList(session) {
     Number.isFinite(createdAtMs) &&
     (Date.now() - createdAtMs) >= staleEmptyPrimaryAgeMs;
   if (staleEmptyPrimarySession) return true;
+  const staleDetachedPrimaryShell =
+    detachedManagedWorkspaceSession &&
+    normalizedRepoRoot &&
+    normalizedWorkspaceDir === normalizedRepoRoot &&
+    ["primary", "manual", "chat"].includes(normalizedType) &&
+    Number.isFinite(createdAtMs) &&
+    (Date.now() - createdAtMs) >= (5 * 60 * 1000) &&
+    identifiers.some((value) => /^primary-\d+-[a-z0-9]+$/i.test(String(value || "").trim()));
+  if (staleDetachedPrimaryShell) return true;
   const syntheticChatFixtureIdentifier = identifiers.some((value) =>
     /^(?:chat-(?:idle|stalled|runtime|replay|\d+))$/i.test(String(value || "").trim()),
   );
@@ -23825,7 +23900,13 @@ async function handleApi(req, res, url) {
       getSessionTracker,
       buildResolvedSettingsState,
       buildProviderInventory,
+      buildHarnessExecutorInventory,
+      readConfigDocument,
+      writeJsonFileAtomic,
+      emitConfigReload,
+      invalidateApiCache,
       getPrimaryAgentName,
+      getPrimaryAgentSelection,
       getAgentMode,
       switchPrimaryAgent,
       getPoolSdkName,
@@ -23834,6 +23915,7 @@ async function handleApi(req, res, url) {
       resetPoolSdkCache,
       resolveWorkspaceContextFromRequest,
       resolveActiveWorkspaceExecutionContext,
+      resolveWorkspaceContextById,
       normalizeCandidatePath,
       mergeTrackerAndLedgerSessions,
       listDurableSessionsFromLedger,
@@ -24013,7 +24095,10 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/agents/available" && req.method === "GET") {
     try {
+      const { configData } = readConfigDocument();
+      const { rawValues } = buildResolvedSettingsState();
       const providerInventory = buildProviderInventory();
+      const executorFabric = buildHarnessExecutorInventory(configData, rawValues, providerInventory);
       const modelsByProviderId = new Map(
         (providerInventory?.items || []).map((entry) => [
           String(entry?.providerId || "").trim(),
@@ -24033,6 +24118,9 @@ if (path === "/api/agent-logs/context") {
         return {
           ...entry,
           providerId,
+          apiStyle: entry?.apiStyle || null,
+          transportConfig: entry?.transportConfig || null,
+          source: entry?.source || null,
           models,
           capabilities,
         };
@@ -24043,6 +24131,11 @@ if (path === "/api/agent-logs/context") {
         mode: getAgentMode(),
         agents,
         manualAgents: [],
+        executorFabric: {
+          primaryExecutorId: executorFabric.primaryExecutorId || null,
+          routingMode: executorFabric.routingMode || null,
+          hasExplicitExecutors: executorFabric.hasExplicitExecutors === true,
+        },
       });
     } catch (err) {
       jsonResponse(res, 200, {
@@ -27318,8 +27411,10 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/settings") {
     try {
+      const { configData } = readConfigDocument();
       const { data, sources, rawValues } = buildResolvedSettingsState();
       const providerInventory = buildProviderInventory(rawValues);
+      const harnessExecutors = buildHarnessExecutorInventory(configData, rawValues, providerInventory);
       const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
@@ -27329,7 +27424,8 @@ if (path === "/api/agent-logs/context") {
         data,
         sources,
         providers: providerInventory,
-        agentArchitecture: buildAgentConfigurationGuide(rawValues, providerInventory),
+        harnessExecutors,
+        agentArchitecture: buildAgentConfigurationGuide(rawValues, providerInventory, harnessExecutors),
         meta: {
           envPath,
           configPath,
