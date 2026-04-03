@@ -4763,11 +4763,72 @@ export class WorkflowEngine extends EventEmitter {
       .filter(Boolean);
   }
 
+  _pruneTaskLifecycleSlotReservations() {
+    if (!(this._taskLifecycleSlotReservations instanceof Map)) {
+      this._taskLifecycleSlotReservations = new Map();
+      return this._taskLifecycleSlotReservations;
+    }
+    for (const [runId, reservation] of this._taskLifecycleSlotReservations.entries()) {
+      if (!this._activeRuns.has(runId) || !reservation || typeof reservation !== "object") {
+        this._taskLifecycleSlotReservations.delete(runId);
+        continue;
+      }
+      if (String(reservation.status || "").trim().toLowerCase() === "released") {
+        this._taskLifecycleSlotReservations.delete(runId);
+      }
+    }
+    return this._taskLifecycleSlotReservations;
+  }
+
+  releaseTaskLifecycleSlotReservation(runId) {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) return;
+    this._pruneTaskLifecycleSlotReservations().delete(normalizedRunId);
+  }
+
+  reserveTaskLifecycleSlot(options = {}) {
+    const runId = String(options?.runId || "").trim();
+    const taskId = String(options?.taskId || "").trim();
+    const maxParallel = Number(options?.maxParallel ?? 0) || 0;
+    const baseBranchLimit = Number(options?.baseBranchLimit ?? 0) || 0;
+    const baseBranch = String(options?.baseBranch || "").trim().replace(/^origin\//, "");
+    const reservations = this._pruneTaskLifecycleSlotReservations();
+    const snapshot = this.getTaskLifecycleSlotSnapshot({ excludeTaskId: taskId });
+    const activeSlotCount = Number(snapshot?.activeSlotCount || 0) || 0;
+    const slotsAvailable = activeSlotCount < maxParallel;
+    let baseBranchOk = true;
+    if (baseBranchLimit > 0 && baseBranch) {
+      const counts = snapshot?.baseBranchSlotCounts || {};
+      baseBranchOk = (counts[baseBranch] ?? 0) < baseBranchLimit;
+    }
+    const result = slotsAvailable && baseBranchOk;
+
+    if (result && runId && taskId) {
+      reservations.set(runId, {
+        taskId,
+        baseBranch,
+        reservedAt: Date.now(),
+        status: "reserved",
+      });
+    }
+
+    return { result, slotsAvailable, baseBranchOk, activeSlotCount, maxParallel };
+  }
+
   getTaskLifecycleSlotSnapshot(options = {}) {
     const excludeTaskId = String(options?.excludeTaskId || "").trim();
     const activeTaskIds = [];
     const baseBranchSlotCounts = {};
-    let activeSlotCount = 0;
+    const slotEntries = new Map();
+
+    const registerSlot = (slotInfo = null) => {
+      const taskId = String(slotInfo?.taskId || "").trim();
+      if (!taskId || taskId === excludeTaskId || slotEntries.has(taskId)) return;
+      slotEntries.set(taskId, {
+        taskId,
+        baseBranch: String(slotInfo?.baseBranch || "").trim().replace(/^origin\//, ""),
+      });
+    };
 
     for (const info of this._activeRuns.values()) {
       const workflowName = String(
@@ -4775,33 +4836,31 @@ export class WorkflowEngine extends EventEmitter {
       ).trim().toLowerCase();
       if (workflowName !== "task lifecycle") continue;
 
-      const slotInfo =
+      const allocatedSlotInfo =
         info?.ctx?.data?._allocatedSlot
         && typeof info.ctx.data._allocatedSlot === "object"
           ? info.ctx.data._allocatedSlot
           : null;
-      if (!slotInfo || String(slotInfo.status || "").trim().toLowerCase() === "released") {
+      if (!allocatedSlotInfo || String(allocatedSlotInfo.status || "").trim().toLowerCase() === "released") {
         continue;
       }
+      registerSlot(allocatedSlotInfo);
+    }
 
-      const taskId = String(
-        slotInfo.taskId || info?.ctx?.data?.taskId || "",
-      ).trim();
-      if (!taskId || taskId === excludeTaskId) continue;
+    for (const reservation of this._pruneTaskLifecycleSlotReservations().values()) {
+      if (String(reservation?.status || "").trim().toLowerCase() === "released") continue;
+      registerSlot(reservation);
+    }
 
-      activeSlotCount += 1;
-      activeTaskIds.push(taskId);
-
-      const baseBranch = String(
-        slotInfo.baseBranch || info?.ctx?.data?.baseBranch || "",
-      ).trim().replace(/^origin\//, "");
-      if (baseBranch) {
-        baseBranchSlotCounts[baseBranch] = (baseBranchSlotCounts[baseBranch] || 0) + 1;
+    for (const slotInfo of slotEntries.values()) {
+      activeTaskIds.push(slotInfo.taskId);
+      if (slotInfo.baseBranch) {
+        baseBranchSlotCounts[slotInfo.baseBranch] = (baseBranchSlotCounts[slotInfo.baseBranch] || 0) + 1;
       }
     }
 
     return {
-      activeSlotCount,
+      activeSlotCount: slotEntries.size,
       activeTaskIds,
       baseBranchSlotCounts,
     };

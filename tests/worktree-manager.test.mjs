@@ -3,10 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
-vi.mock("node:child_process", () => ({
-  spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
-  execSync: vi.fn(),
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+    execSync: vi.fn(),
+  };
+});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal();

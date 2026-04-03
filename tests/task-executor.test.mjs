@@ -92,10 +92,14 @@ vi.mock("../git/git-safety.mjs", () => ({
   }),
 }));
 
-vi.mock("node:child_process", () => ({
-  execSync: vi.fn(() => ""),
-  spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    execSync: vi.fn(() => ""),
+    spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+  };
+});
 
 vi.mock("node:fs", () => ({
   readFileSync: vi.fn(() => ""),

@@ -95,11 +95,15 @@ vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: vi.fn(() => "/mock/repo"),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  mkdir: vi.fn().mockResolvedValue(undefined),
-  readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
-  writeFile: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 // Zero-delay retries so transient-retry tests don't hit real network waits
 vi.mock("../infra/stream-resilience.mjs", () => ({

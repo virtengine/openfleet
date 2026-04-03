@@ -195,7 +195,9 @@ async function loadWorkflowTemplates() {
     .sort();
   const templates = [];
   for (const file of files) {
-    const mod = await import(pathToFileURL(resolve(WORKFLOW_TEMPLATES_DIR, file)).href);
+    const moduleUrl = pathToFileURL(resolve(WORKFLOW_TEMPLATES_DIR, file));
+    moduleUrl.searchParams.set("demoDefaultsCacheBust", `${Date.now()}-${Math.random()}`);
+    const mod = await import(moduleUrl.href);
     for (const value of Object.values(mod)) {
       if (!value || typeof value !== "object") continue;
       if (!value.id || !value.name || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) continue;

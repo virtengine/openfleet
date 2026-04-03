@@ -4885,7 +4885,7 @@ registerNodeType("action.set_variable", {
     },
     required: ["key"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const key = node.config?.key;
     let value = node.config?.value || "";
     if (node.config?.isExpression) {
@@ -7875,7 +7875,7 @@ registerNodeType("action.allocate_slot", {
     },
     required: ["taskId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle", "(untitled)");
     const branch = cfgOrCtx(node, ctx, "branch");
@@ -7905,6 +7905,10 @@ registerNodeType("action.allocate_slot", {
     slotInfo._envSnapshot = envSnapshot;
 
     // Store in workflow context
+    if (engine && typeof engine.releaseTaskLifecycleSlotReservation === "function") {
+      engine.releaseTaskLifecycleSlotReservation(ctx.id);
+    }
+    ctx.data._reservedTaskLifecycleSlot = null;
     ctx.data._allocatedSlot = slotInfo;
     ctx.data._agentInstanceId = agentInstanceId;
     ctx.data.taskId = taskId;

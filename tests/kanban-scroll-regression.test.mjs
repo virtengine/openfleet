@@ -32,6 +32,12 @@ describe("kanban scroll regression guards", () => {
     expect(boardSource).toContain("Copy ID");
   });
 
+  it("imports the MUI menu components used by the board filters", () => {
+    expect(boardSource).toMatch(/import\s*\{[^}]*\bMenu\b[^}]*\bMenuItem\b[^}]*\}\s*from\s*["']@mui\/material["']/);
+    expect(boardSource).toContain("<${Menu}");
+    expect(boardSource).toContain("<${MenuItem}");
+  });
+
   it("keeps the manual load-more affordance outside the scroll body", () => {
     const cardsIndex = boardSource.indexOf('class="kanban-cards"');
     const sentinelIndex = boardSource.indexOf('class="kanban-tail-sentinel"');

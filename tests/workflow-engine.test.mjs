@@ -920,6 +920,81 @@ describe("WorkflowEngine - loop.for_each", () => {
     });
   });
 
+  it("does not inherit parent branch context when loop child task omits branch metadata", async () => {
+    const observed = [];
+    registerNodeType("test.capture_child_branch_isolation", {
+      describe: () => "Capture branch context for task-dispatched loop child",
+      schema: { type: "object", properties: {} },
+      async execute(_node, childCtx) {
+        observed.push({
+          taskId: childCtx.data?.taskId || null,
+          branch: childCtx.data?.branch || null,
+          branchName: childCtx.data?.branchName || null,
+          rootTaskId: childCtx.data?._workflowRootTaskId || null,
+        });
+        return { ok: true };
+      },
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Child Start", config: {} },
+        { id: "capture", type: "test.capture_child_branch_isolation", label: "Capture", config: {} },
+      ],
+      [{ id: "c1", source: "trigger", target: "capture" }],
+      { id: "child-branch-isolation", name: "Child Branch Isolation" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Task Items",
+          config: {
+            items: "$data.items",
+            variable: "currentTask",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 1,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-branch-isolation", name: "Parent Branch Isolation" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const ctx = await engine.execute(parent.id, {
+      taskId: "parent-task",
+      branch: "task/parent-task",
+      branchName: "task/parent-task",
+      _workflowRootTaskId: "parent-task",
+      _workflowParentTaskId: "parent-task",
+      items: [
+        {
+          taskId: "child-task-branchless",
+          taskTitle: "Child Task Branchless",
+        },
+      ],
+    });
+    expect(ctx.errors).toEqual([]);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(observed).toEqual([
+      {
+        taskId: "child-task-branchless",
+        branch: null,
+        branchName: null,
+        rootTaskId: "child-task-branchless",
+      },
+    ]);
+  });
+
   it("counts only allocated task lifecycle slots during loop dispatch fan-out", async () => {
     let startedCount = 0;
     let releaseRuns;
@@ -1033,14 +1108,14 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(completedRuns).toHaveLength(2);
 
     for (const entry of completedRuns) {
-      const detail = engine.getRunDetail(entry.runId);
-      expect(detail?.nodeOutputs?.["check-slots"]).toMatchObject({
+      const run = engine.getRunDetail(entry.runId);
+      expect(run?.detail?.nodeOutputs?.["check-slots"]).toMatchObject({
         result: false,
         slotsAvailable: false,
         activeSlotCount: 2,
         maxParallel: 2,
       });
-      expect(detail?.nodeStatuses?.["allocate-slot"]).toBe(NodeStatus.SKIPPED);
+      expect(run?.detail?.nodeStatuses?.["allocate-slot"]).toBe(NodeStatus.SKIPPED);
     }
 
     releaseRuns();

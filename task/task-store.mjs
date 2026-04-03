@@ -33,17 +33,9 @@ let testIsolatedStorePath = null;
 
 function isLikelyTestRuntime() {
   if (process.env.VITEST) return true;
-  if (process.env.VITEST_POOL_ID) return true;
-  if (process.env.VITEST_WORKER_ID) return true;
-  if (process.env.JEST_WORKER_ID) return true;
   if (process.env.NODE_TEST_CONTEXT) return true;
   if (process.env.BOSUN_TEST_CACHE_DIR) return true;
-  if (process.env.NODE_ENV === "test") return true;
-  if (Array.isArray(process.execArgv) && process.execArgv.includes("--test")) return true;
-  const argv = Array.isArray(process.argv)
-    ? process.argv.join(" ").toLowerCase()
-    : "";
-  return argv.includes("vitest") || argv.includes("jest");
+  return false;
 }
 
 function pathsEqual(a, b) {

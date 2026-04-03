@@ -100,6 +100,97 @@ import {
   trimLogText,
 } from "./definitions.mjs";
 
+function clearTaskIdentityContext(data) {
+  if (!data || typeof data !== "object") return;
+  for (const key of [
+    "taskId",
+    "activeTaskId",
+    "taskTitle",
+    "task",
+    "taskInfo",
+    "taskDetail",
+    "taskDescription",
+    "branch",
+    "branchName",
+    "baseBranch",
+    "_workflowRootTaskId",
+    "_workflowParentTaskId",
+    "_workflowRootSessionId",
+    "_workflowParentSessionId",
+  ]) {
+    delete data[key];
+  }
+}
+
+async function resolveExplicitTaskContext(ctx, engine, explicitTaskId, explicitTaskTitle) {
+  const normalizedTaskId = String(explicitTaskId || "").trim();
+  if (!normalizedTaskId) return null;
+  let attemptedLookup = false;
+
+  const providedCandidates = [
+    ctx?.data?.task,
+    ctx?.data?.taskDetail,
+    ctx?.data?.taskInfo,
+  ];
+  for (const candidate of providedCandidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const candidateId = String(candidate.id || candidate.task_id || "").trim();
+    if (candidateId !== normalizedTaskId) continue;
+    return {
+      taskId: normalizedTaskId,
+      taskTitle: pickTaskString(explicitTaskTitle, candidate.title, candidate.task_title),
+      task: candidate,
+    };
+  }
+
+  const kanban = ctx?.data?._services?.kanban || engine?.services?.kanban || null;
+  if (typeof kanban?.getTask === "function") {
+    attemptedLookup = true;
+    try {
+      const task = await kanban.getTask(normalizedTaskId);
+      if (task && typeof task === "object") {
+        return {
+          taskId: normalizedTaskId,
+          taskTitle: pickTaskString(explicitTaskTitle, task.title, task.task_title),
+          task,
+        };
+      }
+    } catch {
+      // fall through to task-store lookup
+    }
+  }
+
+  const taskStore =
+    ctx?.data?._services?.taskStore ||
+    engine?.services?.taskStore ||
+    null;
+  if (typeof taskStore?.getTask === "function") {
+    attemptedLookup = true;
+    try {
+      const task = await taskStore.getTask(normalizedTaskId);
+      if (task && typeof task === "object") {
+        return {
+          taskId: normalizedTaskId,
+          taskTitle: pickTaskString(explicitTaskTitle, task.title, task.task_title),
+          task,
+        };
+      }
+    } catch {
+      // stale explicit task context should fall back to normal polling
+    }
+  }
+
+  if (!attemptedLookup) {
+    return {
+      taskId: normalizedTaskId,
+      taskTitle: pickTaskString(explicitTaskTitle, normalizedTaskId),
+      task: { id: normalizedTaskId, title: pickTaskString(explicitTaskTitle, normalizedTaskId) },
+    };
+  }
+
+  return null;
+}
+
 registerNodeType("trigger.manual", {
   describe: () => "Manual trigger — workflow starts on user request",
   schema: {
@@ -713,16 +804,32 @@ registerNodeType("trigger.task_available", {
       ctx.data?.taskDetail?.title,
     );
     if (explicitTaskId) {
-      ctx.data.taskId = explicitTaskId;
-      ctx.log(node.id, `Using provided task context for ${explicitTaskId}`);
-      return {
-        triggered: true,
-        reason: "direct_task",
-        taskId: explicitTaskId,
-        taskTitle: explicitTaskTitle || null,
-        task: explicitTaskId ? { id: explicitTaskId, title: explicitTaskTitle || undefined } : null,
-        tasks: [{ id: explicitTaskId }],
-      };
+      const resolvedExplicitTask = await resolveExplicitTaskContext(
+        ctx,
+        engine,
+        explicitTaskId,
+        explicitTaskTitle,
+      );
+      if (!resolvedExplicitTask) {
+        ctx.log(node.id, `Ignoring stale explicit task context for ${explicitTaskId}`);
+        clearTaskIdentityContext(ctx.data);
+      } else {
+        bindTaskContext(ctx, resolvedExplicitTask);
+        const explicitBranch = deriveTaskBranch(resolvedExplicitTask.task);
+        if (explicitBranch) {
+          ctx.data.branch = explicitBranch;
+          ctx.data.branchName = explicitBranch;
+        }
+        ctx.log(node.id, `Using provided task context for ${explicitTaskId}`);
+        return {
+          triggered: true,
+          reason: "direct_task",
+          taskId: explicitTaskId,
+          taskTitle: resolvedExplicitTask.taskTitle || null,
+          task: resolvedExplicitTask.task || { id: explicitTaskId, title: resolvedExplicitTask.taskTitle || undefined },
+          tasks: [{ id: explicitTaskId }],
+        };
+      }
     }
 
     // Check slot availability
@@ -1184,4 +1291,3 @@ registerNodeType("trigger.task_available", {
   },
 });
 // ── condition.slot_available ────────────────────────────────────────────────
-

@@ -14,19 +14,27 @@ vi.mock("@google/genai", () => ({
   },
 }));
 
-vi.mock("node:child_process", () => ({
-  spawn: (...args) => mockSpawn(...args),
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    spawn: (...args) => mockSpawn(...args),
+  };
+});
 
 vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: vi.fn(() => "/mock/repo"),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  mkdir: vi.fn().mockResolvedValue(undefined),
-  readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
-  writeFile: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("../infra/stream-resilience.mjs", () => ({
   isTransientStreamError: (err) => String(err?.message || "").includes("503"),

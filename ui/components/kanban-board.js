@@ -23,7 +23,7 @@ import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
 import { AppContextMenu, useContextMenuState } from "./context-menu.js";
-import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Paper, Tooltip, Badge, Divider } from "@mui/material";
+import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Menu, MenuItem, Paper, Tooltip, Badge, Divider } from "@mui/material";
 
 const html = htm.bind(h);
 

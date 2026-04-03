@@ -46,9 +46,13 @@ vi.mock("node:http", () => ({
 }));
 
 // ── child_process mock ─────────────────────────────────────────────────────────
-vi.mock("node:child_process", () => ({
-  exec: vi.fn((_cmd, cb) => { if (cb) cb(null); }),
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    exec: vi.fn((_cmd, cb) => { if (cb) cb(null); }),
+  };
+});
 
 // ── fetch mock ────────────────────────────────────────────────────────────────
 const _fetchMock = vi.fn();

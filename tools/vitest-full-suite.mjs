@@ -13,6 +13,16 @@ const DEFAULT_HEAVY_SUITES = [
   "tests/agent-pool.test.mjs",
   "tests/bosun-native-workflow-nodes.test.mjs",
   "tests/workflow-templates-e2e.test.mjs",
+  "tests/gemini-shell.test.mjs",
+  "tests/git-safety.test.mjs",
+  "tests/github-auth-manager.test.mjs",
+  "tests/github-oauth-portal.test.mjs",
+  "tests/github-shared-state.test.mjs",
+  "tests/kanban-adapter.test.mjs",
+  "tests/kanban-github-projects.test.mjs",
+  "tests/opencode-shell.test.mjs",
+  "tests/preflight.test.mjs",
+  "tests/review-agent.test.mjs",
 ];
 
 function shouldIncludeWorkflowGuaranteedSuite() {

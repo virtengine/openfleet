@@ -19,7 +19,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { execSync, execFileSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
@@ -179,16 +179,31 @@ function execGitArgsSync(args, options = {}) {
   const gitArgs = args.map((arg) => String(arg));
   let lastEnoent = null;
   for (const gitBinary of resolveGitCandidates(env)) {
-
+    const execOptions = {
+      ...options,
+      env: buildGitExecutionEnv(env, gitBinary),
+    };
     try {
-      return execFileSync(gitBinary, gitArgs, {
-        ...options,
-        env: buildGitExecutionEnv(env, gitBinary),
-      });
+      return execFileSync(gitBinary, gitArgs, execOptions);
     } catch (error) {
       if (error?.code === "ENOENT") {
         lastEnoent = error;
         continue;
+      }
+      if (process.platform === "win32" && error?.code === "EPERM") {
+        const fallback = spawnSync(gitBinary, gitArgs, execOptions);
+        if (fallback?.error?.code === "ENOENT") {
+          lastEnoent = fallback.error;
+          continue;
+        }
+        if (!fallback?.error && Number(fallback?.status) === 0) {
+          return fallback.stdout;
+        }
+        if (fallback?.error) {
+          fallback.error.stdout = fallback.stdout;
+          fallback.error.stderr = fallback.stderr;
+          throw fallback.error;
+        }
       }
       throw error;
     }

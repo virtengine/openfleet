@@ -9,9 +9,13 @@ const inspectWorktreeRuntimeSetupMock = vi.hoisted(() =>
   vi.fn(() => ({ ok: true, issues: [], missingFiles: [], hooksPath: ".githooks" })),
 );
 
-vi.mock("node:child_process", () => ({
-  spawnSync: spawnSyncMock,
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    spawnSync: spawnSyncMock,
+  };
+});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal();

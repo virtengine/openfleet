@@ -228,6 +228,32 @@ registerNodeType("condition.slot_available", {
     const maxParallel = node.config?.maxParallel ?? 3;
     const baseBranchLimit = node.config?.baseBranchLimit ?? 0;
     const currentTaskId = String(ctx.data?.taskId || "").trim();
+    const reservedBaseBranch = cfgOrCtx(node, ctx, "baseBranch") || ctx.data?.baseBranch || "";
+    if (currentTaskId && engine && typeof engine.reserveTaskLifecycleSlot === "function") {
+      const reservation = engine.reserveTaskLifecycleSlot({
+        runId: ctx.id,
+        taskId: currentTaskId,
+        baseBranch: reservedBaseBranch,
+        maxParallel,
+        baseBranchLimit,
+      });
+      if (reservation.result) {
+        ctx.data._reservedTaskLifecycleSlot = {
+          taskId: currentTaskId,
+          baseBranch: String(reservedBaseBranch || "").trim(),
+          reservedAt: Date.now(),
+          status: "reserved",
+        };
+      } else if (
+        ctx.data?._reservedTaskLifecycleSlot
+        && String(ctx.data._reservedTaskLifecycleSlot.taskId || "").trim() === currentTaskId
+      ) {
+        ctx.data._reservedTaskLifecycleSlot = null;
+      }
+      ctx.log(node.id, `Slot check: ${reservation.activeSlotCount}/${maxParallel}, perBranch=${reservation.baseBranchOk} → ${reservation.result}`);
+      return reservation;
+    }
+
     const slotSnapshot =
       typeof engine?.getTaskLifecycleSlotSnapshot === "function"
         ? engine.getTaskLifecycleSlotSnapshot({ excludeTaskId: currentTaskId })
@@ -250,7 +276,7 @@ registerNodeType("condition.slot_available", {
 
     let baseBranchOk = true;
     if (baseBranchLimit > 0) {
-      const baseBranch = cfgOrCtx(node, ctx, "baseBranch");
+      const baseBranch = reservedBaseBranch;
       if (baseBranch) {
         const counts = ctx.data?.baseBranchSlotCounts || slotSnapshot?.baseBranchSlotCounts || {};
         const key = baseBranch.replace(/^origin\//, "");
@@ -259,6 +285,19 @@ registerNodeType("condition.slot_available", {
     }
 
     const result = slotsAvailable && baseBranchOk;
+    if (result && currentTaskId) {
+      ctx.data._reservedTaskLifecycleSlot = {
+        taskId: currentTaskId,
+        baseBranch: String(reservedBaseBranch || "").trim(),
+        reservedAt: Date.now(),
+        status: "reserved",
+      };
+    } else if (
+      ctx.data?._reservedTaskLifecycleSlot
+      && String(ctx.data._reservedTaskLifecycleSlot.taskId || "").trim() === currentTaskId
+    ) {
+      ctx.data._reservedTaskLifecycleSlot = null;
+    }
     ctx.log(node.id, `Slot check: ${activeSlotCount}/${maxParallel}, perBranch=${baseBranchOk} → ${result}`);
     return { result, slotsAvailable, baseBranchOk, activeSlotCount, maxParallel };
   },

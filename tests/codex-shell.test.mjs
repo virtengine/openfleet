@@ -76,12 +76,16 @@ vi.mock("../infra/stream-resilience.mjs", () => ({
     String(err?.message || "").toLowerCase().includes("stream disconnected"),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  mkdir: vi.fn().mockResolvedValue(undefined),
-  readdir: vi.fn().mockResolvedValue([]),
-  readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
-  writeFile: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    readdir: vi.fn().mockResolvedValue([]),
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 const {
   execCodexPrompt,

@@ -238,6 +238,7 @@ if should_fast_run_full_suite; then
   export BOSUN_VITEST_HEAP_MB="${BOSUN_PREPUSH_FULL_SUITE_VITEST_HEAP_MB:-6144}"
   export BOSUN_VITEST_MAX_WORKERS="${BOSUN_PREPUSH_FULL_SUITE_VITEST_MAX_WORKERS:-4}"
   export BOSUN_VITEST_MIN_WORKERS="${BOSUN_PREPUSH_FULL_SUITE_VITEST_MIN_WORKERS:-2}"
+  export BOSUN_VITEST_GROUP_BATCH_SIZE="${BOSUN_PREPUSH_FULL_SUITE_GROUP_BATCH_SIZE:-50}"
   npm run test:all
   echo "[hooks] pre-push checks passed ✓"
   exit 0
@@ -486,7 +487,7 @@ run_vitest_batches() {
 
   [ "${#regular_tests[@]}" -eq 0 ] && return 0
 
-  local batch_size="${BOSUN_PREPUSH_BATCH_SIZE:-12}"
+  local batch_size="${BOSUN_PREPUSH_BATCH_SIZE:-50}"
   if [ "${#regular_tests[@]}" -le "$batch_size" ]; then
     node tools/vitest-runner.mjs "${regular_runner_args[@]}" "${regular_tests[@]}"
     return $?
@@ -516,7 +517,7 @@ run_node_test_batches() {
     return 0
   fi
 
-  local batch_size="${BOSUN_PREPUSH_NODE_BATCH_SIZE:-12}"
+  local batch_size="${BOSUN_PREPUSH_NODE_BATCH_SIZE:-50}"
   local total="${#tests[@]}"
   local offset=0
   local node_batch_index=1

@@ -23088,7 +23088,7 @@
         "core"
       ],
       "nodeCount": 79,
-      "edgeCount": 93,
+      "edgeCount": 94,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -25150,6 +25150,12 @@
           "source": "annotate-blocked-wt-failed",
           "target": "dispatch-wt-repair",
           "sourcePort": "default"
+        },
+        {
+          "id": "annotate-blocked-wt-failed->dispatch-wt-repair#error",
+          "source": "annotate-blocked-wt-failed",
+          "target": "dispatch-wt-repair",
+          "sourcePort": "error"
         },
         {
           "id": "dispatch-wt-repair->release-slot-wt-failed",
@@ -49475,6 +49481,12 @@
           "source": "annotate-blocked-wt-failed",
           "target": "dispatch-wt-repair",
           "sourcePort": "default"
+        },
+        {
+          "id": "annotate-blocked-wt-failed->dispatch-wt-repair#error",
+          "source": "annotate-blocked-wt-failed",
+          "target": "dispatch-wt-repair",
+          "sourcePort": "error"
         },
         {
           "id": "dispatch-wt-repair->release-slot-wt-failed",

@@ -811,6 +811,34 @@ function buildDetachedDaemonLaunchSpec() {
   };
 }
 
+function buildDetachedMonitorLaunchSpec() {
+  const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
+  return {
+    filePath: process.execPath,
+    args: [
+      ...runAsNode,
+      "--max-old-space-size=4096",
+      fileURLToPath(new URL("./infra/monitor.mjs", import.meta.url)),
+      ...normalizeDetachedDaemonArgs(
+        process.argv.slice(2).filter(
+          (a) => a !== "--daemon" && a !== "-d" && a !== "--daemon-child",
+        ),
+      ),
+    ],
+    env: {
+      ...process.env,
+      BOSUN_DAEMON: "1",
+      BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),
+      ...(process.env.REPO_ROOT
+        ? { REPO_ROOT: resolve(process.env.REPO_ROOT) }
+        : getArgValue("--repo-root")
+          ? { REPO_ROOT: resolve(getArgValue("--repo-root")) }
+          : {}),
+    },
+    cwd: os.homedir(),
+  };
+}
+
 function escapePowerShellSingleQuoted(value) {
   return `'${String(value || "").replace(/'/g, "''")}'`;
 }
@@ -827,8 +855,14 @@ function waitForTrackedDaemonPid(timeoutMs = 4000) {
 
 function startDaemonViaWindowsStartProcess(launchSpec) {
   const envAssignments = Object.entries(launchSpec.env || {})
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `$env:${key} = ${escapePowerShellSingleQuoted(String(value))};`)
+    .filter(([key, value]) => {
+      if (value === undefined) return false;
+      return process.env[key] !== String(value);
+    })
+    .map(
+      ([key, value]) =>
+        `Set-Item -LiteralPath ${escapePowerShellSingleQuoted(`Env:${key}`)} -Value ${escapePowerShellSingleQuoted(String(value))};`,
+    )
     .join(" ");
   const argumentList = launchSpec.args
     .map((arg) => escapePowerShellSingleQuoted(String(arg)))
@@ -899,6 +933,8 @@ function startDaemon() {
   let daemonPid = null;
   let child = null;
   let daemonLogFd = null;
+  const preferWindowsStartProcess = process.platform === "win32";
+  let usedDirectMonitorFallback = false;
   const closeDaemonLogFd = () => {
     if (daemonLogFd == null) return;
     try {
@@ -908,32 +944,66 @@ function startDaemon() {
     }
     daemonLogFd = null;
   };
+  const startDetachedMonitorFallback = () => {
+    if (usedDirectMonitorFallback || process.platform !== "win32") return null;
+    usedDirectMonitorFallback = true;
+    closeDaemonLogFd();
+    const monitorLaunchSpec = buildDetachedMonitorLaunchSpec();
+    console.warn(
+      "\n  [cli] daemon-child detached startup was not durable; falling back to direct detached monitor process",
+    );
+    const monitorPid = startDaemonViaWindowsStartProcess(monitorLaunchSpec);
+    const stabilityDeadline = Date.now() + DAEMON_START_STABILITY_MS;
+    while (Date.now() < stabilityDeadline) {
+      if (!isProcessAlive(monitorPid)) {
+        throw new Error(
+          "Detached direct monitor exited during startup stability window; Windows child-process policy is preventing a durable Bosun background start in this runtime.",
+        );
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    }
+    if (!isProcessAlive(monitorPid)) {
+      throw new Error(
+        "Detached direct monitor exited during startup stability window; Windows child-process policy is preventing a durable Bosun background start in this runtime.",
+      );
+    }
+    writePidFile(monitorPid);
+    return monitorPid;
+  };
   try {
     daemonLogFd = openSync(DAEMON_LOG, "a");
   } catch {
     daemonLogFd = null;
   }
   try {
-    child = spawn(
-      launchSpec.filePath,
-      launchSpec.args,
-      {
-        detached: true,
-        stdio:
-          daemonLogFd == null ? "ignore" : ["ignore", daemonLogFd, daemonLogFd],
-        windowsHide: process.platform === "win32",
-        env: {
-          ...launchSpec.env,
-          ...(daemonLogFd == null
-            ? {}
-            : { BOSUN_DAEMON_STDIO_REDIRECTED: "1" }),
+    if (preferWindowsStartProcess) {
+      closeDaemonLogFd();
+      console.warn(
+        "\n  [cli] using PowerShell Start-Process for durable Windows daemon detachment",
+      );
+      daemonPid = startDaemonViaWindowsStartProcess(launchSpec);
+    } else {
+      child = spawn(
+        launchSpec.filePath,
+        launchSpec.args,
+        {
+          detached: true,
+          stdio:
+            daemonLogFd == null ? "ignore" : ["ignore", daemonLogFd, daemonLogFd],
+          windowsHide: process.platform === "win32",
+          env: {
+            ...launchSpec.env,
+            ...(daemonLogFd == null
+              ? {}
+              : { BOSUN_DAEMON_STDIO_REDIRECTED: "1" }),
+          },
+          // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
+          cwd: launchSpec.cwd,
         },
-        // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
-        cwd: launchSpec.cwd,
-      },
-    );
-    child.unref();
-    daemonPid = child.pid;
+      );
+      child.unref();
+      daemonPid = child.pid;
+    }
   } catch (error) {
     closeDaemonLogFd();
     const canUseWindowsStartProcess =
@@ -948,12 +1018,22 @@ function startDaemon() {
   if (trackedPid) {
     daemonPid = trackedPid;
   } else if (!isProcessAlive(daemonPid)) {
-    closeDaemonLogFd();
-    throw new Error("Detached daemon exited before writing its PID file");
+    const fallbackPid = startDetachedMonitorFallback();
+    if (fallbackPid) {
+      daemonPid = fallbackPid;
+    } else {
+      closeDaemonLogFd();
+      throw new Error("Detached daemon exited before writing its PID file");
+    }
   }
   const stabilityDeadline = Date.now() + DAEMON_START_STABILITY_MS;
   while (Date.now() < stabilityDeadline) {
     if (!isProcessAlive(daemonPid)) {
+      const fallbackPid = startDetachedMonitorFallback();
+      if (fallbackPid) {
+        daemonPid = fallbackPid;
+        break;
+      }
       closeDaemonLogFd();
       throw new Error(
         "Detached daemon exited during startup stability window; Windows child-process policy is preventing a durable daemon start in this runtime.",
@@ -962,10 +1042,15 @@ function startDaemon() {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
   }
   if (!isProcessAlive(daemonPid)) {
-    closeDaemonLogFd();
-    throw new Error(
-      "Detached daemon exited during startup stability window; Windows child-process policy is preventing a durable daemon start in this runtime.",
-    );
+    const fallbackPid = startDetachedMonitorFallback();
+    if (fallbackPid) {
+      daemonPid = fallbackPid;
+    } else {
+      closeDaemonLogFd();
+      throw new Error(
+        "Detached daemon exited during startup stability window; Windows child-process policy is preventing a durable daemon start in this runtime.",
+      );
+    }
   }
   closeDaemonLogFd();
 

@@ -80,7 +80,7 @@ describe("continuation-loop template integration", () => {
   });
 
   it("fires a session-stuck event payload and executes retry action when no progress is detected", async () => {
-    const kanban = makeStatusKanban(["inprogress", "done"]);
+    const kanban = makeStatusKanban(["inprogress", "inprogress", "done"]);
     const launchEphemeralThread = vi.fn(async (prompt) => ({
       success: true,
       output: `continued:${prompt}`,

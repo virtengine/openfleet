@@ -453,6 +453,7 @@ export function runPreflightChecks(options = {}) {
 export function formatPreflightReport(result, options = {}) {
   const header = options.header || "bosun preflight";
   const lines = [];
+  const childProcessBlocked = result.details?.childProcess?.ok === false;
   lines.push(`=== ${header} ===`);
   lines.push(
     `Status: ${result.ok ? "OK" : "FAILED"} (${result.errors.length} error(s), ${result.warnings.length} warning(s))`,
@@ -462,7 +463,9 @@ export function formatPreflightReport(result, options = {}) {
   if (toolchain?.tools?.length) {
     lines.push("Toolchain:");
     for (const tool of toolchain.tools) {
-      const status = tool.ok ? tool.version : (tool.version || "missing");
+      const status = childProcessBlocked && tool.label !== "node"
+        ? "blocked"
+        : (tool.ok ? tool.version : (tool.version || "missing"));
       lines.push(`  - ${tool.label}: ${status}`);
     }
   }

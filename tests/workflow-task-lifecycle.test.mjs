@@ -396,6 +396,51 @@ describe("trigger.task_available", () => {
     expect(listTasks).not.toHaveBeenCalled();
   });
 
+  it("ignores stale explicit task context and falls back to real task polling", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "real-task-1",
+        title: "Real queued task",
+        status: "todo",
+        branchName: "task/realtask1-real-queued-task",
+      },
+    ]);
+    const getTask = vi.fn().mockResolvedValue(null);
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      taskId: "TASK-DIAG-LOCAL",
+      taskTitle: "Diagnostics export",
+      branch: "task/TASKDIAGLOCA-diagnostics-export",
+      branchName: "task/TASKDIAGLOCA-diagnostics-export",
+      _workflowRootTaskId: "TASK-DIAG-LOCAL",
+      _workflowParentTaskId: "TASK-DIAG-LOCAL",
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { listTasks, getTask },
+        taskStore: { getTask },
+      },
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      selectedTaskId: "real-task-1",
+      taskCount: 1,
+    });
+    expect(listTasks).toHaveBeenCalled();
+    expect(ctx.data.taskId).toBe("real-task-1");
+    expect(ctx.data.taskTitle).toBe("Real queued task");
+    expect(ctx.data.branchName).toBe("task/realtask1-real-queued-task");
+    expect(ctx.data._workflowRootTaskId).toBeUndefined();
+    expect(ctx.data._workflowParentTaskId).toBeUndefined();
+  });
+
   it("resolves repoRoot to matching sibling repository when task repository differs", async () => {
     const nt = getNodeType("trigger.task_available");
     const workspaceRoot = mkdtempSync(join(tmpdir(), "wf-task-repo-root-"));
