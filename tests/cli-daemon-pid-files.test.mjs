@@ -31,6 +31,8 @@ describe("cli daemon pid tracking", () => {
       "readAlivePid(DAEMON_PID_FILE) || readAlivePid(LEGACY_DAEMON_PID_FILE)",
     );
     expect(cliSource).toContain("const DAEMON_START_STABILITY_MS = Math.max(");
+    expect(cliSource).toContain("function installDaemonPidCleanup() {");
+    expect(cliSource).toContain("if (!isDaemonSupervisorRuntime()) return;");
     expect(cliSource).toContain(
       "writeFileSync(DAEMON_PID_FILE, String(pid), \"utf8\");",
     );
@@ -83,6 +85,7 @@ describe("cli daemon pid tracking", () => {
   it("guards daemon-child startup with singleton ownership of daemon pid file", () => {
     expect(cliSource).toContain("const existingDaemonPid = getDaemonPid();");
     expect(cliSource).toContain("duplicate daemon-child ignored");
+    expect(cliSource).toContain("function isDaemonSupervisorRuntime() {");
   });
 
   it("launches the foreground monitor as a child process instead of a worker thread", () => {
@@ -122,6 +125,15 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("function startDaemonViaWindowsStartProcess(launchSpec) {");
     expect(cliSource).toContain("Start-Process -FilePath");
     expect(cliSource).toContain("launching daemon via PowerShell Start-Process for stable Windows detachment");
+  });
+
+  it("falls back to an inline daemon supervisor when Windows child-process launch is blocked", () => {
+    expect(cliSource).toContain("async function startDaemon() {");
+    expect(cliSource).toContain("const launchPreflight =");
+    expect(cliSource).toContain("checkPipedChildProcessLaunch()");
+    expect(cliSource).toContain("daemon detached startup is unavailable on this Windows host");
+    expect(cliSource).toContain("bosun daemon fallback active");
+    expect(cliSource).toContain('await runMonitor({ restartReason: "daemon-inline-fallback" });');
   });
 
   it("fails daemon startup when the detached child cannot stay alive through the stability window", () => {
@@ -166,7 +178,7 @@ describe("cli daemon pid tracking", () => {
   });
 
   it("treats explicit --sentinel as a standalone command unless daemon mode is requested", () => {
-    expect(cliSource).toContain("sentinelExplicit && !IS_DAEMON_CHILD");
+    expect(cliSource).toContain("sentinelExplicit && !isDaemonSupervisorRuntime()");
     expect(cliSource).toContain(
       "Sentinel started without launching monitor (use --daemon --sentinel to run both).",
     );

@@ -17,7 +17,7 @@
  *   schema → object                             — JSON Schema for node config
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync, readdirSync } from "node:fs";
 import { createHarnessAgentService } from "../../agent/harness-agent-service.mjs";
 import {
   beginWorkflowLinkedSessionExecution,
@@ -74,8 +74,6 @@ import {
 import { requireWorkflowActionApproval } from "../action-approval.mjs";
 import { resolve, dirname, basename } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
-import { Console as NodeConsole } from "node:console";
-import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { format as formatConsoleArgs } from "node:util";
 import { resolveAutoCommand } from "../project-detection.mjs";
@@ -209,39 +207,6 @@ async function runInlineNodeExecution(command, args = [], opts = {}) {
     return true;
   };
 
-  const createConsoleCaptureStream = (target, forward) => {
-    const baseStream = target === "stdout" ? process.stdout : process.stderr;
-    const stream = new EventEmitter();
-    stream.isTTY = Boolean(baseStream?.isTTY);
-    stream.columns = Number(baseStream?.columns || 0) || undefined;
-    stream.rows = Number(baseStream?.rows || 0) || undefined;
-    stream.getColorDepth = (...args) =>
-      typeof baseStream?.getColorDepth === "function"
-        ? baseStream.getColorDepth(...args)
-        : 1;
-    stream.hasColors = (...args) =>
-      typeof baseStream?.hasColors === "function"
-        ? baseStream.hasColors(...args)
-        : false;
-    stream.write = (chunk, encoding, callback) => {
-      const cb = typeof encoding === "function"
-        ? encoding
-        : typeof callback === "function"
-          ? callback
-          : null;
-      try {
-        const result = writeChunk(target, chunk, forward);
-        if (cb) cb();
-        return result;
-      } catch (error) {
-        if (cb) cb(error);
-        else stream.emit("error", error);
-        return false;
-      }
-    };
-    return stream;
-  };
-
   const restore = () => {
     process.argv = originalArgv;
     process.exit = originalExit;
@@ -296,29 +261,29 @@ async function runInlineNodeExecution(command, args = [], opts = {}) {
       throw error;
     };
 
-    const inlineStdoutStream = createConsoleCaptureStream(
-      "stdout",
-      opts.stdio === "inherit",
-    );
-    const inlineStderrStream = createConsoleCaptureStream(
-      "stderr",
-      opts.stdio === "inherit",
-    );
-    const consoleProxy = new NodeConsole({
-      stdout: inlineStdoutStream,
-      stderr: inlineStderrStream,
-      colorMode: false,
-    });
-    consoleProxy.log = (...args) =>
-      inlineStdoutStream.write(`${formatConsoleArgs(...args)}\n`);
-    consoleProxy.info = (...args) =>
-      inlineStdoutStream.write(`${formatConsoleArgs(...args)}\n`);
-    consoleProxy.debug = (...args) =>
-      inlineStdoutStream.write(`${formatConsoleArgs(...args)}\n`);
-    consoleProxy.warn = (...args) =>
-      inlineStderrStream.write(`${formatConsoleArgs(...args)}\n`);
-    consoleProxy.error = (...args) =>
-      inlineStderrStream.write(`${formatConsoleArgs(...args)}\n`);
+    const writeConsoleLine = (target, args) =>
+      writeChunk(
+        target,
+        `${formatConsoleArgs(...args)}\n`,
+        opts.stdio === "inherit",
+      );
+    const consoleProxy = {
+      log: (...args) => writeConsoleLine("stdout", args),
+      info: (...args) => writeConsoleLine("stdout", args),
+      debug: (...args) => writeConsoleLine("stdout", args),
+      warn: (...args) => writeConsoleLine("stderr", args),
+      error: (...args) => writeConsoleLine("stderr", args),
+      trace: (...args) => writeConsoleLine("stderr", args),
+      dir: (value, ...args) => writeConsoleLine("stdout", [value, ...args]),
+      assert: (condition, ...args) => {
+        if (condition) return;
+        if (args.length === 0) {
+          writeConsoleLine("stderr", ["Assertion failed"]);
+          return;
+        }
+        writeConsoleLine("stderr", ["Assertion failed:", ...args]);
+      },
+    };
     globalThis.console = consoleProxy;
     const scriptPath = resolve(cwd, "[bosun-inline-node-eval].cjs");
     const runner = new asyncFunction(
@@ -9367,6 +9332,90 @@ registerNodeType("action.release_worktree", {
     } catch (err) {
       ctx.log(node.id, `Worktree release warning: ${err.message}`);
       return { success: true, worktreePath, warning: err.message };
+    }
+  },
+});
+
+// ── action.sweep_task_worktrees ─────────────────────────────────────────────
+
+registerNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep managed task worktrees for a task by removing matching .bosun/worktrees entries and pruning git metadata.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      maxAgeMs: { type: "number", default: 43200000, description: "Fallback max age in ms when taskId is omitted" },
+      timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune and removals (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const repoRoot = resolveWorkflowRepoRoot(node, ctx);
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const maxAgeMs = Number(node.config?.maxAgeMs ?? 43200000);
+    const timeout = Number(node.config?.timeout ?? 15000);
+    const managedRoot = resolve(repoRoot, ".bosun", "worktrees");
+    const removed = [];
+    const errors = [];
+    let scanned = 0;
+
+    try {
+      if (existsSync(managedRoot)) {
+        const entries = readdirSync(managedRoot);
+        const taskToken = taskId ? normalizeTaskBranchOwnershipToken(taskId) : "";
+        const now = Date.now();
+        for (const entry of entries) {
+          const entryPath = resolve(managedRoot, entry);
+          if (!existsSync(entryPath)) continue;
+          try {
+            const stats = statSync(entryPath);
+            if (!stats.isDirectory()) continue;
+            scanned += 1;
+            const matchesTask = taskToken && entry.includes(taskToken);
+            const isStale = !taskToken && Number.isFinite(stats.mtimeMs)
+              ? now - stats.mtimeMs > maxAgeMs
+              : false;
+            if (!matchesTask && !isStale) continue;
+            try {
+              execGitArgsSync(["worktree", "remove", String(entryPath), "--force"], {
+                cwd: repoRoot,
+                encoding: "utf8",
+                timeout,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            } catch {
+              // Orphaned directories may no longer be registered; remove them below.
+            }
+            if (existsSync(entryPath)) {
+              rmSync(entryPath, { recursive: true, force: true });
+            }
+            removed.push(entry);
+          } catch (err) {
+            errors.push({ entry, error: String(err?.message || err) });
+          }
+        }
+      }
+    } catch (err) {
+      errors.push({ entry: managedRoot, error: String(err?.message || err) });
+    }
+
+    try {
+      execGitArgsSync(["worktree", "prune"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      fixGitConfigCorruption(repoRoot);
+      ctx.log(
+        node.id,
+        `Swept task worktrees for ${taskId || "(unknown task)"}: removed=${removed.length}, scanned=${scanned}`,
+      );
+      return { success: true, taskId, swept: true, removed, scanned, errors };
+    } catch (err) {
+      ctx.log(node.id, `Task worktree sweep warning: ${err.message}`);
+      return { success: true, taskId, swept: false, removed, scanned, errors, warning: err.message };
     }
   },
 });

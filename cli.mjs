@@ -358,6 +358,8 @@ const SENTINEL_SCRIPT_PATH = fileURLToPath(
 );
 const IS_DAEMON_CHILD =
   args.includes("--daemon-child") || process.env.BOSUN_DAEMON === "1";
+let daemonInlineSupervisorActive = false;
+let daemonPidCleanupInstalled = false;
 const DAEMON_RESTART_DELAY_MS = Math.max(
   1000,
   Number(process.env.BOSUN_DAEMON_RESTART_DELAY_MS || 5000) || 5000,
@@ -733,6 +735,19 @@ function removePidFile() {
   }
 }
 
+function isDaemonSupervisorRuntime() {
+  return IS_DAEMON_CHILD || daemonInlineSupervisorActive;
+}
+
+function installDaemonPidCleanup() {
+  if (daemonPidCleanupInstalled) return;
+  daemonPidCleanupInstalled = true;
+  process.on("exit", () => {
+    if (!isDaemonSupervisorRuntime()) return;
+    removePidFile();
+  });
+}
+
 function absolutizeDaemonArgPath(value) {
   const raw = String(value || "").trim();
   if (!raw) return raw;
@@ -892,7 +907,7 @@ function startDaemonViaWindowsStartProcess(launchSpec) {
   return pid;
 }
 
-function startDaemon() {
+async function startDaemon() {
   const existing = getDaemonPid();
   if (existing) {
     console.log(`  bosun daemon is already running (PID ${existing})`);
@@ -927,6 +942,35 @@ function startDaemon() {
     mkdirSync(dirname(DAEMON_LOG), { recursive: true });
   } catch {
     /* ok */
+  }
+
+  const launchPreflight =
+    process.platform === "win32" ? checkPipedChildProcessLaunch() : { ok: true, code: null };
+  const shouldInlineFallback =
+    process.platform === "win32" &&
+    launchPreflight?.ok === false &&
+    ["EPERM", "EACCES"].includes(String(launchPreflight?.code || "").trim().toUpperCase());
+  if (shouldInlineFallback) {
+    daemonInlineSupervisorActive = true;
+    installDaemonPidCleanup();
+    writePidFile(process.pid);
+    console.warn(
+      `\n  [cli] daemon detached startup is unavailable on this Windows host (${launchPreflight.code}); running Bosun inline in the current process instead`,
+    );
+    console.log(`
+${safeBanner([`bosun daemon fallback active (PID ${process.pid})`])}
+
+  Mode: inline supervisor fallback
+  Logs: ${DAEMON_LOG}
+  PID:  ${DAEMON_PID_FILE}
+
+  Commands:
+    bosun --daemon-status   Check if running
+    bosun --stop-daemon     Stop the daemon
+    bosun --echo-logs       Tail live logs
+  `);
+    await runMonitor({ restartReason: "daemon-inline-fallback" });
+    return;
   }
 
   const launchSpec = buildDetachedDaemonLaunchSpec();
@@ -1888,7 +1932,7 @@ async function main() {
       await runSetup();
       console.log("\n  Setup complete. Starting daemon...\n");
     }
-    startDaemon();
+    await startDaemon();
     return;
   }
   if (args.includes("--stop-daemon")) {
@@ -2012,7 +2056,7 @@ async function main() {
       }
     }
 
-    if (sentinelExplicit && !IS_DAEMON_CHILD) {
+    if (sentinelExplicit && !isDaemonSupervisorRuntime()) {
       console.log(
         "  Sentinel started without launching monitor (use --daemon --sentinel to run both).",
       );
@@ -2407,7 +2451,7 @@ async function main() {
 
   // First-run detection — skip in daemon-child mode (parent already handled it,
   // and the detached child has no stdin for interactive prompts).
-  if (!IS_DAEMON_CHILD) {
+  if (!isDaemonSupervisorRuntime()) {
     const { shouldRunSetup } = await import("./setup.mjs");
     if (shouldRunSetup()) {
       const configDirArg = getArgValue("--config-dir");
@@ -2748,7 +2792,10 @@ function shouldPauseDaemonRestartStorm(options) {
   const resolvedOptions = options && typeof options === "object" ? options : {};
   const restartCount = Number(resolvedOptions.restartCount || 0);
   const logDir = resolvedOptions.logDir;
-  if (!IS_DAEMON_CHILD) return { pause: false, reasons: [] };
+  const daemonSupervisorActive =
+    IS_DAEMON_CHILD === true
+    || (typeof daemonInlineSupervisorActive !== "undefined" && daemonInlineSupervisorActive === true);
+  if (!daemonSupervisorActive) return { pause: false, reasons: [] };
   if (!DAEMON_MISCONFIG_GUARD_ENABLED) return { pause: false, reasons: [] };
   if (restartCount < DAEMON_MISCONFIG_GUARD_MIN_RESTARTS) {
     return { pause: false, reasons: [] };
@@ -2979,7 +3026,7 @@ function runMonitor({ restartReason = "" } = {}) {
             const isOSKill = exitCode === 4294967295 || exitCode === -1;
             const shouldAutoRestart =
               !gracefulShutdown &&
-              (isOSKill || (IS_DAEMON_CHILD && exitCode !== 0));
+              (isOSKill || (isDaemonSupervisorRuntime() && exitCode !== 0));
             if (shouldAutoRestart) {
               const crashState = daemonCrashTracker.recordExit();
               daemonRestartCount += 1;
@@ -3002,7 +3049,7 @@ function runMonitor({ restartReason = "" } = {}) {
                 );
                 return;
               }
-              if (IS_DAEMON_CHILD && crashState.exceeded) {
+              if (isDaemonSupervisorRuntime() && crashState.exceeded) {
                 const durationSec = Math.max(
                   1,
                   Math.round(crashState.runDurationMs / 1000),
@@ -3020,7 +3067,7 @@ function runMonitor({ restartReason = "" } = {}) {
                 return;
               }
               if (
-                IS_DAEMON_CHILD &&
+                isDaemonSupervisorRuntime() &&
                 DAEMON_MAX_RESTARTS > 0 &&
                 daemonRestartCount > DAEMON_MAX_RESTARTS
               ) {
@@ -3036,16 +3083,16 @@ function runMonitor({ restartReason = "" } = {}) {
                 ? `signal ${signal}`
                 : `exit code ${exitCode}`;
               const attemptLabel =
-                IS_DAEMON_CHILD && DAEMON_MAX_RESTARTS > 0
+                isDaemonSupervisorRuntime() && DAEMON_MAX_RESTARTS > 0
                   ? `${daemonRestartCount}/${DAEMON_MAX_RESTARTS}`
                   : `${daemonRestartCount}`;
               console.error(
-                `\n  :alert: Monitor exited (${reasonLabel}) — auto-restarting in ${Math.max(1, Math.round(delayMs / 1000))}s${IS_DAEMON_CHILD ? ` [attempt ${attemptLabel}]` : ""}...`,
+                `\n  :alert: Monitor exited (${reasonLabel}) — auto-restarting in ${Math.max(1, Math.round(delayMs / 1000))}s${isDaemonSupervisorRuntime() ? ` [attempt ${attemptLabel}]` : ""}...`,
               );
               sendCrashNotification(exitCode, signal, {
                 autoRestartInMs: delayMs,
                 restartAttempt: daemonRestartCount,
-                maxRestarts: IS_DAEMON_CHILD ? DAEMON_MAX_RESTARTS : 0,
+                maxRestarts: isDaemonSupervisorRuntime() ? DAEMON_MAX_RESTARTS : 0,
               }).catch(() => {});
               setTimeout(
                 () =>
