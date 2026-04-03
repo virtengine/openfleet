@@ -273,7 +273,7 @@ export const tuiConfigFixture = {
           editorKind: "enum",
           readOnly: false,
           masked: false,
-          enumValues: ["internal", "github", "jira", "gnap"],
+          enumValues: ["internal", "github", "jira", "repo-mirror"],
         },
       ],
     },

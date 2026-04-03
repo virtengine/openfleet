@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const GNAP_PROTOCOL_VERSION = "1";
-const GNAP_PROJECTION_MANAGER_ID = "bosun-gnap-projection";
+const REPO_MIRROR_PROTOCOL_VERSION = "1";
+const REPO_MIRROR_PROJECTION_MANAGER_ID = "bosun-repo-mirror-projection";
 const MAX_TASK_DESCRIPTION_LENGTH = 16000;
 const MAX_MESSAGE_BODY_LENGTH = 12000;
 const MAX_SANITIZE_INPUT_LENGTH = 200;
@@ -60,26 +60,26 @@ function createDeterministicFileName(prefix, identifier) {
 function resolveRepoPath(rawPath) {
   const candidate =
     normalizeString(rawPath) ||
-    normalizeString(process.env.GNAP_REPO_PATH) ||
+    normalizeString(process.env.REPO_MIRROR_REPO_PATH) ||
     normalizeString(process.env.REPO_ROOT) ||
     process.cwd();
   return path.resolve(candidate);
 }
 
-function resolveGnapDir(repoPath) {
-  if (path.basename(repoPath).toLowerCase() === ".gnap") {
+function resolveRepoMirrorDir(repoPath) {
+  if (path.basename(repoPath).toLowerCase() === ".repo-mirror") {
     return repoPath;
   }
-  return path.join(repoPath, ".gnap");
+  return path.join(repoPath, ".repo-mirror");
 }
 
-export function resolveGnapProjectionConfig(config = {}) {
+export function resolveRepoMirrorProjectionConfig(config = {}) {
   const repoPath = resolveRepoPath(config?.repoPath);
-  const gnapDir = resolveGnapDir(repoPath);
+  const repoMirrorDir = resolveRepoMirrorDir(repoPath);
   return Object.freeze({
     enabled: config?.enabled === true,
     repoPath,
-    gnapDir,
+    repoMirrorDir,
     syncMode: normalizeString(config?.syncMode)?.toLowerCase() || "projection",
     runStorage: normalizeString(config?.runStorage)?.toLowerCase() || "git",
     messageStorage: normalizeString(config?.messageStorage)?.toLowerCase() || "off",
@@ -89,7 +89,7 @@ export function resolveGnapProjectionConfig(config = {}) {
 
 function taskFilePath(config, taskId) {
   return path.join(
-    config.gnapDir,
+    config.repoMirrorDir,
     "tasks",
     createDeterministicFileName(`task-${taskId}`, taskId),
   );
@@ -97,7 +97,7 @@ function taskFilePath(config, taskId) {
 
 function runFilePath(config, taskId, runId) {
   return path.join(
-    config.gnapDir,
+    config.repoMirrorDir,
     "runs",
     createDeterministicFileName(`run-${taskId}-${runId}`, `${taskId}:${runId}`),
   );
@@ -105,7 +105,7 @@ function runFilePath(config, taskId, runId) {
 
 function messageFilePath(config, taskId, messageId) {
   return path.join(
-    config.gnapDir,
+    config.repoMirrorDir,
     "messages",
     createDeterministicFileName(
       `message-${taskId}-${messageId}`,
@@ -163,7 +163,7 @@ function toSortableTimestamp(...values) {
 }
 
 function isBosunManagedProjection(doc = {}) {
-  return String(doc?.managed_by || "").trim() === GNAP_PROJECTION_MANAGER_ID;
+  return String(doc?.managed_by || "").trim() === REPO_MIRROR_PROJECTION_MANAGER_ID;
 }
 
 function compareProjectedTaskRecords(left, right) {
@@ -207,7 +207,7 @@ function dedupeProjectedTaskRecords(records = []) {
     .filter(Boolean);
 }
 
-function mapBosunStatusToGnapState(status) {
+function mapBosunStatusToRepoMirrorState(status) {
   const key = String(status ?? "").trim().toLowerCase();
   if (key === "done") return "done";
   if (key === "inreview") return "review";
@@ -218,7 +218,7 @@ function mapBosunStatusToGnapState(status) {
   return "ready";
 }
 
-function mapGnapStateToBosunStatus(state) {
+function mapRepoMirrorStateToBosunStatus(state) {
   const key = String(state ?? "").trim().toLowerCase();
   if (key === "done") return "done";
   if (key === "review") return "inreview";
@@ -269,7 +269,7 @@ function normalizeMaterializedWorkflowRun(entry = {}) {
   return {
     workflowId: normalizeString(entry.workflowId || entry.workflow_id),
     runId: normalizeString(entry.runId || entry.run_id),
-    status: normalizeString(entry.status) || mapGnapStateToBosunStatus(entry.state),
+    status: normalizeString(entry.status) || mapRepoMirrorStateToBosunStatus(entry.state),
     startedAt: normalizeString(entry.startedAt || entry.started_at),
     endedAt: normalizeString(entry.endedAt || entry.ended_at),
     summary: normalizeString(entry.summary),
@@ -315,7 +315,7 @@ function buildSyntheticRuns(task = {}, rawTask = {}) {
     current = {
       run_id: `status-${sequence}`,
       task_id: String(task.id || rawTask.id || ""),
-      state: mapBosunStatusToGnapState(nextStatus),
+      state: mapBosunStatusToRepoMirrorState(nextStatus),
       status: nextStatus === "inreview" ? "reviewing" : "running",
       source: normalizeString(entry.source) || "task-status",
       actor: normalizeString(entry.actor) || normalizeString(task.assignee),
@@ -341,7 +341,7 @@ function buildSyntheticRuns(task = {}, rawTask = {}) {
     else if (nextStatus === "cancelled") current.status = "cancelled";
     else if (nextStatus === "blocked") current.status = "blocked";
     else current.status = "stopped";
-    current.state = mapBosunStatusToGnapState(nextStatus);
+    current.state = mapBosunStatusToRepoMirrorState(nextStatus);
     current = null;
   };
 
@@ -354,7 +354,7 @@ function buildSyntheticRuns(task = {}, rawTask = {}) {
         continue;
       }
       current.updated_at = normalizeString(entry.timestamp) || current.updated_at;
-      current.state = mapBosunStatusToGnapState(nextStatus);
+      current.state = mapBosunStatusToRepoMirrorState(nextStatus);
       if (nextStatus === "inreview") current.status = "reviewing";
       continue;
     }
@@ -382,13 +382,13 @@ function buildRunDocuments(task = {}, rawTask = {}) {
       normalizeString(run.runId || run.id || run.attemptId || run.attempt_id) ||
       `raw-${index + 1}`;
     runs.push({
-      protocol: "bosun-gnap-run.v1",
+      protocol: "bosun-repo-mirror-run.v1",
       schema_version: 1,
-      managed_by: GNAP_PROJECTION_MANAGER_ID,
+      managed_by: REPO_MIRROR_PROJECTION_MANAGER_ID,
       run_id: runId,
       task_id: String(task.id || rawTask.id || ""),
       status: normalizeString(run.status) || "running",
-      state: mapBosunStatusToGnapState(run.status || task.status),
+      state: mapBosunStatusToRepoMirrorState(run.status || task.status),
       source: normalizeString(run.source) || "task-run",
       actor: normalizeString(run.actor || run.agentId || run.agent_id || task.assignee),
       workflow_id: normalizeString(run.workflowId || run.workflow_id),
@@ -413,13 +413,13 @@ function buildRunDocuments(task = {}, rawTask = {}) {
       normalizeString(run.runId || run.id || run.workflowRunId || run.workflow_run_id) ||
       `workflow-${index + 1}`;
     runs.push({
-      protocol: "bosun-gnap-run.v1",
+      protocol: "bosun-repo-mirror-run.v1",
       schema_version: 1,
-      managed_by: GNAP_PROJECTION_MANAGER_ID,
+      managed_by: REPO_MIRROR_PROJECTION_MANAGER_ID,
       run_id: runId,
       task_id: String(task.id || rawTask.id || ""),
       status: normalizeString(run.status) || "running",
-      state: mapBosunStatusToGnapState(run.status || task.status),
+      state: mapBosunStatusToRepoMirrorState(run.status || task.status),
       source: "workflow",
       actor: normalizeString(run.actor || task.assignee),
       workflow_id: normalizeString(run.workflowId || run.workflow_id),
@@ -441,9 +441,9 @@ function buildRunDocuments(task = {}, rawTask = {}) {
 
   if (runs.length === 0) {
     runs.push(...buildSyntheticRuns(task, rawTask).map((run) => ({
-      protocol: "bosun-gnap-run.v1",
+      protocol: "bosun-repo-mirror-run.v1",
       schema_version: 1,
-      managed_by: GNAP_PROJECTION_MANAGER_ID,
+      managed_by: REPO_MIRROR_PROJECTION_MANAGER_ID,
       ...run,
     })));
   }
@@ -483,9 +483,9 @@ function buildMessageDocuments(task = {}, rawTask = {}, config = {}) {
     if (seen.has(messageId)) continue;
     seen.add(messageId);
     docs.push({
-      protocol: "bosun-gnap-message.v1",
+      protocol: "bosun-repo-mirror-message.v1",
       schema_version: 1,
-      managed_by: GNAP_PROJECTION_MANAGER_ID,
+      managed_by: REPO_MIRROR_PROJECTION_MANAGER_ID,
       message_id: messageId,
       task_id: String(task.id || rawTask.id || ""),
       kind: "comment",
@@ -518,17 +518,17 @@ export function buildProjectedTaskDocument(task = {}, rawTask = {}, config = {})
     .slice(-MAX_TIMELINE_ENTRIES)
     .map((entry) => normalizeTimelineEntry(entry));
   const doc = {
-    protocol: "bosun-gnap-task.v1",
+    protocol: "bosun-repo-mirror-task.v1",
     schema_version: 1,
     task_id: String(task.id || rawTask.id || ""),
     title: normalizeString(task.title) || "Untitled task",
     description: truncateText(task.description || "", MAX_TASK_DESCRIPTION_LENGTH),
-    state: mapBosunStatusToGnapState(task.status),
+    state: mapBosunStatusToRepoMirrorState(task.status),
     status: normalizeString(task.status) || "todo",
     priority: normalizeString(task.priority),
     assignee: normalizeString(task.assignee),
     assignees: normalizeStringList(task.assignees),
-    project_id: normalizeString(task.projectId) || "gnap",
+    project_id: normalizeString(task.projectId) || "repo-mirror",
     workspace: normalizeString(task.workspace),
     repository: normalizeString(task.repository),
     repositories: normalizeStringList(task.repositories),
@@ -558,7 +558,7 @@ export function buildProjectedTaskDocument(task = {}, rawTask = {}, config = {})
     source: {
       system: "bosun",
       backend: "internal",
-      managed_by: GNAP_PROJECTION_MANAGER_ID,
+      managed_by: REPO_MIRROR_PROJECTION_MANAGER_ID,
       sync_mode: normalizeString(config.syncMode) || "projection",
       run_storage: normalizeString(config.runStorage) || "git",
       message_storage: normalizeString(config.messageStorage) || "off",
@@ -572,19 +572,19 @@ export function buildProjectedTaskDocument(task = {}, rawTask = {}, config = {})
 }
 
 export async function ensureProjectionScaffold(config) {
-  await ensureDir(config.gnapDir);
-  await ensureDir(path.join(config.gnapDir, "tasks"));
-  await ensureDir(path.join(config.gnapDir, "runs"));
-  await ensureDir(path.join(config.gnapDir, "messages"));
+  await ensureDir(config.repoMirrorDir);
+  await ensureDir(path.join(config.repoMirrorDir, "tasks"));
+  await ensureDir(path.join(config.repoMirrorDir, "runs"));
+  await ensureDir(path.join(config.repoMirrorDir, "messages"));
   await writeTextIfChanged(
-    path.join(config.gnapDir, "version"),
-    `${GNAP_PROTOCOL_VERSION}\n`,
+    path.join(config.repoMirrorDir, "version"),
+    `${REPO_MIRROR_PROTOCOL_VERSION}\n`,
   );
-  const agentsPath = path.join(config.gnapDir, "agents.json");
+  const agentsPath = path.join(config.repoMirrorDir, "agents.json");
   const currentAgents = await safeReadJson(agentsPath);
   if (!currentAgents) {
     await writeJsonIfChanged(agentsPath, {
-      protocol: "bosun-gnap-agents.v1",
+      protocol: "bosun-repo-mirror-agents.v1",
       schema_version: 1,
       generated_at: new Date().toISOString(),
       agents: [],
@@ -596,10 +596,10 @@ export async function upsertProjectedTask(config, taskDoc, runDocs = [], message
   await ensureProjectionScaffold(config);
   const taskId = String(taskDoc?.task_id || "").trim();
   if (!taskId) {
-    throw new Error("GNAP projection requires task_id");
+    throw new Error("RepoMirror projection requires task_id");
   }
   const existingTaskDocs = await loadSurfaceDocuments(
-    path.join(config.gnapDir, "tasks"),
+    path.join(config.repoMirrorDir, "tasks"),
     (doc) => String(doc?.task_id || "").trim() === taskId,
   );
   const canonicalTaskRecord = selectCanonicalProjectedTaskRecord(existingTaskDocs);
@@ -612,14 +612,14 @@ export async function upsertProjectedTask(config, taskDoc, runDocs = [], message
     });
   }
 
-  const runsDir = path.join(config.gnapDir, "runs");
+  const runsDir = path.join(config.repoMirrorDir, "runs");
   const existingRunFiles = await safeReadDir(runsDir);
   const expectedRunIds = new Set(runDocs.map((run) => String(run?.run_id || "").trim()).filter(Boolean));
   for (const fileName of existingRunFiles) {
     const doc = await safeReadJson(path.join(runsDir, fileName));
     if (doc?.task_id !== taskId) continue;
     const managedByBosun =
-      String(doc?.managed_by || "").trim() === GNAP_PROJECTION_MANAGER_ID;
+      String(doc?.managed_by || "").trim() === REPO_MIRROR_PROJECTION_MANAGER_ID;
     if (managedByBosun && !expectedRunIds.has(String(doc?.run_id || "").trim())) {
       await fs.unlink(path.join(runsDir, fileName)).catch((error) => {
         if (error?.code !== "ENOENT") throw error;
@@ -632,7 +632,7 @@ export async function upsertProjectedTask(config, taskDoc, runDocs = [], message
     await writeJsonIfChanged(runFilePath(config, taskId, runId), run);
   }
 
-  const messagesDir = path.join(config.gnapDir, "messages");
+  const messagesDir = path.join(config.repoMirrorDir, "messages");
   const existingMessageFiles = await safeReadDir(messagesDir);
   const expectedMessageIds = new Set(
     messageDocs.map((message) => String(message?.message_id || "").trim()).filter(Boolean),
@@ -641,7 +641,7 @@ export async function upsertProjectedTask(config, taskDoc, runDocs = [], message
     const doc = await safeReadJson(path.join(messagesDir, fileName));
     if (doc?.task_id !== taskId) continue;
     const managedByBosun =
-      String(doc?.managed_by || "").trim() === GNAP_PROJECTION_MANAGER_ID;
+      String(doc?.managed_by || "").trim() === REPO_MIRROR_PROJECTION_MANAGER_ID;
     if (managedByBosun && !expectedMessageIds.has(String(doc?.message_id || "").trim())) {
       await fs.unlink(path.join(messagesDir, fileName)).catch((error) => {
         if (error?.code !== "ENOENT") throw error;
@@ -660,7 +660,7 @@ export async function deleteProjectedTask(config, taskId) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return;
   const taskDocs = await loadSurfaceDocuments(
-    path.join(config.gnapDir, "tasks"),
+    path.join(config.repoMirrorDir, "tasks"),
     (doc) => String(doc?.task_id || "").trim() === normalizedTaskId,
   );
   for (const entry of taskDocs) {
@@ -672,7 +672,7 @@ export async function deleteProjectedTask(config, taskId) {
     if (error?.code !== "ENOENT") throw error;
   });
   for (const surface of ["runs", "messages"]) {
-    const dirPath = path.join(config.gnapDir, surface);
+    const dirPath = path.join(config.repoMirrorDir, surface);
     const files = await safeReadDir(dirPath);
     for (const fileName of files) {
       const filePath = path.join(dirPath, fileName);
@@ -699,7 +699,7 @@ async function loadSurfaceDocuments(dirPath, matcher = () => true) {
 
 export async function listProjectedTaskRecords(config) {
   await ensureProjectionScaffold(config);
-  const docs = await loadSurfaceDocuments(path.join(config.gnapDir, "tasks"));
+  const docs = await loadSurfaceDocuments(path.join(config.repoMirrorDir, "tasks"));
   return dedupeProjectedTaskRecords(docs);
 }
 
@@ -707,7 +707,7 @@ export async function readProjectedTaskRecord(config, taskId) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return null;
   const docs = await loadSurfaceDocuments(
-    path.join(config.gnapDir, "tasks"),
+    path.join(config.repoMirrorDir, "tasks"),
     (doc) => String(doc?.task_id || "").trim() === normalizedTaskId,
   );
   return selectCanonicalProjectedTaskRecord(docs);
@@ -716,8 +716,8 @@ export async function readProjectedTaskRecord(config, taskId) {
 export async function rebuildAgentsRegistry(config) {
   await ensureProjectionScaffold(config);
   const taskDocs = await listProjectedTaskRecords(config);
-  const runDocs = await loadSurfaceDocuments(path.join(config.gnapDir, "runs"));
-  const messageDocs = await loadSurfaceDocuments(path.join(config.gnapDir, "messages"));
+  const runDocs = await loadSurfaceDocuments(path.join(config.repoMirrorDir, "runs"));
+  const messageDocs = await loadSurfaceDocuments(path.join(config.repoMirrorDir, "messages"));
   const agents = new Map();
 
   const touchAgent = (id, data = {}) => {
@@ -766,8 +766,8 @@ export async function rebuildAgentsRegistry(config) {
     });
   }
 
-  await writeJsonIfChanged(path.join(config.gnapDir, "agents.json"), {
-    protocol: "bosun-gnap-agents.v1",
+  await writeJsonIfChanged(path.join(config.repoMirrorDir, "agents.json"), {
+    protocol: "bosun-repo-mirror-agents.v1",
     schema_version: 1,
     generated_at: new Date().toISOString(),
     agents: [...agents.values()].sort((left, right) => left.id.localeCompare(right.id)),
@@ -778,7 +778,7 @@ export async function listProjectedMessagesForTask(config, taskId) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return [];
   return loadSurfaceDocuments(
-    path.join(config.gnapDir, "messages"),
+    path.join(config.repoMirrorDir, "messages"),
     (doc) => String(doc?.task_id || "").trim() === normalizedTaskId,
   );
 }
@@ -787,13 +787,13 @@ export async function listProjectedRunsForTask(config, taskId) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return [];
   return loadSurfaceDocuments(
-    path.join(config.gnapDir, "runs"),
+    path.join(config.repoMirrorDir, "runs"),
     (doc) => String(doc?.task_id || "").trim() === normalizedTaskId,
   );
 }
 
 export function materializeProjectedTask(doc = {}, filePath, runDocs = [], messageDocs = []) {
-  const status = normalizeString(doc.status) || mapGnapStateToBosunStatus(doc.state);
+  const status = normalizeString(doc.status) || mapRepoMirrorStateToBosunStatus(doc.state);
   const workflowRuns = mergeWorkflowRunCollections(
     Array.isArray(doc?.evidence?.workflow_runs) ? doc.evidence.workflow_runs : [],
     runDocs.map(({ doc: run }) => ({
@@ -815,7 +815,7 @@ export function materializeProjectedTask(doc = {}, filePath, runDocs = [], messa
     assignee: normalizeString(doc.assignee),
     assignees: normalizeStringList(doc.assignees),
     priority: normalizeString(doc.priority),
-    projectId: normalizeString(doc.project_id) || "gnap",
+    projectId: normalizeString(doc.project_id) || "repo-mirror",
     baseBranch: normalizeString(doc.base_branch),
     branchName: normalizeString(doc.branch_name),
     prNumber:
@@ -823,7 +823,7 @@ export function materializeProjectedTask(doc = {}, filePath, runDocs = [], messa
         ? null
         : Number.parseInt(String(doc.pr.number), 10),
     prUrl: normalizeString(doc?.pr?.url),
-    backend: "gnap",
+    backend: "repo-mirror",
     createdAt: normalizeString(doc.created_at),
     updatedAt: normalizeString(doc.updated_at),
     lastActivityAt: normalizeString(doc.last_activity_at || doc.updated_at),
@@ -855,7 +855,7 @@ export function materializeProjectedTask(doc = {}, filePath, runDocs = [], messa
     })),
     meta: {
       projectionOnly: true,
-      gnap: {
+      repoMirror: {
         taskPath: filePath,
         state: normalizeString(doc.state),
         runCount: runDocs.length,

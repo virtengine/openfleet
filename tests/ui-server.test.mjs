@@ -120,12 +120,12 @@ describeUiServer("ui-server mini app", () => {
     "REPO_ROOT",
     "BOSUN_DESKTOP_API_KEY",
     "KANBAN_BACKEND",
-    "GNAP_ENABLED",
-    "GNAP_REPO_PATH",
-    "GNAP_SYNC_MODE",
-    "GNAP_RUN_STORAGE",
-    "GNAP_MESSAGE_STORAGE",
-    "GNAP_PUBLIC_ROADMAP_ENABLED",
+    "REPO_MIRROR_ENABLED",
+    "REPO_MIRROR_REPO_PATH",
+    "REPO_MIRROR_SYNC_MODE",
+    "REPO_MIRROR_RUN_STORAGE",
+    "REPO_MIRROR_MESSAGE_STORAGE",
+    "REPO_MIRROR_PUBLIC_ROADMAP_ENABLED",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
     "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
@@ -1666,7 +1666,7 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 30000);
 
-  it("writes GNAP settings into config file and allows runtime backend selection", async () => {
+  it("writes RepoMirror settings into config file and allows runtime backend selection", async () => {
     const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
@@ -1688,13 +1688,13 @@ describeUiServer("ui-server mini app", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           changes: {
-            KANBAN_BACKEND: "gnap",
-            GNAP_ENABLED: "true",
-            GNAP_REPO_PATH: "C:/tmp/gnap-projection",
-            GNAP_SYNC_MODE: "projection",
-            GNAP_RUN_STORAGE: "local",
-            GNAP_MESSAGE_STORAGE: "off",
-            GNAP_PUBLIC_ROADMAP_ENABLED: "true",
+            KANBAN_BACKEND: "repo-mirror",
+            REPO_MIRROR_ENABLED: "true",
+            REPO_MIRROR_REPO_PATH: "C:/tmp/repo-mirror-projection",
+            REPO_MIRROR_SYNC_MODE: "projection",
+            REPO_MIRROR_RUN_STORAGE: "local",
+            REPO_MIRROR_MESSAGE_STORAGE: "off",
+            REPO_MIRROR_PUBLIC_ROADMAP_ENABLED: "true",
           },
         }),
       });
@@ -1705,21 +1705,21 @@ describeUiServer("ui-server mini app", () => {
       expect(json.updatedConfig).toEqual(
         expect.arrayContaining([
           "KANBAN_BACKEND",
-          "GNAP_ENABLED",
-          "GNAP_REPO_PATH",
-          "GNAP_SYNC_MODE",
-          "GNAP_RUN_STORAGE",
-          "GNAP_MESSAGE_STORAGE",
-          "GNAP_PUBLIC_ROADMAP_ENABLED",
+          "REPO_MIRROR_ENABLED",
+          "REPO_MIRROR_REPO_PATH",
+          "REPO_MIRROR_SYNC_MODE",
+          "REPO_MIRROR_RUN_STORAGE",
+          "REPO_MIRROR_MESSAGE_STORAGE",
+          "REPO_MIRROR_PUBLIC_ROADMAP_ENABLED",
         ]),
       );
-      expect(process.env.KANBAN_BACKEND).toBe("gnap");
+      expect(process.env.KANBAN_BACKEND).toBe("repo-mirror");
 
       const config = JSON.parse(readFileSync(configPath, "utf8"));
-      expect(config.kanban?.backend).toBe("gnap");
-      expect(config.kanban?.gnap).toEqual({
+      expect(config.kanban?.backend).toBe("repo-mirror");
+      expect(config.kanban?.repoMirror).toEqual({
         enabled: true,
-        repoPath: "C:/tmp/gnap-projection",
+        repoPath: "C:/tmp/repo-mirror-projection",
         syncMode: "projection",
         runStorage: "local",
         messageStorage: "off",
@@ -1736,7 +1736,7 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 20000);
 
-  it("rejects GNAP backend selection when required GNAP settings are missing", async () => {
+  it("rejects RepoMirror backend selection when required RepoMirror settings are missing", async () => {
     const mod = await import("../server/ui-server.mjs");
     let server = null;
     server = await mod.startTelegramUiServer({
@@ -1753,9 +1753,9 @@ describeUiServer("ui-server mini app", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           changes: {
-            KANBAN_BACKEND: "gnap",
-            GNAP_ENABLED: "false",
-            GNAP_REPO_PATH: "",
+            KANBAN_BACKEND: "repo-mirror",
+            REPO_MIRROR_ENABLED: "false",
+            REPO_MIRROR_REPO_PATH: "",
           },
         }),
       });
@@ -1763,8 +1763,8 @@ describeUiServer("ui-server mini app", () => {
 
       expect(response.status).toBe(400);
       expect(json.ok).toBe(false);
-      expect(json.fieldErrors?.GNAP_ENABLED).toMatch(/must be enabled/i);
-      expect(json.fieldErrors?.GNAP_REPO_PATH).toMatch(/required/i);
+      expect(json.fieldErrors?.REPO_MIRROR_ENABLED).toMatch(/must be enabled/i);
+      expect(json.fieldErrors?.REPO_MIRROR_REPO_PATH).toMatch(/required/i);
     } finally {
       if (server) {
         await new Promise((resolve) => server.close(resolve));

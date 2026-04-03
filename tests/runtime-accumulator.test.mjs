@@ -1,20 +1,25 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import {
-  _resetRuntimeAccumulatorForTests,
-  addSessionAccumulationListener,
-  addCompletedSession,
-  getRuntimeStats,
-  getSessionAccumulatorLogPath,
-  getTaskLifetimeTotals,
-} from "../infra/runtime-accumulator.mjs";
+import { describe, expect, it, vi } from "vitest";
+
+async function loadRuntimeAccumulatorModule() {
+  vi.resetModules();
+  vi.doUnmock("node:fs");
+  return import("../infra/runtime-accumulator.mjs");
+}
 
 describe("runtime-accumulator", () => {
-  it("accumulates completed sessions monotonically across 3 restarts with 2 sessions each", () => {
+  it("accumulates completed sessions monotonically across 3 restarts with 2 sessions each", async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-"));
     const taskId = "task-restart-accumulator";
+    const {
+      _resetRuntimeAccumulatorForTests,
+      addCompletedSession,
+      getRuntimeStats,
+      getSessionAccumulatorLogPath,
+      getTaskLifetimeTotals,
+    } = await loadRuntimeAccumulatorModule();
 
     try {
       let expectedAttempts = 0;
@@ -113,10 +118,15 @@ describe("runtime-accumulator", () => {
     }
   });
 
-  it("emits a typed session-accumulated event with updated per-task totals", () => {
+  it("emits a typed session-accumulated event with updated per-task totals", async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-events-"));
     const taskId = "task-session-event";
     const payloads = [];
+    const {
+      _resetRuntimeAccumulatorForTests,
+      addSessionAccumulationListener,
+      addCompletedSession,
+    } = await loadRuntimeAccumulatorModule();
 
     try {
       _resetRuntimeAccumulatorForTests({ cacheDir });
@@ -164,9 +174,14 @@ describe("runtime-accumulator", () => {
     }
   });
 
-  it("preserves turn count and timeline details on completed session records", () => {
+  it("preserves turn count and timeline details on completed session records", async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-turns-"));
     const taskId = "task-session-turns";
+    const {
+      _resetRuntimeAccumulatorForTests,
+      addCompletedSession,
+      getRuntimeStats,
+    } = await loadRuntimeAccumulatorModule();
 
     try {
       _resetRuntimeAccumulatorForTests({ cacheDir });
@@ -222,8 +237,13 @@ describe("runtime-accumulator", () => {
     }
   });
 
-  it("projects completed session observability metrics into runtime aggregates", () => {
+  it("projects completed session observability metrics into runtime aggregates", async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-metrics-"));
+    const {
+      _resetRuntimeAccumulatorForTests,
+      addCompletedSession,
+      getRuntimeStats,
+    } = await loadRuntimeAccumulatorModule();
 
     try {
       _resetRuntimeAccumulatorForTests({ cacheDir });

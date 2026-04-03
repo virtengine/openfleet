@@ -5,13 +5,13 @@
  *   - Internal Store          — default, source-of-truth local kanban
  *   - GitHub Issues           — native GitHub integration with shared state persistence
  *   - Jira                    — enterprise project management via Jira REST v3
- *   - GNAP (projection-only)  — optional GNAP-compatible projection registration
+ *   - RepoMirror (projection-only)  — optional repo-backed projection registration
  *
  * This module handles TASK LIFECYCLE (tracking, status, metadata) only.
  * Code execution is handled separately by agent-pool.mjs.
  *
  * Configuration:
- *   - `KANBAN_BACKEND` env var: "internal" | "github" | "jira" | "gnap" (default: "internal")
+ *   - `KANBAN_BACKEND` env var: "internal" | "github" | "jira" | "repo-mirror" (default: "internal")
  *   - `bosun.config.json` → `kanban.backend` field
  *
  * EXPORTS:
@@ -79,9 +79,9 @@ import {
   materializeProjectedTask,
   readProjectedTaskRecord,
   rebuildAgentsRegistry,
-  resolveGnapProjectionConfig,
+  resolveRepoMirrorProjectionConfig,
   upsertProjectedTask,
-} from "./gnap-projection-store.mjs";
+} from "./repo-mirror-projection-store.mjs";
 
 const TAG = "[kanban]";
 
@@ -859,12 +859,14 @@ class InternalAdapter {
         : "internal";
     const recoveredStatus = String(embeddedPayload?.status || "").trim();
     const tags = normalizeTags(task.tags || task.meta?.tags || []);
-    const draft = Boolean(
-      task.draft ||
-        task.meta?.draft ||
-        task.status === "draft" ||
-        recoveredStatus === "draft",
-    );
+    const hasExplicitDraftFlag = typeof task.draft === "boolean";
+    const draft = hasExplicitDraftFlag
+      ? task.draft === true
+      : Boolean(
+          task.meta?.draft ||
+            task.status === "draft" ||
+            recoveredStatus === "draft",
+        );
     const labelBag = []
       .concat(Array.isArray(task.labels) ? task.labels : [])
       .concat(Array.isArray(task.tags) ? task.tags : [])
@@ -1529,7 +1531,7 @@ function buildProjectedStatusHistory(projectedTask = {}) {
     if (!rawStatus) continue;
     history.push({
       status: normaliseStatus(rawStatus),
-      source: normalizeTaskStringField(entry?.source) || "gnap-projection",
+      source: normalizeTaskStringField(entry?.source) || "repo-mirror-projection",
       actor: normalizeTaskStringField(entry?.actor),
       timestamp: normalizeTaskStringField(entry?.timestamp),
     });
@@ -1560,7 +1562,7 @@ function mergeProjectedTaskIntoLocal(localTask = {}, projectedTask = null) {
     ...localTask,
     assignee: localTask.assignee || projectedTask.assignee || assignees[0] || null,
     assignees,
-    projectId: localTask.projectId || projectedTask.projectId || "gnap",
+    projectId: localTask.projectId || projectedTask.projectId || "repo-mirror",
     workspace: localTask.workspace || projectedTask.workspace || null,
     repository: localTask.repository || projectedTask.repository || null,
     repositories: mergeTaskStringLists(localTask.repositories, projectedTask.repositories),
@@ -6082,11 +6084,11 @@ class JiraAdapter {
 // Adapter Registry & Resolution
 // ---------------------------------------------------------------------------
 
-class GnapProjectionAdapter {
+class RepoMirrorProjectionAdapter {
   constructor(config = {}) {
-    this.name = "gnap";
-    this.backend = "gnap";
-    this._config = resolveGnapProjectionConfig(config);
+    this.name = "repo-mirror";
+    this.backend = "repo-mirror";
+    this._config = resolveRepoMirrorProjectionConfig(config);
     this._internal = new InternalAdapter();
   }
 
@@ -6148,7 +6150,7 @@ class GnapProjectionAdapter {
     if (!projectedTask?.id) return null;
     const existingTask = options.existingTask || null;
     const preferProjectedCanonical = options.preferProjectedCanonical !== false;
-    const existingImported = existingTask?.meta?.gnap?.imported === true;
+    const existingImported = existingTask?.meta?.repoMirror?.imported === true;
     const imported =
       existingImported ||
       !existingTask ||
@@ -6216,13 +6218,13 @@ class GnapProjectionAdapter {
         attachments,
         workflowRuns,
         evidence: projectedTask.meta?.evidence || existingTask?.meta?.evidence || {},
-        gnap: {
-          ...(existingTask?.meta?.gnap || {}),
-          ...(projectedTask.meta?.gnap || {}),
+        repoMirror: {
+          ...(existingTask?.meta?.repoMirror || {}),
+          ...(projectedTask.meta?.repoMirror || {}),
           imported,
           observed: true,
           projectionOnly: true,
-          taskPath: filePath || projectedTask.meta?.gnap?.taskPath || null,
+          taskPath: filePath || projectedTask.meta?.repoMirror?.taskPath || null,
           syncMode: this._config.syncMode,
           upstreamUpdatedAt: String(projectedDoc?.updated_at || projectedTask.updatedAt || "").trim() || null,
         },
@@ -6240,8 +6242,8 @@ class GnapProjectionAdapter {
     const projectedUpdatedMs = Date.parse(String(doc?.updated_at || projectedTask.updatedAt || "")) || 0;
     const existingUpdatedMs = Date.parse(String(existing?.updatedAt || existing?.lastActivityAt || "")) || 0;
     const existingImported =
-      existing?.meta?.gnap?.imported === true
-      || String(existing?.meta?.gnap?.taskPath || "").trim() === String(filePath || "").trim();
+      existing?.meta?.repoMirror?.imported === true
+      || String(existing?.meta?.repoMirror?.taskPath || "").trim() === String(filePath || "").trim();
     const shouldApply = !existing || existingImported || projectedUpdatedMs >= existingUpdatedMs;
     const patch = this._buildInternalTaskPatch(projectedTask, doc, filePath, {
       existingTask: existing,
@@ -6293,9 +6295,9 @@ class GnapProjectionAdapter {
     await this._ensureProjectionScaffold();
     return [
       {
-        id: "gnap",
-        name: "GNAP Projection",
-        backend: "gnap",
+        id: "repo-mirror",
+        name: "RepoMirror Projection",
+        backend: "repo-mirror",
         meta: {
           projectionOnly: true,
           ...this._config,
@@ -6317,7 +6319,7 @@ class GnapProjectionAdapter {
       const messageDocs = await listProjectedMessagesForTask(this._config, taskId);
       tasks.push(materializeProjectedTask(doc, filePath, runDocs, messageDocs));
     }
-    if (normalizedProjectId && normalizedProjectId !== "gnap") {
+    if (normalizedProjectId && normalizedProjectId !== "repo-mirror") {
       tasks = tasks.filter(
         (task) =>
           String(task.projectId || "").trim().toLowerCase() === normalizedProjectId,
@@ -6402,7 +6404,7 @@ const ADAPTERS = {
   internal: () => new InternalAdapter(),
   github: () => new GitHubIssuesAdapter(),
   jira: () => new JiraAdapter(),
-  gnap: () => new GnapProjectionAdapter(loadConfig()?.gnap || {}),
+  "repo-mirror": () => new RepoMirrorProjectionAdapter(loadConfig()?.repoMirror || {}),
 };
 
 /** @type {Object|null} Cached adapter instance */
@@ -6443,7 +6445,7 @@ function resolveBackendName() {
 
 /**
  * Get the active kanban adapter.
- * @returns {InternalAdapter|GitHubIssuesAdapter|JiraAdapter|GnapProjectionAdapter} Adapter instance.
+ * @returns {InternalAdapter|GitHubIssuesAdapter|JiraAdapter|RepoMirrorProjectionAdapter} Adapter instance.
  */
 export function getKanbanAdapter() {
   const name = resolveBackendName();
@@ -6451,7 +6453,7 @@ export function getKanbanAdapter() {
   if (name === "internal") activeAdapter = ADAPTERS.internal();
   else if (name === "github") activeAdapter = ADAPTERS.github();
   else if (name === "jira") activeAdapter = ADAPTERS.jira();
-  else if (name === "gnap") activeAdapter = ADAPTERS.gnap();
+  else if (name === "repo-mirror") activeAdapter = ADAPTERS["repo-mirror"]();
   else throw new Error(`${TAG} unknown kanban backend: ${name}`);
   activeBackendName = name;
   console.log(`${TAG} using ${name} backend`);
@@ -6460,7 +6462,7 @@ export function getKanbanAdapter() {
 
 /**
  * Switch the kanban backend at runtime.
- * @param {string} name Backend name ("internal", "github", "jira", "gnap").
+ * @param {string} name Backend name ("internal", "github", "jira", "repo-mirror").
  */
 export function setKanbanBackend(name) {
   const normalised = (name || "").trim().toLowerCase();

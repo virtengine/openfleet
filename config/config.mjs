@@ -369,7 +369,7 @@ function resolveKanbanBackendSource({ envPaths = [], configFilePath, configData 
   });
 }
 
-function validateKanbanBackendConfig({ kanbanBackend, kanban, jira, gnap }) {
+function validateKanbanBackendConfig({ kanbanBackend, kanban, jira, repoMirror }) {
   if (kanbanBackend === "jira") {
     const missing = [];
     if (!jira?.baseUrl) missing.push("JIRA_BASE_URL");
@@ -388,22 +388,22 @@ function validateKanbanBackendConfig({ kanbanBackend, kanban, jira, gnap }) {
     return;
   }
 
-  if (kanbanBackend !== "gnap") return;
+  if (kanbanBackend !== "repo-mirror") return;
 
   const invalid = [];
-  if (!gnap?.enabled) invalid.push("GNAP_ENABLED=true");
-  if (!gnap?.repoPath) invalid.push("GNAP_REPO_PATH");
-  if (gnap?.syncMode !== "projection") invalid.push("GNAP_SYNC_MODE=projection");
-  if (!["git", "local"].includes(gnap?.runStorage)) {
-    invalid.push("GNAP_RUN_STORAGE=git|local");
+  if (!repoMirror?.enabled) invalid.push("REPO_MIRROR_ENABLED=true");
+  if (!repoMirror?.repoPath) invalid.push("REPO_MIRROR_REPO_PATH");
+  if (repoMirror?.syncMode !== "projection") invalid.push("REPO_MIRROR_SYNC_MODE=projection");
+  if (!["git", "local"].includes(repoMirror?.runStorage)) {
+    invalid.push("REPO_MIRROR_RUN_STORAGE=git|local");
   }
-  if (!["off", "git", "local"].includes(gnap?.messageStorage)) {
-    invalid.push("GNAP_MESSAGE_STORAGE=off|git|local");
+  if (!["off", "git", "local"].includes(repoMirror?.messageStorage)) {
+    invalid.push("REPO_MIRROR_MESSAGE_STORAGE=off|git|local");
   }
   if (invalid.length > 0) {
     throw new Error(
-      `[config] KANBAN_BACKEND=gnap requires ${invalid.join(", ")}. ` +
-        `GNAP is projection-only in this build and must be explicitly enabled before selection.`,
+      `[config] KANBAN_BACKEND=repo-mirror requires ${invalid.join(", ")}. ` +
+        `RepoMirror is projection-only in this build and must be explicitly enabled before selection.`,
     );
   }
 }
@@ -981,28 +981,28 @@ function normalizeKanbanBackend(value) {
     backend === "internal" ||
     backend === "github" ||
     backend === "jira" ||
-    backend === "gnap"
+    backend === "repo-mirror"
   ) {
     return backend;
   }
   return "internal";
 }
 
-function normalizeGnapSyncMode(value) {
+function normalizeRepoMirrorSyncMode(value) {
   const mode = String(value || "")
     .trim()
     .toLowerCase();
   return mode || "projection";
 }
 
-function normalizeGnapRunStorage(value) {
+function normalizeRepoMirrorRunStorage(value) {
   const storage = String(value || "")
     .trim()
     .toLowerCase();
   return storage || "git";
 }
 
-function normalizeGnapMessageStorage(value) {
+function normalizeRepoMirrorMessageStorage(value) {
   const storage = String(value || "")
     .trim()
     .toLowerCase();
@@ -1705,32 +1705,32 @@ export function loadConfig(argv = process.argv, options = {}) {
         "",
     }),
   });
-  const gnap = Object.freeze({
+  const repoMirror = Object.freeze({
     enabled: isEnvEnabled(
-      process.env.GNAP_ENABLED ?? configData.kanban?.gnap?.enabled,
+      process.env.REPO_MIRROR_ENABLED ?? configData.kanban?.repoMirror?.enabled,
       false,
     ),
     repoPath:
       String(
-        process.env.GNAP_REPO_PATH || configData.kanban?.gnap?.repoPath || "",
+        process.env.REPO_MIRROR_REPO_PATH || configData.kanban?.repoMirror?.repoPath || "",
       ).trim(),
-    syncMode: normalizeGnapSyncMode(
-      process.env.GNAP_SYNC_MODE || configData.kanban?.gnap?.syncMode,
+    syncMode: normalizeRepoMirrorSyncMode(
+      process.env.REPO_MIRROR_SYNC_MODE || configData.kanban?.repoMirror?.syncMode,
     ),
-    runStorage: normalizeGnapRunStorage(
-      process.env.GNAP_RUN_STORAGE || configData.kanban?.gnap?.runStorage,
+    runStorage: normalizeRepoMirrorRunStorage(
+      process.env.REPO_MIRROR_RUN_STORAGE || configData.kanban?.repoMirror?.runStorage,
     ),
-    messageStorage: normalizeGnapMessageStorage(
-      process.env.GNAP_MESSAGE_STORAGE ||
-        configData.kanban?.gnap?.messageStorage,
+    messageStorage: normalizeRepoMirrorMessageStorage(
+      process.env.REPO_MIRROR_MESSAGE_STORAGE ||
+        configData.kanban?.repoMirror?.messageStorage,
     ),
     publicRoadmapEnabled: isEnvEnabled(
-      process.env.GNAP_PUBLIC_ROADMAP_ENABLED ??
-        configData.kanban?.gnap?.publicRoadmapEnabled,
+      process.env.REPO_MIRROR_PUBLIC_ROADMAP_ENABLED ??
+        configData.kanban?.repoMirror?.publicRoadmapEnabled,
       false,
     ),
   });
-  validateKanbanBackendConfig({ kanbanBackend, kanban, jira, gnap });
+  validateKanbanBackendConfig({ kanbanBackend, kanban, jira, repoMirror });
 
   const internalExecutorConfig = configData.internalExecutor || {};
   const workflowRecoveryConfig =
@@ -2463,7 +2463,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     kanbanSource,
     githubProjectSync,
     jira,
-    gnap,
+    repoMirror,
     projectRequirements,
 
     // Voice assistant

@@ -8781,11 +8781,11 @@ function mapEnvKeyToConfigPath(key, schema) {
     const sub = toCamelCaseFromEnv(rest);
     if (schema.properties.kanban.properties[sub]) return buildConfigPath(["kanban", sub]);
   }
-  if (envKey.startsWith("GNAP_")) {
-    const gnapSchema = schema.properties.kanban?.properties?.gnap?.properties;
-    const rest = envKey.slice("GNAP_".length);
+  if (envKey.startsWith("REPO_MIRROR_")) {
+    const repoMirrorSchema = schema.properties.kanban?.properties?.repoMirror?.properties;
+    const rest = envKey.slice("REPO_MIRROR_".length);
     const sub = toCamelCaseFromEnv(rest);
-    if (gnapSchema?.[sub]) return buildConfigPath(["kanban", "gnap", sub]);
+    if (repoMirrorSchema?.[sub]) return buildConfigPath(["kanban", "repoMirror", sub]);
   }
   if (envKey.startsWith("JIRA_STATUS_")) {
     const jiraSchema = schema.properties.kanban?.properties?.jira?.properties?.statusMapping?.properties;
@@ -10355,8 +10355,8 @@ const SETTINGS_KNOWN_KEYS = [
   "CODEX_SUBAGENT_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL",
   "COPILOT_MODEL", "COPILOT_CLI_TOKEN",
   "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "BOSUN_TASK_LABEL",
-  "GNAP_ENABLED", "GNAP_REPO_PATH", "GNAP_SYNC_MODE",
-  "GNAP_RUN_STORAGE", "GNAP_MESSAGE_STORAGE", "GNAP_PUBLIC_ROADMAP_ENABLED",
+  "REPO_MIRROR_ENABLED", "REPO_MIRROR_REPO_PATH", "REPO_MIRROR_SYNC_MODE",
+  "REPO_MIRROR_RUN_STORAGE", "REPO_MIRROR_MESSAGE_STORAGE", "REPO_MIRROR_PUBLIC_ROADMAP_ENABLED",
   "BOSUN_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "TASK_BRANCH_MODE", "TASK_BRANCH_AUTO_MODULE", "TASK_UPSTREAM_SYNC_MAIN",
@@ -11068,19 +11068,19 @@ function validateConfigSchemaChanges(changes) {
     const kanbanBackend = String(candidate?.kanban?.backend || "")
       .trim()
       .toLowerCase();
-    if (kanbanBackend === "gnap") {
-      const gnap = candidate?.kanban?.gnap && typeof candidate.kanban.gnap === "object"
-        ? candidate.kanban.gnap
+    if (kanbanBackend === "repo-mirror") {
+      const repoMirror = candidate?.kanban?.repoMirror && typeof candidate.kanban.repoMirror === "object"
+        ? candidate.kanban.repoMirror
         : {};
       const fieldErrors = {};
-      if (gnap.enabled !== true) {
-        fieldErrors.GNAP_ENABLED = "GNAP must be enabled before selecting the GNAP backend.";
+      if (repoMirror.enabled !== true) {
+        fieldErrors.REPO_MIRROR_ENABLED = "RepoMirror must be enabled before selecting the RepoMirror backend.";
       }
-      if (!String(gnap.repoPath || "").trim()) {
-        fieldErrors.GNAP_REPO_PATH = "GNAP repo path is required when the GNAP backend is selected.";
+      if (!String(repoMirror.repoPath || "").trim()) {
+        fieldErrors.REPO_MIRROR_REPO_PATH = "RepoMirror repo path is required when the RepoMirror backend is selected.";
       }
-      if (String(gnap.syncMode || "projection").trim().toLowerCase() !== "projection") {
-        fieldErrors.GNAP_SYNC_MODE = "Only projection sync mode is supported for the GNAP backend.";
+      if (String(repoMirror.syncMode || "projection").trim().toLowerCase() !== "projection") {
+        fieldErrors.REPO_MIRROR_SYNC_MODE = "Only projection sync mode is supported for the RepoMirror backend.";
       }
       if (Object.keys(fieldErrors).length > 0) {
         return fieldErrors;

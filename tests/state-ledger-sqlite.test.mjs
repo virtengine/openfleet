@@ -1011,7 +1011,7 @@ describe("state ledger sqlite audit helpers", () => {
     upsertStateLedgerKeyValue({
       scope: "settings",
       scopeId: repoRoot,
-      key: "GNAP_ENABLED",
+      key: "REPO_MIRROR_ENABLED",
       value: "true",
       source: "test",
       metadata: { updatedBy: "vitest" },
@@ -1024,9 +1024,9 @@ describe("state ledger sqlite audit helpers", () => {
       actorType: "operator",
       scope: "settings",
       scopeId: repoRoot,
-      targetId: "GNAP_ENABLED",
-      request: { changes: { GNAP_ENABLED: "true" } },
-      result: { updated: ["GNAP_ENABLED"] },
+      targetId: "REPO_MIRROR_ENABLED",
+      request: { changes: { REPO_MIRROR_ENABLED: "true" } },
+      result: { updated: ["REPO_MIRROR_ENABLED"] },
     }, { repoRoot });
 
     appendArtifactRecordToStateLedger({
@@ -1038,7 +1038,7 @@ describe("state ledger sqlite audit helpers", () => {
       metadata: { hash: "abc123" },
     }, { repoRoot });
 
-    expect(getStateLedgerKeyValue("settings", repoRoot, "GNAP_ENABLED", { repoRoot })).toEqual(
+    expect(getStateLedgerKeyValue("settings", repoRoot, "REPO_MIRROR_ENABLED", { repoRoot })).toEqual(
       expect.objectContaining({
         value: "true",
         source: "test",
@@ -1049,7 +1049,7 @@ describe("state ledger sqlite audit helpers", () => {
         expect.objectContaining({
           actionId: "settings-update-1",
           actionType: "settings.update",
-          targetId: "GNAP_ENABLED",
+          targetId: "REPO_MIRROR_ENABLED",
         }),
       ]),
     );

@@ -1090,6 +1090,10 @@ function normalizeTaskStructure(rawTask = {}) {
   if (normalized.status === "draft") {
     normalized.draft = true;
   }
+  normalized.meta = {
+    ...(normalized.meta || {}),
+    draft: normalized.draft === true,
+  };
   return normalized;
 }
 

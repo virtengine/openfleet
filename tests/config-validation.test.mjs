@@ -30,16 +30,18 @@ const ENV_KEYS = [
   "JIRA_LABEL_IGNORE",
   "JIRA_CUSTOM_FIELD_OWNER_ID",
   "KANBAN_PROJECT_ID",
-  "GNAP_ENABLED",
-  "GNAP_REPO_PATH",
-  "GNAP_SYNC_MODE",
-  "GNAP_RUN_STORAGE",
-  "GNAP_MESSAGE_STORAGE",
-  "GNAP_PUBLIC_ROADMAP_ENABLED",
+  "REPO_MIRROR_ENABLED",
+  "REPO_MIRROR_REPO_PATH",
+  "REPO_MIRROR_SYNC_MODE",
+  "REPO_MIRROR_RUN_STORAGE",
+  "REPO_MIRROR_MESSAGE_STORAGE",
+  "REPO_MIRROR_PUBLIC_ROADMAP_ENABLED",
   "EXECUTORS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "KANBAN_BACKEND",
   "BOSUN_AGENT_RUNTIME",
+  "BOSUN_ENV_NO_OVERRIDE",
+  "BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG",
   "WATCH_PATH",
   "ORCHESTRATOR_SCRIPT",
   "PRIMARY_AGENT",
@@ -750,9 +752,9 @@ describe("loadConfig validation and edge cases", () => {
   it("loads jira mapping settings from env", () => {
     process.env.KANBAN_BACKEND = "jira";
     delete process.env.KANBAN_PROJECT_ID;
-    delete process.env.GNAP_ENABLED;
-    delete process.env.GNAP_REPO_PATH;
-    delete process.env.GNAP_SYNC_MODE;
+    delete process.env.REPO_MIRROR_ENABLED;
+    delete process.env.REPO_MIRROR_REPO_PATH;
+    delete process.env.REPO_MIRROR_SYNC_MODE;
     process.env.JIRA_BASE_URL = "https://acme.atlassian.net";
     process.env.JIRA_EMAIL = "bot@acme.dev";
     process.env.JIRA_API_TOKEN = "token-1";
@@ -782,9 +784,9 @@ describe("loadConfig validation and edge cases", () => {
   it("fails fast when jira backend is selected without required jira config", () => {
     process.env.KANBAN_BACKEND = "jira";
     delete process.env.KANBAN_PROJECT_ID;
-    delete process.env.GNAP_ENABLED;
-    delete process.env.GNAP_REPO_PATH;
-    delete process.env.GNAP_SYNC_MODE;
+    delete process.env.REPO_MIRROR_ENABLED;
+    delete process.env.REPO_MIRROR_REPO_PATH;
+    delete process.env.REPO_MIRROR_SYNC_MODE;
     process.env.JIRA_BASE_URL = "";
     process.env.JIRA_EMAIL = "";
     process.env.JIRA_API_TOKEN = "";
@@ -802,14 +804,14 @@ describe("loadConfig validation and edge cases", () => {
     ).toThrow(/KANBAN_BACKEND=jira requires/i);
   });
 
-  it("loads gnap projection settings from env", () => {
-    process.env.KANBAN_BACKEND = "gnap";
-    process.env.GNAP_ENABLED = "true";
-    process.env.GNAP_REPO_PATH = "/tmp/gnap-projection";
-    process.env.GNAP_SYNC_MODE = "projection";
-    process.env.GNAP_RUN_STORAGE = "local";
-    process.env.GNAP_MESSAGE_STORAGE = "git";
-    process.env.GNAP_PUBLIC_ROADMAP_ENABLED = "true";
+  it("loads repo-mirror projection settings from env", () => {
+    process.env.KANBAN_BACKEND = "repo-mirror";
+    process.env.REPO_MIRROR_ENABLED = "true";
+    process.env.REPO_MIRROR_REPO_PATH = "/tmp/repo-mirror-projection";
+    process.env.REPO_MIRROR_SYNC_MODE = "projection";
+    process.env.REPO_MIRROR_RUN_STORAGE = "local";
+    process.env.REPO_MIRROR_MESSAGE_STORAGE = "git";
+    process.env.REPO_MIRROR_PUBLIC_ROADMAP_ENABLED = "true";
 
     const config = loadConfig([
       "node",
@@ -820,10 +822,10 @@ describe("loadConfig validation and edge cases", () => {
       tempConfigDir,
     ]);
 
-    expect(config.kanban.backend).toBe("gnap");
-    expect(config.gnap).toEqual({
+    expect(config.kanban.backend).toBe("repo-mirror");
+    expect(config.repoMirror).toEqual({
       enabled: true,
-      repoPath: "/tmp/gnap-projection",
+      repoPath: "/tmp/repo-mirror-projection",
       syncMode: "projection",
       runStorage: "local",
       messageStorage: "git",
@@ -831,11 +833,11 @@ describe("loadConfig validation and edge cases", () => {
     });
   });
 
-  it("fails fast when gnap backend is selected without enablement and repo path", () => {
-    process.env.KANBAN_BACKEND = "gnap";
-    process.env.GNAP_ENABLED = "false";
-    process.env.GNAP_REPO_PATH = "";
-    process.env.GNAP_SYNC_MODE = "projection";
+  it("fails fast when repo-mirror backend is selected without enablement and repo path", () => {
+    process.env.KANBAN_BACKEND = "repo-mirror";
+    process.env.REPO_MIRROR_ENABLED = "false";
+    process.env.REPO_MIRROR_REPO_PATH = "";
+    process.env.REPO_MIRROR_SYNC_MODE = "projection";
 
     expect(() =>
       loadConfig([
@@ -846,14 +848,14 @@ describe("loadConfig validation and edge cases", () => {
         "--repo-root",
         tempConfigDir,
       ]),
-    ).toThrow(/KANBAN_BACKEND=gnap requires/i);
+    ).toThrow(/KANBAN_BACKEND=repo-mirror requires/i);
   });
 
-  it("fails fast when gnap backend is selected with unsupported sync mode", () => {
-    process.env.KANBAN_BACKEND = "gnap";
-    process.env.GNAP_ENABLED = "true";
-    process.env.GNAP_REPO_PATH = "/tmp/gnap-projection";
-    process.env.GNAP_SYNC_MODE = "full";
+  it("fails fast when repo-mirror backend is selected with unsupported sync mode", () => {
+    process.env.KANBAN_BACKEND = "repo-mirror";
+    process.env.REPO_MIRROR_ENABLED = "true";
+    process.env.REPO_MIRROR_REPO_PATH = "/tmp/repo-mirror-projection";
+    process.env.REPO_MIRROR_SYNC_MODE = "full";
 
     expect(() =>
       loadConfig([
@@ -864,7 +866,7 @@ describe("loadConfig validation and edge cases", () => {
         "--repo-root",
         tempConfigDir,
       ]),
-    ).toThrow(/GNAP_SYNC_MODE=projection/i);
+    ).toThrow(/REPO_MIRROR_SYNC_MODE=projection/i);
   });
 
   it("watchPath defaults to scriptPath when WATCH_PATH env is not set", () => {

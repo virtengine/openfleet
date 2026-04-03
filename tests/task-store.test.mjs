@@ -1279,6 +1279,40 @@ describe("task-store sprint and DAG primitives", () => {
       }),
     );
   });
+
+  it("normalizes stale meta.draft to match the canonical draft flag on updates", async () => {
+    const dir = makeTempDir("task-store-stale-meta-draft-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "stale-meta-draft",
+      title: "Stale draft metadata",
+      status: "todo",
+      draft: false,
+      meta: {
+        draft: true,
+      },
+    });
+
+    const created = ts.getTask("stale-meta-draft");
+    expect(created?.draft).toBe(false);
+    expect(created?.meta?.draft).toBe(false);
+
+    ts.updateTask("stale-meta-draft", {
+      status: "todo",
+      meta: {
+        draft: true,
+      },
+    });
+
+    const updated = ts.getTask("stale-meta-draft");
+    expect(updated?.draft).toBe(false);
+    expect(updated?.meta?.draft).toBe(false);
+  });
 });
 
 describe("task-store comment handling", () => {

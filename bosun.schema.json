@@ -796,7 +796,7 @@
       "properties": {
         "backend": {
           "type": "string",
-          "enum": ["internal", "github", "jira", "gnap"]
+          "enum": ["internal", "github", "jira", "repo-mirror"]
         },
         "syncPolicy": {
           "type": "string",
@@ -1013,41 +1013,41 @@
             }
           }
         },
-        "gnap": {
+        "repoMirror": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean",
               "default": false,
-              "description": "Enable the optional GNAP projection backend. Must be true before selecting KANBAN_BACKEND=gnap."
+              "description": "Enable the optional RepoMirror projection backend. Must be true before selecting KANBAN_BACKEND=repo-mirror."
             },
             "repoPath": {
               "type": "string",
-              "description": "Absolute path to the repo or clone that will host GNAP projection data."
+              "description": "Absolute path to the repo or clone that will host RepoMirror projection data."
             },
             "syncMode": {
               "type": "string",
               "enum": ["projection"],
               "default": "projection",
-              "description": "Projection-only GNAP synchronization mode. Bosun keeps live runtime state in private storage."
+              "description": "Projection-only RepoMirror synchronization mode. Bosun keeps live runtime state in private storage."
             },
             "runStorage": {
               "type": "string",
               "enum": ["git", "local"],
               "default": "git",
-              "description": "Where GNAP run metadata is stored when projection export is enabled."
+              "description": "Where RepoMirror run metadata is stored when projection export is enabled."
             },
             "messageStorage": {
               "type": "string",
               "enum": ["off", "git", "local"],
               "default": "off",
-              "description": "Where GNAP message projections are stored. 'off' keeps agent-to-agent traffic private by default."
+              "description": "Where RepoMirror message projections are stored. 'off' keeps agent-to-agent traffic private by default."
             },
             "publicRoadmapEnabled": {
               "type": "boolean",
               "default": false,
-              "description": "Allow sanitized public GNAP roadmap projection when explicitly enabled."
+              "description": "Allow sanitized public RepoMirror roadmap projection when explicitly enabled."
             }
           }
         }

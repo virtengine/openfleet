@@ -52,8 +52,10 @@ vi.mock("../infra/session-tracker.mjs", () => ({
 // ── Global fetch mock ────────────────────────────────────────────────────────
 
 const _origFetch = globalThis.fetch;
+const _origVoiceTurnDetection = process.env.VOICE_TURN_DETECTION;
 
 beforeEach(() => {
+  delete process.env.VOICE_TURN_DETECTION;
   globalThis.fetch = vi.fn(async () => ({
     ok: true,
     json: async () => ({
@@ -64,6 +66,11 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = _origFetch;
+  if (_origVoiceTurnDetection == null) {
+    delete process.env.VOICE_TURN_DETECTION;
+  } else {
+    process.env.VOICE_TURN_DETECTION = _origVoiceTurnDetection;
+  }
   vi.restoreAllMocks();
 });
 

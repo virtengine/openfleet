@@ -1,37 +1,41 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const childProcessMocks = vi.hoisted(() => ({
-  execFileSync: vi.fn(),
-  execSync: vi.fn(),
-  spawn: vi.fn(),
-  spawnSync: vi.fn(),
-}));
+let childProcessMocks;
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    execFileSync: childProcessMocks.execFileSync,
-    execSync: childProcessMocks.execSync,
-    spawn: childProcessMocks.spawn,
-    spawnSync: childProcessMocks.spawnSync,
+async function loadDefinitionsWithChildProcessMocks() {
+  childProcessMocks = {
+    execFileSync: vi.fn(),
+    execSync: vi.fn(),
+    spawn: vi.fn(),
+    spawnSync: vi.fn(),
   };
-});
-
-const { execGitArgsSync } = await import("../workflow/workflow-nodes/definitions.mjs");
+  vi.resetModules();
+  vi.doMock("node:child_process", async () => {
+    const actual = await vi.importActual("node:child_process");
+    return {
+      ...actual,
+      execFileSync: childProcessMocks.execFileSync,
+      execSync: childProcessMocks.execSync,
+      spawn: childProcessMocks.spawn,
+      spawnSync: childProcessMocks.spawnSync,
+    };
+  });
+  return import("../workflow/workflow-nodes/definitions.mjs");
+}
 
 describe("execGitArgsSync", () => {
   beforeEach(() => {
-    childProcessMocks.execFileSync.mockReset();
-    childProcessMocks.execSync.mockReset();
-    childProcessMocks.spawn.mockReset();
-    childProcessMocks.spawnSync.mockReset();
+    vi.resetModules();
+    vi.restoreAllMocks();
+    childProcessMocks = null;
   });
 
-  it("falls back to spawnSync when git execFileSync returns EPERM on Windows", () => {
+  it("falls back to spawnSync when git execFileSync returns EPERM on Windows", async () => {
     if (process.platform !== "win32") {
       return;
     }
+
+    const { execGitArgsSync } = await loadDefinitionsWithChildProcessMocks();
 
     childProcessMocks.execFileSync.mockImplementation((cmd) => {
       if (cmd === "where.exe") {
