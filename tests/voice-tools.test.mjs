@@ -233,19 +233,17 @@ vi.mock("../voice/voice-relay.mjs", () => ({
   })),
 }));
 
-// ── Lazy import (after mocks are set up) ─────────────────────────────────────
+// ── Fresh imports per test (avoid cross-file module cache leaks) ────────────
 
-const {
-  getToolDefinitions,
-  executeToolCall,
-  VOICE_TOOLS,
-} = await import("../voice/voice-tools.mjs");
-
-const { execPrimaryPrompt, setPrimaryAgent } = await import("../agent/primary-agent.mjs");
-const { execPooledPrompt } = await import("../agent/agent-pool.mjs");
-const promptDefaults = await import("../agent/agent-prompts.mjs");
-const sessionTracker = await import("../infra/session-tracker.mjs");
-const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
+let getToolDefinitions;
+let executeToolCall;
+let VOICE_TOOLS;
+let execPrimaryPrompt;
+let setPrimaryAgent;
+let execPooledPrompt;
+let promptDefaults;
+let sessionTracker;
+let analyzeVisionFrame;
 
 function withApprovedToolContext(context = {}) {
   return {
@@ -262,6 +260,20 @@ function withApprovedToolContext(context = {}) {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("voice-tools", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    ({
+      getToolDefinitions,
+      executeToolCall,
+      VOICE_TOOLS,
+    } = await import("../voice/voice-tools.mjs"));
+    ({ execPrimaryPrompt, setPrimaryAgent } = await import("../agent/primary-agent.mjs"));
+    ({ execPooledPrompt } = await import("../agent/agent-pool.mjs"));
+    promptDefaults = await import("../agent/agent-prompts.mjs");
+    sessionTracker = await import("../infra/session-tracker.mjs");
+    ({ analyzeVisionFrame } = await import("../voice/voice-relay.mjs"));
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

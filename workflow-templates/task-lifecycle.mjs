@@ -543,7 +543,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
           meta: "{{(() => { const current = ($data.meta && typeof $data.meta === 'object') ? $data.meta : (($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}); const retry = $ctx.getNodeOutput('retry-acquire-wt'); const output = retry && retry.success === false ? retry : ($ctx.getNodeOutput('acquire-worktree') || {}); const worktreePath = output.worktreePath || $data.worktreePath || ''; const repoRoot = $data.repoRoot || $data.workspace || current.repoRoot || current.workspace || ''; const branch = $data.branch || $data.branchName || current.branch || current.branchName || ''; const baseBranch = $data.baseBranch || current.baseBranch || ''; const defaultTargetBranch = $data.defaultTargetBranch || current.defaultTargetBranch || ''; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || output.error || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null, branch, repoRoot, baseBranch, defaultTargetBranch, worktreePath } }; })()}}",
         },
       },
-    }, { x: 470, y: 1480 }),
+    }, { x: 470, y: 1480, outputs: ["default", "error"] }),
 
     node("dispatch-wt-repair", "action.execute_workflow", "Dispatch WT Repair", {
       workflowId: "template-task-repair-worktree",

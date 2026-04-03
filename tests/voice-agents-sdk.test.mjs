@@ -9,9 +9,13 @@ vi.mock("../config/config.mjs", () => ({
   })),
 }));
 
-vi.mock("../agent/provider-auth-state.mjs", () => ({
-  resolveSharedOAuthToken: vi.fn(() => null),
-}));
+vi.mock("../agent/provider-auth-state.mjs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveSharedOAuthToken: vi.fn(() => null),
+  };
+});
 
 // ── Mock @openai/agents/realtime ────────────────────────────────────────────
 

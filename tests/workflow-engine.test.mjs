@@ -3568,6 +3568,94 @@ describe("WorkflowEngine - run history details", () => {
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
+  it("replays only the satisfied branch when retrying from_failed", async () => {
+    const executedNodes = [];
+    registerNodeType("test.retry_resume_record", {
+      describe: () => "Records retry-resume execution",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        executedNodes.push(node.id);
+        return { ok: true, nodeId: node.id };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "condition.expression", label: "Branch", config: { expression: "true" } },
+        { id: "success-path", type: "test.retry_resume_record", label: "Success Path", config: {} },
+        { id: "wrong-path", type: "test.retry_resume_record", label: "Wrong Path", config: {} },
+        { id: "resume-node", type: "test.retry_resume_record", label: "Resume Node", config: {} },
+      ],
+      [
+        { id: "t-branch", source: "trigger", target: "branch" },
+        { id: "branch-yes", source: "branch", target: "success-path", sourcePort: "yes", condition: "$output?.result === true" },
+        { id: "branch-no", source: "branch", target: "wrong-path", sourcePort: "no", condition: "$output?.result !== true" },
+        { id: "success-resume", source: "success-path", target: "resume-node" },
+      ],
+      { id: "wf-retry-resume-branching", name: "Retry Resume Branching" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-retry-resume-branching";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-branching-1",
+        },
+        nodeStatuses: {
+          trigger: NodeStatus.COMPLETED,
+          branch: NodeStatus.COMPLETED,
+          "success-path": NodeStatus.COMPLETED,
+          "resume-node": NodeStatus.FAILED,
+        },
+        nodeOutputs: {
+          trigger: { triggered: true },
+          branch: { result: true },
+          "success-path": { ok: true, nodeId: "success-path" },
+        },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
+
+    expect(retryRunId).toBeTruthy();
+    expect(executedNodes).toEqual(["resume-node"]);
+    const resumedRun = engine.getRunDetail(retryRunId);
+    expect(resumedRun?.detail?.nodeStatuses?.["wrong-path"]).toBe(NodeStatus.SKIPPED);
+    expect(resumedRun?.detail?.nodeStatuses?.["resume-node"]).toBe(NodeStatus.COMPLETED);
+  });
+
   it("retries a stalled non-task delegation run exactly once during interrupted-run recovery", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],

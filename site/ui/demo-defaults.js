@@ -24412,7 +24412,8 @@
             "y": 1480
           },
           "outputs": [
-            "default"
+            "default",
+            "error"
           ]
         },
         {
@@ -48743,7 +48744,8 @@
             "y": 1480
           },
           "outputs": [
-            "default"
+            "default",
+            "error"
           ]
         },
         {

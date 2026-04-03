@@ -37,10 +37,14 @@ vi.mock("../voice/voice-tools.mjs", () => ({
   ]),
 }));
 
-vi.mock("../agent/provider-auth-state.mjs", () => ({
-  resolveSharedOAuthToken: vi.fn(() => null),
-  saveSharedOAuthToken: vi.fn(),
-}));
+vi.mock("../agent/provider-auth-state.mjs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveSharedOAuthToken: vi.fn(() => null),
+    saveSharedOAuthToken: vi.fn(),
+  };
+});
 
 vi.mock("../infra/session-tracker.mjs", () => ({
   getSessionById: vi.fn(() => null),
@@ -74,13 +78,20 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ── Lazy imports (after mocks are wired) ─────────────────────────────────────
+// ── Fresh imports per test (avoid cross-file module cache leaks) ────────────
 
-const { loadConfig } = await import("../config/config.mjs");
-const {
-  getVoiceConfig,
-  createEphemeralToken,
-} = await import("../voice/voice-relay.mjs");
+let loadConfig;
+let getVoiceConfig;
+let createEphemeralToken;
+
+beforeEach(async () => {
+  vi.resetModules();
+  ({ loadConfig } = await import("../config/config.mjs"));
+  ({
+    getVoiceConfig,
+    createEphemeralToken,
+  } = await import("../voice/voice-relay.mjs"));
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  1. Voice identity / instructions injection

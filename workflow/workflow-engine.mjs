@@ -6356,18 +6356,6 @@ export class WorkflowEngine extends EventEmitter {
       });
     };
 
-    // ── Resume support (retry from_failed) ──────────────────────────────
-    // If nodes are already marked COMPLETED in the context (pre-seeded by
-    // retryRun), treat them as already executed so the DAG skips them and
-    // begins from the first un-completed node.
-    const preservedCompletedNodeIds = [];
-    for (const [nodeId, status] of ctx.nodeStatuses) {
-      if (status === NodeStatus.COMPLETED) {
-        preservedCompletedNodeIds.push(nodeId);
-        executed.add(nodeId);
-      }
-    }
-
     // Track in-degree for proper scheduling (exclude back-edges)
     const inDegree = new Map();
     const incomingSatisfiedCount = new Map();
@@ -6384,15 +6372,97 @@ export class WorkflowEngine extends EventEmitter {
     // Back-edge iteration counters: Map<edgeId, number>
     const backEdgeIterations = new Map();
 
-    // ── Adjust in-degree for pre-completed nodes (retry resume) ─────────
-    // When resuming from a failed step, pre-completed source nodes have
-    // already satisfied their downstream edges. Decrement the in-degree for
-    // each target so successors become ready once all live deps are met.
-    for (const nodeId of executed) {
+    const countForwardIncomingEdges = (targetNodeId) =>
+      (def.edges || []).filter((edge) => edge.target === targetNodeId && !edge.backEdge).length;
+
+    const resolveSelectedPortForOutput = (node, edges, sourceOutput) => {
+      const explicitEdgePorts = new Set(
+        edges
+          .map((edge) => String(edge?.sourcePort || "default").trim() || "default")
+          .filter((portName) => portName && portName !== "default"),
+      );
+      const inferredConditionPort =
+        !sourceOutput?.matchedPort
+        && !sourceOutput?.port
+        && node?.type?.startsWith("condition.")
+        && typeof sourceOutput?.result === "boolean"
+        ? (sourceOutput.result ? "yes" : "no")
+        : null;
+      const selectedPortRaw =
+        sourceOutput?.matchedPort ??
+        sourceOutput?.port ??
+        (inferredConditionPort && explicitEdgePorts.has(inferredConditionPort) ? inferredConditionPort : null);
+      return typeof selectedPortRaw === "string" && selectedPortRaw.trim()
+        ? selectedPortRaw.trim()
+        : null;
+    };
+
+    const propagateResumeSkip = (skippedNodeId) => {
+      if (countForwardIncomingEdges(skippedNodeId) > 1) return;
+      const skippedEdges = adjacency.get(skippedNodeId) || [];
+      for (const skippedEdge of skippedEdges) {
+        if (skippedEdge.backEdge) continue;
+        consumeReplayDependency(skippedEdge.target, false);
+      }
+    };
+
+    const consumeReplayDependency = (targetNodeId, matched) => {
+      const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
+      inDegree.set(targetNodeId, nextDegree);
+      if (matched) {
+        incomingSatisfiedCount.set(
+          targetNodeId,
+          (incomingSatisfiedCount.get(targetNodeId) || 0) + 1,
+        );
+      }
+      if (nextDegree <= 0 && !executed.has(targetNodeId) && (incomingSatisfiedCount.get(targetNodeId) || 0) <= 0) {
+        ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
+        executed.add(targetNodeId);
+        propagateResumeSkip(targetNodeId);
+      }
+    };
+
+    // ── Resume support (retry from_failed) ──────────────────────────────
+    // If nodes are already marked COMPLETED in the context (pre-seeded by
+    // retryRun), treat them as already executed and replay only the branch
+    // edges that were actually satisfied by their persisted outputs.
+    const preservedCompletedNodeIds = [];
+    for (const [nodeId, status] of ctx.nodeStatuses) {
+      if (status === NodeStatus.COMPLETED) {
+        preservedCompletedNodeIds.push(nodeId);
+        executed.add(nodeId);
+      }
+    }
+
+    for (const nodeId of preservedCompletedNodeIds) {
+      const node = nodeMap.get(nodeId);
       const edges = adjacency.get(nodeId) || [];
+      const sourceOutput = ctx.getNodeOutput(nodeId);
+      const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
+      const selectedPort = resolveSelectedPortForOutput(node, edges, sourceOutput);
       for (const edge of edges) {
-        const deg = (inDegree.get(edge.target) || 1) - 1;
-        inDegree.set(edge.target, Math.max(0, deg));
+        if (edge.backEdge) continue;
+        if (triggerBlocked) {
+          consumeReplayDependency(edge.target, false);
+          continue;
+        }
+        const edgePort = String(edge?.sourcePort || "default").trim() || "default";
+        if (selectedPort && edgePort !== selectedPort) {
+          consumeReplayDependency(edge.target, false);
+          continue;
+        }
+        if (edge.condition) {
+          try {
+            const condResult = this._evaluateCondition(edge.condition, ctx, nodeId);
+            if (!condResult) {
+              consumeReplayDependency(edge.target, false);
+              continue;
+            }
+          } catch {
+            continue;
+          }
+        }
+        consumeReplayDependency(edge.target, true);
       }
     }
 
@@ -6406,7 +6476,12 @@ export class WorkflowEngine extends EventEmitter {
     // Also add any non-entry nodes whose in-degree is now 0 due to pre-
     // completed predecessors (this makes "from_failed" resume work).
     for (const [nid, deg] of inDegree) {
-      if (deg <= 0 && !executed.has(nid) && !ready.has(nid)) {
+      if (
+        deg <= 0
+        && !executed.has(nid)
+        && !ready.has(nid)
+        && ((incomingSatisfiedCount.get(nid) || 0) > 0 || countForwardIncomingEdges(nid) === 0)
+      ) {
         ready.add(nid);
       }
     }
@@ -6713,26 +6788,7 @@ export class WorkflowEngine extends EventEmitter {
         const edges = adjacency.get(nodeId) || [];
         const sourceOutput = ctx.getNodeOutput(nodeId);
         const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
-        const explicitEdgePorts = new Set(
-          edges
-            .map((edge) => String(edge?.sourcePort || "default").trim() || "default")
-            .filter((portName) => portName && portName !== "default"),
-        );
-        const inferredConditionPort =
-          !sourceOutput?.matchedPort
-          && !sourceOutput?.port
-          && node?.type?.startsWith("condition.")
-          && typeof sourceOutput?.result === "boolean"
-          ? (sourceOutput.result ? "yes" : "no")
-          : null;
-        const selectedPortRaw =
-          sourceOutput?.matchedPort ??
-          sourceOutput?.port ??
-          (inferredConditionPort && explicitEdgePorts.has(inferredConditionPort) ? inferredConditionPort : null);
-        const selectedPort =
-          typeof selectedPortRaw === "string" && selectedPortRaw.trim()
-            ? selectedPortRaw.trim()
-            : null;
+        const selectedPort = resolveSelectedPortForOutput(node, edges, sourceOutput);
 
         if (triggerBlocked) {
           for (const edge of edges) {
@@ -6804,9 +6860,6 @@ export class WorkflowEngine extends EventEmitter {
             continue; // Skip normal edge processing for loop node
           }
         }
-
-        const countForwardIncomingEdges = (targetNodeId) =>
-          (def.edges || []).filter((edge) => edge.target === targetNodeId && !edge.backEdge).length;
 
         const propagateSkippedDependencies = (skippedNodeId) => {
           if (countForwardIncomingEdges(skippedNodeId) > 1) return;

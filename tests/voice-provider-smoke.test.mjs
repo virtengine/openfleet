@@ -5,11 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Prevent disk-cached shared auth tokens in ~/.bosun/voice-auth-state.json from
 // leaking in and making azureAvailable=true regardless of what env vars the
 // test sets.
-vi.mock("../agent/provider-auth-state.mjs", () => ({
-  resolveSharedOAuthToken: vi.fn(() => null),
-  hasSharedOAuthToken: vi.fn(() => false),
-  saveSharedOAuthToken: vi.fn(),
-}));
+vi.mock("../agent/provider-auth-state.mjs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveSharedOAuthToken: vi.fn(() => null),
+    hasSharedOAuthToken: vi.fn(() => false),
+    saveSharedOAuthToken: vi.fn(),
+  };
+});
 
 // Non-existent temp dir — prevents loadDotEnv + loadConfigFile from reading
 // the developer's real .env / bosun.config.json which may have Azure creds.

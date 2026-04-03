@@ -29,10 +29,14 @@ vi.mock("../voice/voice-tools.mjs", () => ({
 }));
 
 // Prevent real shared auth state on disk from leaking into tests
-vi.mock("../agent/provider-auth-state.mjs", () => ({
-  resolveSharedOAuthToken: vi.fn(() => null),
-  saveSharedOAuthToken: vi.fn(),
-}));
+vi.mock("../agent/provider-auth-state.mjs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveSharedOAuthToken: vi.fn(() => null),
+    saveSharedOAuthToken: vi.fn(),
+  };
+});
 
 vi.mock("../infra/session-tracker.mjs", () => ({
   getSessionById: vi.fn(() => null),
@@ -60,28 +64,26 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ── Lazy import (after mocks are set up) ─────────────────────────────────────
+// ── Fresh imports per test (avoid cross-file module cache leaks) ────────────
 
-const { loadConfig } = await import("../config/config.mjs");
-const { resolveSharedOAuthToken } = await import("../agent/provider-auth-state.mjs");
-const {
-  beginVoiceTurnTrace,
-  completeVoiceTurnTrace,
-  abortVoiceTurnTrace,
-  getVoiceTurnTrace,
-  renderVoiceTurnTrace,
-  formatVoiceTurnTrace,
-  getVoiceConfig,
-  isVoiceAvailable,
-  createEphemeralToken,
-  getVoiceToolDefinitions,
-  getSessionAllowedTools,
-  executeVoiceTool,
-  getRealtimeConnectionInfo,
-  analyzeVisionFrame,
-  dispatchVoiceActionIntent,
-} = await import("../voice/voice-relay.mjs");
-const { clearVisionSessionState } = await import("../voice/vision-session-state.mjs");
+let loadConfig;
+let resolveSharedOAuthToken;
+let beginVoiceTurnTrace;
+let completeVoiceTurnTrace;
+let abortVoiceTurnTrace;
+let getVoiceTurnTrace;
+let renderVoiceTurnTrace;
+let formatVoiceTurnTrace;
+let getVoiceConfig;
+let isVoiceAvailable;
+let createEphemeralToken;
+let getVoiceToolDefinitions;
+let getSessionAllowedTools;
+let executeVoiceTool;
+let getRealtimeConnectionInfo;
+let analyzeVisionFrame;
+let dispatchVoiceActionIntent;
+let clearVisionSessionState;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -110,11 +112,35 @@ describe("voice-relay", () => {
   ];
   const savedEnv = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     for (const k of envKeys) {
       savedEnv[k] = process.env[k];
       delete process.env[k];
     }
+
+    vi.resetModules();
+
+    ({ loadConfig } = await import("../config/config.mjs"));
+    ({ resolveSharedOAuthToken } = await import("../agent/provider-auth-state.mjs"));
+    ({
+      beginVoiceTurnTrace,
+      completeVoiceTurnTrace,
+      abortVoiceTurnTrace,
+      getVoiceTurnTrace,
+      renderVoiceTurnTrace,
+      formatVoiceTurnTrace,
+      getVoiceConfig,
+      isVoiceAvailable,
+      createEphemeralToken,
+      getVoiceToolDefinitions,
+      getSessionAllowedTools,
+      executeVoiceTool,
+      getRealtimeConnectionInfo,
+      analyzeVisionFrame,
+      dispatchVoiceActionIntent,
+    } = await import("../voice/voice-relay.mjs"));
+    ({ clearVisionSessionState } = await import("../voice/vision-session-state.mjs"));
+
     // Reset config mock to default
     vi.mocked(loadConfig).mockReturnValue({
       voice: {},
@@ -123,6 +149,9 @@ describe("voice-relay", () => {
   });
 
   afterEach(() => {
+    clearVisionSessionState?.("primary-1");
+    clearVisionSessionState?.("primary-claude-1");
+    clearVisionSessionState?.("primary-gemini-1");
     for (const k of envKeys) {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k];
