@@ -857,6 +857,7 @@ async function maybeCompressResultItems(
   {
     sdk = "",
     sessionType = "task",
+    sessionId = null,
     allowCompression = true,
     forceCompression = false,
     skipCompression = false,
@@ -873,6 +874,7 @@ async function maybeCompressResultItems(
   return maybeCompressSessionItems(items, {
     sessionType: resolvedSessionType,
     agentType,
+    sessionId,
     force: forceCompression,
     skip: skipCompression,
   });
@@ -3865,6 +3867,7 @@ export async function execPooledPrompt(userMessage, options = {}) {
       finalItems = await maybeCompressResultItems(result.items, {
         sdk: sdk || result.sdk,
         sessionType,
+        sessionId: options.sessionId || null,
         allowCompression: true,
         forceCompression: forceContextShredding,
         skipCompression: skipContextShredding,
@@ -3993,7 +3996,10 @@ function bindManagedExternalSessionController(sessionManager, sessionId, default
     async run(runRequest = {}) {
       const prompt = normalizeManagedExternalPrompt(runRequest);
       if (!prompt) {
-        throw new Error(`Managed session "${normalizedSessionId}" continuation requires a prompt`);
+        return sessionManager.getSession?.(normalizedSessionId) || {
+          sessionId: normalizedSessionId,
+          status: "running",
+        };
       }
       const cwd = runRequest.cwd || defaults.cwd || process.cwd();
       const timeoutMs = Number(runRequest.timeoutMs || runRequest.timeout || defaults.timeoutMs) || DEFAULT_TIMEOUT_MS;
@@ -4675,6 +4681,7 @@ export async function launchOrResumeThread(
       const compressedItems = await maybeCompressResultItems(result.items, {
         sdk: resultSdk,
         sessionType: restExtra.sessionType || "task",
+        sessionId: managedSessionId || restExtra.sessionId || null,
         allowCompression: true,
         forceCompression: restExtra.forceContextShredding === true,
         skipCompression: restExtra.skipContextShredding === true,

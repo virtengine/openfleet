@@ -986,7 +986,13 @@ function createInternalSessionManager(defaultOptions = {}) {
         meta: { action: input.action || "continue" },
       });
       const controller = getSessionController(normalizedSessionId);
-      if (controller?.run) {
+      const runPrompt = toTrimmedString(
+        input?.runRequest?.prompt
+        || input?.runRequest?.message
+        || input?.runRequest?.userMessage
+        || "",
+      );
+      if (controller?.run && runPrompt) {
         return controller.run({
           ...(toPlainObject(input.runRequest)),
           sessionId: normalizedSessionId,

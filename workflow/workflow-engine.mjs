@@ -43,8 +43,8 @@
  * runtime or a second approval/provider control plane.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
-import { resolve, basename, extname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, renameSync } from "node:fs";
+import { resolve, basename, extname, join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
@@ -1227,6 +1227,19 @@ function isWildcardPortType(type) {
   return normalized === "*" || normalized === "Any";
 }
 
+function normalizePortTypeForCompatibility(type) {
+  const normalized = String(type || "").trim();
+  if (!normalized) return "Any";
+  const lowered = normalized.toLowerCase();
+  if (["*", "any"].includes(lowered)) return "Any";
+  if (["taskdef"].includes(lowered)) return "json";
+  if (["json", "object"].includes(lowered)) return "json";
+  if (["string", "text"].includes(lowered)) return "string";
+  if (["boolean", "bool"].includes(lowered)) return "boolean";
+  if (["number", "numeric", "float", "int", "integer"].includes(lowered)) return "number";
+  return lowered;
+}
+
 export function isPortConnectionCompatible(sourcePort, targetPort) {
   if (!sourcePort || !targetPort) {
     return { compatible: true, reason: null };
@@ -1234,17 +1247,24 @@ export function isPortConnectionCompatible(sourcePort, targetPort) {
 
   const sourceType = String(sourcePort.type || "Any").trim() || "Any";
   const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const normalizedSourceType = normalizePortTypeForCompatibility(sourceType);
+  const normalizedTargetType = normalizePortTypeForCompatibility(targetType);
   const accepted = new Set(
     [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
-      .map((value) => String(value || "").trim())
+      .map((value) => normalizePortTypeForCompatibility(value))
       .filter(Boolean),
   );
 
-  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+  if (
+    isWildcardPortType(sourceType)
+    || isWildcardPortType(targetType)
+    || accepted.has(normalizePortTypeForCompatibility("*"))
+    || accepted.has(normalizePortTypeForCompatibility("Any"))
+  ) {
     return { compatible: true, reason: null };
   }
 
-  if (sourceType === targetType || accepted.has(sourceType)) {
+  if (normalizedSourceType === normalizedTargetType || accepted.has(normalizedSourceType)) {
     return { compatible: true, reason: null };
   }
 
@@ -2050,7 +2070,39 @@ function collectValidationFailures(detail = {}) {
     .filter(Boolean);
 }
 
-function collectRunTaskIds(detail = {}) {
+const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EXDEV", "EPERM", "EACCES", "EBUSY"]);
+
+function writeJsonFileAtomically(filePath, value) {
+  const dirPath = dirname(filePath);
+  if (!existsSync(dirPath)) {
+    mkdirSync(dirPath, { recursive: true });
+  }
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  const json = JSON.stringify(value, null, 2);
+  writeFileSync(tmpPath, json, "utf8");
+  try {
+    renameSync(tmpPath, filePath);
+  } catch (renameErr) {
+    if (!ATOMIC_RENAME_FALLBACK_CODES.has(renameErr?.code)) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        /* best effort */
+      }
+      throw renameErr;
+    }
+    writeFileSync(filePath, json, "utf8");
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+function collectRunTaskIds(detail = {}, options = {}) {
+  const currentRunId = normalizeWorkflowIdentityText(options?.currentRunId || "");
+  const includeTopologyIds = options?.includeTopologyIds !== false;
   const ids = new Set();
   const push = (value) => {
     const normalized = normalizeWorkflowIdentityText(value);
@@ -2062,17 +2114,24 @@ function collectRunTaskIds(detail = {}) {
   push(detail?.data?.task?.id);
   push(detail?.data?.taskInfo?.id);
   push(detail?.data?.taskDetail?.id);
-  push(detail?.data?._workflowRootTaskId);
-  push(detail?.data?._workflowParentTaskId);
+  if (includeTopologyIds) {
+    push(detail?.data?._workflowRootTaskId);
+    push(detail?.data?._workflowParentTaskId);
+  }
 
   for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    if (currentRunId) {
+      const eventRunId = normalizeWorkflowIdentityText(event?.runId);
+      if (eventRunId && eventRunId !== currentRunId) continue;
+    }
     push(event?.taskId);
   }
 
   return [...ids];
 }
 
-function resolveRunTaskTitle(detail = {}) {
+function resolveRunTaskTitle(detail = {}, options = {}) {
+  const currentRunId = normalizeWorkflowIdentityText(options?.currentRunId || "");
   const direct = [
     detail?.data?.taskTitle,
     detail?.data?.task?.title,
@@ -2084,6 +2143,10 @@ function resolveRunTaskTitle(detail = {}) {
   if (direct) return direct;
 
   for (const event of Array.isArray(detail?.data?._taskWorkflowEvents) ? detail.data._taskWorkflowEvents : []) {
+    if (currentRunId) {
+      const eventRunId = normalizeWorkflowIdentityText(event?.runId);
+      if (eventRunId && eventRunId !== currentRunId) continue;
+    }
     const title = normalizeWorkflowIdentityText(event?.taskTitle);
     if (title) return title;
   }
@@ -2251,7 +2314,10 @@ function buildRunDelegationTopology({ runId = null, detail = {}, runGraph = null
 
 function buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx) {
   const detail = ctx?.toJSON?.(Date.now()) || {};
-  const taskIds = collectRunTaskIds(detail);
+  const taskIds = collectRunTaskIds(detail, {
+    currentRunId: runId,
+    includeTopologyIds: false,
+  });
   const sessionIds = collectRunSessionIds(detail);
   return cleanObject({
     runId,
@@ -2260,7 +2326,7 @@ function buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx) {
     startedAt: ctx?.startedAt || Date.now(),
     taskId: taskIds[0] || undefined,
     taskIds: taskIds.length > 0 ? taskIds : undefined,
-    taskTitle: resolveRunTaskTitle(detail) || undefined,
+    taskTitle: resolveRunTaskTitle(detail, { currentRunId: runId }) || undefined,
     sessionId: sessionIds[0] || undefined,
     sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
   });
@@ -7352,7 +7418,7 @@ export class WorkflowEngine extends EventEmitter {
     try {
       this._ensureDirs();
       const p = resolve(this.runsDir, ACTIVE_RUNS_INDEX);
-      writeFileSync(p, JSON.stringify(entries, null, 2), "utf8");
+      writeJsonFileAtomically(p, entries);
     } catch (err) {
       console.error(`${TAG} Failed to write active-runs index:`, err.message);
     }
@@ -7736,6 +7802,19 @@ export class WorkflowEngine extends EventEmitter {
 
           // Reuse cached detail if available (already parsed above)
           const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
+          const resumedTaskId = this._resolveRunTaskIdentity(run, detail)?.taskId || "";
+          if (resumedTaskId) {
+            const taskAlreadyActive = Array.from(this._activeRuns.values()).some((info) => {
+              const activeTaskId = normalizeWorkflowIdentityText(
+                info?.ctx?.data?.taskId || info?.ctx?.data?.task?.id || "",
+              );
+              return activeTaskId === resumedTaskId;
+            });
+            if (taskAlreadyActive) {
+              this._markRunUnresumable(run.runId, "task_already_active");
+              continue;
+            }
+          }
           const watchdogDecision = buildDelegationWatchdogDecision(detail, {
             defaultTimeoutMs: DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS,
             defaultMaxRecoveries: DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES,
@@ -7916,7 +7995,7 @@ export class WorkflowEngine extends EventEmitter {
 
   _writeRunDetail(runId, detail) {
     const detailPath = resolve(this.runsDir, `${runId}.json`);
-    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+    writeJsonFileAtomically(detailPath, detail);
   }
 
   _writeRunDetailToStateLedger(runId, detail) {
@@ -7929,7 +8008,7 @@ export class WorkflowEngine extends EventEmitter {
 
   _writeRunIndex(runs) {
     const indexPath = resolve(this.runsDir, "index.json");
-    writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+    writeJsonFileAtomically(indexPath, { runs });
     this._runIndexCache = runs;
     clearRunHistoryCache();
     try {

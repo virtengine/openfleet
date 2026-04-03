@@ -420,6 +420,15 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     };
   }
 
+  function toWorkflowStructureFingerprintPayload(def = {}) {
+    return {
+      category: def.category || "custom",
+      trigger: def.trigger || "",
+      nodes: Array.isArray(def.nodes) ? def.nodes.map((node) => toFingerprintNode(node)) : [],
+      edges: Array.isArray(def.edges) ? def.edges.map((edgeDef) => toFingerprintEdge(edgeDef)) : [],
+    };
+  }
+
   function getExpectedDerivedOutputPortNames(node = {}) {
     const explicitOutputNames = Array.isArray(node?.outputs)
       ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
@@ -588,6 +597,10 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     return hashContent(toWorkflowFingerprintPayload(def));
   }
 
+  function computeWorkflowStructureFingerprint(def = {}) {
+    return hashContent(toWorkflowStructureFingerprintPayload(def));
+  }
+
   function collectStartupCriticalTemplateIssues(def = {}) {
     const templateId = String(def?.metadata?.installedFrom || "").trim();
     if (!STARTUP_CRITICAL_TEMPLATE_IDS.has(templateId)) return [];
@@ -595,11 +608,11 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     if (!template) return [];
 
     const issues = [];
-    if (computeWorkflowFingerprint(def) !== computeWorkflowFingerprint(template)) {
+    if (computeWorkflowStructureFingerprint(def) !== computeWorkflowStructureFingerprint(template)) {
       issues.push({
         code: "fingerprint_mismatch",
         templateId,
-        message: `Installed workflow fingerprint differs from source template for ${templateId}`,
+        message: `Installed workflow structure differs from source template for ${templateId}`,
       });
     }
     if (templateId === "template-task-lifecycle") {

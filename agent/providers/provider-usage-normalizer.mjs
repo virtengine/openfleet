@@ -19,6 +19,15 @@ export function normalizeProviderUsageMetadata(usage = {}) {
       ?? usage.total_tokens
       ?? inputTokens + outputTokens,
   );
+  const cacheInputTokens = Number(
+    usage.cacheInputTokens
+      ?? usage.cachedInputTokens
+      ?? usage.cache_input_tokens
+      ?? usage.cached_input_tokens
+      ?? usage.prompt_tokens_details?.cached_tokens
+      ?? usage.input_tokens_details?.cached_tokens
+      ?? 0,
+  );
   const costUsd = Number(
     usage.costUsd
       ?? usage.costUSD
@@ -30,6 +39,7 @@ export function normalizeProviderUsageMetadata(usage = {}) {
     inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
     outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
     totalTokens: Number.isFinite(totalTokens) ? totalTokens : 0,
+    cacheInputTokens: Number.isFinite(cacheInputTokens) ? cacheInputTokens : 0,
     costUsd: Number.isFinite(costUsd) ? costUsd : 0,
     raw: JSON.parse(JSON.stringify(usage)),
   };

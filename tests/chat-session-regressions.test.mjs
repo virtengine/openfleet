@@ -92,7 +92,50 @@ describe("chat session regressions", () => {
     const source = read("ui/tabs/chat.js");
     expect(source).toContain("const isLoadingSessionList = sessionsLoading.value === true;");
     expect(source).toContain("const listedRouteSession = (sessionsData.value || []).some(");
+    expect(source).toContain("lastAppliedRouteSessionIdRef");
+    expect(source).toContain("lastAppliedRouteSessionIdRef.current === routeSessionId");
     expect(source).toContain("setRouteParams({}, { replace: true, skipGuard: true });");
+  });
+
+  it("refuses to reuse leaked test shells when creating a new chat session", () => {
+    const source = read("ui/components/session-list.js");
+    expect(source).toContain("function sessionLooksLikeTestLeak(session)");
+    expect(source).toContain("!sessionLooksLikeTestLeak(s)");
+    expect(source).toContain("metadata?.hiddenInLists === true");
+    expect(source).toContain("null|undefined|\\(null\\)|session|null session");
+  });
+
+  it("persists session title edits back into durable session records", () => {
+    const source = read("server/routes/harness-sessions.mjs");
+    expect(source).toContain('if (action === "rename" && req.method === "POST")');
+    expect(source).toContain("upsertSessionRecordToStateLedger({");
+    expect(source).toContain("{ ...session.metadata, title }");
+    expect(source).toContain("invalidateDurableSessionListCache()");
+  });
+
+  it("defines composerBusy before the stop-lock effect reads it", () => {
+    const source = read("ui/tabs/chat.js");
+    expect(source.indexOf("const composerBusy =")).toBeGreaterThan(-1);
+    expect(source.indexOf("// Clear one-shot stop UI lock as soon as the selected agent reports idle.")).toBeGreaterThan(source.indexOf("const composerBusy ="));
+  });
+
+  it("stops hidden comparison sessions before resetting them and exposes executor controls", () => {
+    const source = read("ui/tabs/context-compression-lab.js");
+    expect(source).toContain("Stop & Reset Sessions");
+    expect(source).toContain("stopLabSession(sessionIds.left)");
+    expect(source).toContain("stopLabSession(sessionIds.right)");
+    expect(source).toContain('label="Executor"');
+    expect(source).toContain('label="Model"');
+    expect(source).toContain("agent: paneConfigs.left?.agent || undefined");
+    expect(source).toContain("agent: paneConfigs.right?.agent || undefined");
+  });
+
+  it("lets session messages override and persist the executor/model for harness runs", () => {
+    const source = read("server/routes/harness-sessions.mjs");
+    expect(source).toContain("body?.providerSelection || body?.agent || session?.metadata?.agent");
+    expect(source).toContain("refreshedSession.metadata = nextMetadata");
+    expect(source).toContain("providerSelection: messageAgent");
+    expect(source).toContain("model: messageModel");
   });
 });
 

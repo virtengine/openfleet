@@ -71,6 +71,11 @@ const TIMELINE_PHASE_META = {
   error: { label: "Error", color: "error", accent: "#dc2626" },
 };
 
+function renderTimelineLabel(text, fallback = "") {
+  const rendered = iconText(text);
+  return rendered == null ? (fallback || "") : rendered;
+}
+
 function formatAutoAction(event) {
   if (!event) return null;
   const label =
@@ -579,14 +584,14 @@ const TraceTimelineEntry = memo(function TraceTimelineEntry({ entry, verbosity =
       <${Stack} spacing=${0.5}>
         <${Stack} direction="row" spacing=${0.75} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
           <${Chip}
-            label=${phaseMeta.label}
+            label=${renderTimelineLabel(phaseMeta.label, phaseMeta.label)}
             size="small"
             color=${phaseMeta.color}
             variant="outlined"
             sx=${{ height: 20, fontSize: '0.625rem' }}
           />
           <${Typography} variant="caption" sx=${{ fontWeight: 600, fontSize: '0.75rem' }}>
-            ${entry?.title || phaseMeta.label}
+            ${renderTimelineLabel(entry?.title || phaseMeta.label, entry?.title || phaseMeta.label)}
           </${Typography}>
           ${entry?.timestamp
             ? html`<${Typography} variant="caption" color="text.secondary" sx=${{ ml: 'auto', fontSize: '0.6875rem' }}>
@@ -600,7 +605,7 @@ const TraceTimelineEntry = memo(function TraceTimelineEntry({ entry, verbosity =
                 ${entry.chips.map((chip) => html`
                   <${Chip}
                     key=${`${entry.id}-${chip}`}
-                    label=${chip}
+                    label=${renderTimelineLabel(chip, chip)}
                     size="small"
                     variant="filled"
                     sx=${{
@@ -668,14 +673,14 @@ const TraceTimelineBlock = memo(function TraceTimelineBlock({ block, verbosity =
         <${Stack} spacing=${0.75}>
           <${Stack} direction="row" spacing=${0.75} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
             <${Chip}
-              label=${phaseMeta.label}
+              label=${renderTimelineLabel(phaseMeta.label, phaseMeta.label)}
               size="small"
               color=${block?.hasError ? "error" : phaseMeta.color}
               variant=${forceExpand || verbosity === "full" ? "filled" : "outlined"}
               sx=${{ height: 22, fontSize: '0.6875rem' }}
             />
             <${Typography} variant="body2" sx=${{ flex: 1, fontWeight: 600 }}>
-              ${block?.summary || block?.title || phaseMeta.label}
+              ${renderTimelineLabel(block?.summary || block?.title || phaseMeta.label, block?.summary || block?.title || phaseMeta.label)}
             </${Typography}>
             <${Typography} variant="caption" color="text.secondary">
               ${expanded ? "▾" : "▸"}
@@ -687,7 +692,7 @@ const TraceTimelineBlock = memo(function TraceTimelineBlock({ block, verbosity =
                   ${block.chips.map((chip) => html`
                     <${Chip}
                       key=${`${block.key}-${chip}`}
-                      label=${chip}
+                      label=${renderTimelineLabel(chip, chip)}
                       size="small"
                       variant="outlined"
                       sx=${{ height: 20, fontSize: '0.625rem' }}

@@ -651,7 +651,19 @@ registerNodeType("trigger.task_available", {
         : STRICT_START_GUARD_MISSING_TASK;
 
     // Check slot availability
-    const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
+    const workflowActiveRuns =
+      typeof engine?.getActiveRuns === "function"
+        ? engine.getActiveRuns()
+        : [];
+    const workflowActiveTaskIds = Array.from(new Set(
+      workflowActiveRuns
+        .map((run) => String(run?.taskId || "").trim())
+        .filter(Boolean),
+    ));
+    const activeSlotCount = Number(
+      ctx.data?.activeSlotCount
+      ?? (workflowActiveTaskIds.length > 0 ? workflowActiveTaskIds.length : 0),
+    ) || 0;
     if (activeSlotCount >= maxParallel) {
       ctx.log(node.id, `All ${maxParallel} slot(s) in use — skipping`);
       return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
@@ -735,7 +747,9 @@ registerNodeType("trigger.task_available", {
     }
 
     // Anti-thrash + cooldown filters
-    const activeTaskIds = ctx.data?.activeTaskIds || [];
+    const activeTaskIds = Array.isArray(ctx.data?.activeTaskIds) && ctx.data.activeTaskIds.length > 0
+      ? ctx.data.activeTaskIds
+      : workflowActiveTaskIds;
     const now = Date.now();
     tasks = tasks.filter((t) => {
       const id = String(t.id || t.task_id || "");
@@ -1027,6 +1041,5 @@ registerNodeType("trigger.task_available", {
   },
 });
 // ── condition.slot_available ────────────────────────────────────────────────
-
 
 

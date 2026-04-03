@@ -1,3 +1,5 @@
+import { getShreddingStats, retrieveToolLog } from "../../workspace/context-cache.mjs";
+
 function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
@@ -28,11 +30,109 @@ function compactSessionMetadata(metadata = {}) {
     "visibility",
     "hidden",
     "hiddenInLists",
+    "title",
+    "contextCompressionMode",
   ];
   for (const key of keys) {
     if (metadata[key] !== undefined) compact[key] = metadata[key];
   }
   return compact;
+}
+
+function normalizeContextCompressionMode(value, fallback = "normal") {
+  const normalized = toTrimmedString(value).toLowerCase();
+  if (normalized === "forced" || normalized === "force" || normalized === "shredded") return "forced";
+  if (normalized === "disabled" || normalized === "disable" || normalized === "off" || normalized === "skip") return "disabled";
+  if (normalized === "normal" || normalized === "auto" || normalized === "default") return "normal";
+  return fallback;
+}
+
+function resolveSessionContextCompressionMode(session = null, body = null) {
+  const bodyValue = body && typeof body === "object" ? body.contextCompressionMode : undefined;
+  if (bodyValue !== undefined) {
+    return normalizeContextCompressionMode(bodyValue, "normal");
+  }
+  const metadata =
+    session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  return normalizeContextCompressionMode(metadata.contextCompressionMode, "normal");
+}
+
+function listSessionShreddingEvents(sessionId) {
+  const normalizedSessionId = toTrimmedString(sessionId);
+  if (!normalizedSessionId) return [];
+  return getShreddingStats()
+    .filter((entry) => toTrimmedString(entry?.sessionId) === normalizedSessionId)
+    .sort((left, right) =>
+      String(right?.timestamp || "").localeCompare(String(left?.timestamp || "")),
+    );
+}
+
+function isEffectiveSessionCompactionEvent(event = {}) {
+  const stage = toTrimmedString(event?.stage).toLowerCase();
+  const decision = toTrimmedString(event?.decision).toLowerCase();
+  if (!stage || stage === "session_total") return false;
+  if (decision && decision !== "compressed") return false;
+  return Number(event?.savedChars || 0) > 0 || Number(event?.compressedChars || 0) > 0;
+}
+
+function buildSessionCompressionMetrics(session = null, events = []) {
+  const totals = session?.insights?.totals && typeof session.insights.totals === "object"
+    ? session.insights.totals
+    : {};
+  const fileCounts = session?.insights?.fileCounts && typeof session.insights.fileCounts === "object"
+    ? session.insights.fileCounts
+    : {};
+  const tokenUsage =
+    session?.tokenUsage && typeof session.tokenUsage === "object"
+      ? session.tokenUsage
+      : session?.insights?.tokenUsage && typeof session.insights.tokenUsage === "object"
+        ? session.insights.tokenUsage
+        : {
+            totalTokens: Number(session?.tokenCount || 0) || 0,
+            inputTokens: Number(session?.inputTokens || 0) || 0,
+            outputTokens: Number(session?.outputTokens || 0) || 0,
+            cacheInputTokens: Number(session?.cacheInputTokens || 0) || 0,
+          };
+  const effectiveEvents = events.filter((event) => isEffectiveSessionCompactionEvent(event));
+  const createdAt = Date.parse(
+    String(session?.createdAt || session?.startedAt || session?.lastActiveAt || "") || "",
+  ) || 0;
+  const endedAt = Date.parse(
+    String(session?.lastActiveAt || session?.updatedAt || session?.endedAt || session?.createdAt || "") || "",
+  ) || createdAt;
+  const elapsedMs = Number(session?.elapsedMs || 0) > 0
+    ? Number(session.elapsedMs)
+    : Math.max(0, endedAt - createdAt);
+  return {
+    tokenUsage: {
+      totalTokens: Number(tokenUsage?.totalTokens || 0) || 0,
+      inputTokens: Number(tokenUsage?.inputTokens || 0) || 0,
+      outputTokens: Number(tokenUsage?.outputTokens || 0) || 0,
+      cacheInputTokens: Number(tokenUsage?.cacheInputTokens || 0) || 0,
+    },
+    elapsedMs,
+    compactEvents: effectiveEvents.length,
+    filesChanged: Math.max(0, Number(fileCounts?.editedFiles || 0) || 0),
+    totalMessages: Array.isArray(session?.messages) ? session.messages.length : Math.max(0, Number(totals?.messages || 0) || 0),
+    toolCalls: Math.max(0, Number(totals?.toolCalls || 0) || 0),
+    toolResults: Math.max(0, Number(totals?.toolResults || 0) || 0),
+    totalEvents: Math.max(0, Number(session?.totalEvents ?? session?.eventCount ?? totals?.messages ?? 0) || 0),
+    compressionMode: resolveSessionContextCompressionMode(session),
+  };
+}
+
+function extractCachedEntryText(entry = null) {
+  const item = entry?.item && typeof entry.item === "object" ? entry.item : null;
+  if (!item) return "";
+  return String(
+    item.text
+    ?? item.output
+    ?? item.aggregated_output
+    ?? item.content?.find?.((part) => part?.type === "text")?.text
+    ?? "",
+  );
 }
 
 function compactSessionInsights(insights = {}) {
@@ -395,15 +495,23 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const resolvedWorkspaceDir = requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
       const resolvedWorkspaceRoot = requestedWorkspaceRoot || workspaceContext.workspaceRoot || resolvedWorkspaceDir;
       const requestedAgentProfileId = toTrimmedString(body?.agentProfileId || "");
+      const requestedAgent = toTrimmedString(body?.providerSelection || body?.agent || "") || getPrimaryAgentName();
+      const requestedModel = toTrimmedString(body?.model || "") || undefined;
       const tracker = getSessionTracker();
       const session = tracker.createSession({
         id,
         type,
         metadata: {
           prompt: body?.prompt,
-          agent: body?.agent || getPrimaryAgentName(),
+          ...(toTrimmedString(body?.title || "") ? { title: toTrimmedString(body.title) } : {}),
+          agent: requestedAgent,
           mode: body?.mode || getAgentMode(),
-          model: body?.model || undefined,
+          model: requestedModel,
+          contextCompressionMode: resolveSessionContextCompressionMode(null, body),
+          source: body?.source || undefined,
+          visibility: body?.visibility || undefined,
+          hidden: body?.hidden === true,
+          hiddenInLists: body?.hiddenInLists === true,
           ...(requestedAgentProfileId ? { agentProfileId: requestedAgentProfileId } : {}),
           ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
           ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
@@ -449,6 +557,36 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     upsertSessionRecordToStateLedger,
   });
 
+  const stopTrackedSessionTurn = ({
+    reason = "user_stop",
+    message = "",
+    nextStatus = "",
+  } = {}) => {
+    const abortController = sessionRunAbortControllers.get(sessionId);
+    const wasRunning = Boolean(abortController && !abortController.signal?.aborted);
+    if (wasRunning) {
+      try {
+        abortController.abort(reason);
+      } catch {
+      }
+      sessionRunAbortControllers.delete(sessionId);
+    }
+
+    const liveSession = tracker.getSessionById(sessionId);
+    if (liveSession && message) {
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "system",
+        content: message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    if (liveSession && nextStatus) {
+      tracker.updateSessionStatus(sessionId, nextStatus);
+    }
+    return wasRunning;
+  };
+
   if (!action && req.method === "GET") {
     try {
       const session = getScopedSessionRecord({ includeMessages: true });
@@ -478,6 +616,84 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         ok: true,
         session: { ...session, messages: sliced },
         pagination: { total, offset, limit, hasMore: offset > 0 },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  if (action === "context-compression" && req.method === "GET") {
+    try {
+      const session = getScopedSessionRecord({ includeMessages: true });
+      if (!session) {
+        jsonResponse(res, 404, { ok: false, error: "Session not found" });
+        return true;
+      }
+      const events = listSessionShreddingEvents(sessionId);
+      jsonResponse(res, 200, {
+        ok: true,
+        sessionId,
+        session,
+        metrics: buildSessionCompressionMetrics(session, events),
+        recentEvents: events.slice(0, 50),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  if (action === "shredding-events" && req.method === "GET") {
+    try {
+      const session = getScopedSessionRecord({ includeMessages: false });
+      if (!session) {
+        jsonResponse(res, 404, { ok: false, error: "Session not found" });
+        return true;
+      }
+      const events = listSessionShreddingEvents(sessionId);
+      jsonResponse(res, 200, {
+        ok: true,
+        sessionId,
+        metrics: buildSessionCompressionMetrics(session, events),
+        events,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  const shreddingMessageMatch = action && action.match(/^shredding-message\/([^/]+)$/);
+  if (shreddingMessageMatch && req.method === "GET") {
+    try {
+      const session = getScopedSessionRecord({ includeMessages: true });
+      if (!session) {
+        jsonResponse(res, 404, { ok: false, error: "Session not found" });
+        return true;
+      }
+      const messageId = decodeURIComponent(shreddingMessageMatch[1]);
+      const events = listSessionShreddingEvents(sessionId).filter(
+        (event) => toTrimmedString(event?.messageId) === toTrimmedString(messageId),
+      );
+      const messageIndex = Array.isArray(session.messages)
+        ? session.messages.findIndex((entry) =>
+            toTrimmedString(entry?.id || entry?.messageId) === toTrimmedString(messageId))
+        : -1;
+      const message = messageIndex >= 0 ? session.messages[messageIndex] : null;
+      const primaryEvent = events[0] || null;
+      const cachedLogId = primaryEvent?.cachedLogId || message?._cachedLogId || null;
+      const cachedLog = cachedLogId ? await retrieveToolLog(cachedLogId) : null;
+      jsonResponse(res, 200, {
+        ok: true,
+        sessionId,
+        messageId,
+        messageIndex,
+        message,
+        events,
+        before: extractCachedEntryText(cachedLog?.entry) || primaryEvent?.beforePreview || "",
+        after: primaryEvent?.afterPreview || String(message?.content || ""),
+        cachedLog,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -544,24 +760,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         return true;
       }
 
-      const abortController = sessionRunAbortControllers.get(sessionId);
-      const wasRunning = Boolean(abortController && !abortController.signal?.aborted);
-      if (wasRunning) {
-        try {
-          abortController.abort("user_stop");
-        } catch {
-        }
-        tracker.recordEvent(sessionId, {
-          role: "system",
-          type: "system",
-          content: "Stop requested. Cancelling current agent turn...",
-          timestamp: new Date().toISOString(),
-        });
-      }
+      const wasRunning = stopTrackedSessionTurn({
+        reason: "user_stop",
+        message: "Stop requested. Cancelling current agent turn...",
+        nextStatus: "completed",
+      });
 
       jsonResponse(res, 200, { ok: true, stopped: wasRunning });
       broadcastUiEvent(["sessions", "agents"], "invalidate", {
-        reason: wasRunning ? "session-stop-requested" : "session-stop-noop",
+        reason: wasRunning ? "agent-stopped" : "session-stop-noop",
         sessionId,
       });
       broadcastSessionsSnapshot();
@@ -596,7 +803,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const messageContent = typeof content === "string" ? content : "";
       const messageMode = body?.mode || undefined;
-      const messageModel = body?.model || undefined;
+      const messageAgent = toTrimmedString(
+        body?.providerSelection || body?.agent || session?.metadata?.agent || "",
+      ) || undefined;
+      const messageModel = toTrimmedString(
+        body?.model || session?.metadata?.model || "",
+      ) || undefined;
+      const contextCompressionMode = resolveSessionContextCompressionMode(session, body);
+      const forceContextShredding = contextCompressionMode === "forced";
+      const skipContextShredding = contextCompressionMode === "disabled";
       const messageAgentProfileId = toTrimmedString(
         body?.agentProfileId || session?.metadata?.agentProfileId || "",
       ) || undefined;
@@ -619,6 +834,27 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         : null;
       if (exec) {
         const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
+        if (messageAgent || messageModel || messageAgentProfileId || contextCompressionMode) {
+          const nextMetadata = {
+            ...(session?.metadata && typeof session.metadata === "object" ? session.metadata : {}),
+            ...(messageAgent ? { agent: messageAgent } : {}),
+            ...(messageModel ? { model: messageModel } : {}),
+            ...(messageAgentProfileId ? { agentProfileId: messageAgentProfileId } : {}),
+            contextCompressionMode,
+          };
+          const refreshedSession = tracker.getSessionById(sessionId);
+          if (refreshedSession && typeof refreshedSession === "object") {
+            refreshedSession.metadata = nextMetadata;
+            upsertSessionRecordToStateLedger({
+              ...refreshedSession,
+              document: {
+                ...refreshedSession,
+                metadata: nextMetadata,
+              },
+            }, resolveUiStateLedgerOptions(workspaceContext));
+            invalidateDurableSessionListCache();
+          }
+        }
         recordUserMessageOnce();
         jsonResponse(res, 200, { ok: true, messageId, sessionId });
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
@@ -649,34 +885,44 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           sessionType: "primary",
           mode: messageMode,
           model: messageModel,
-          agent: session?.metadata?.agent || undefined,
-          providerSelection: session?.metadata?.agent || undefined,
+          agent: messageAgent,
+          providerSelection: messageAgent,
           agentProfileId: messageAgentProfileId,
           cwd: sessionWorkspaceDir,
           persistent: true,
           skipUserMessageRecord: userMessageRecorded,
           sendRawEvents: true,
+          forceContextShredding,
+          skipContextShredding,
+          contextCompressionMode,
           attachments,
           attachmentsAppended,
           onEvent: streamOnEvent,
           abortController,
         }).then(() => {
-          tracker.updateSessionStatus(sessionId, "completed");
+          const latestSession = tracker.getSessionById(sessionId);
+          if (latestSession?.status === "active") {
+            tracker.updateSessionStatus(sessionId, "completed");
+          }
           broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           broadcastSessionsSnapshot();
         }).catch((execErr) => {
+          const latestSession = tracker.getSessionById(sessionId);
+          const sessionStillActive = latestSession?.status === "active";
           const wasAborted =
             abortController.signal.aborted
             || execErr?.name === "AbortError"
             || /abort|cancel|stop/i.test(String(execErr?.message || ""));
           if (wasAborted) {
-            tracker.recordEvent(sessionId, {
-              role: "system",
-              type: "system",
-              content: "Agent turn stopped.",
-              timestamp: new Date().toISOString(),
-            });
-            tracker.updateSessionStatus(sessionId, "completed");
+            if (sessionStillActive) {
+              tracker.recordEvent(sessionId, {
+                role: "system",
+                type: "system",
+                content: "Agent turn stopped.",
+                timestamp: new Date().toISOString(),
+              });
+              tracker.updateSessionStatus(sessionId, "completed");
+            }
             broadcastUiEvent(["sessions"], "invalidate", {
               reason: "agent-stopped",
               sessionId,
@@ -684,13 +930,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
             broadcastSessionsSnapshot();
             return;
           }
-          tracker.recordEvent(sessionId, {
-            role: "system",
-            type: "error",
-            content: `Agent error: ${execErr.message || "Unknown error"}`,
-            timestamp: new Date().toISOString(),
-          });
-          tracker.updateSessionStatus(sessionId, "failed");
+          if (sessionStillActive) {
+            tracker.recordEvent(sessionId, {
+              role: "system",
+              type: "error",
+              content: `Agent error: ${execErr.message || "Unknown error"}`,
+              timestamp: new Date().toISOString(),
+            });
+            tracker.updateSessionStatus(sessionId, "failed");
+          }
           broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           broadcastSessionsSnapshot();
         }).finally(() => {
@@ -766,6 +1014,11 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         jsonResponse(res, 404, { ok: false, error: "Session not found" });
         return true;
       }
+      stopTrackedSessionTurn({
+        reason: "session_archived",
+        message: "Session archived. Cancelling any active agent turn...",
+        nextStatus: "archived",
+      });
       tracker.updateSessionStatus(sessionId, "archived");
       mutateDurableSessionRecord(session, "archived");
       invalidateDurableSessionListCache();
@@ -822,6 +1075,9 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         jsonResponse(res, 404, { ok: false, error: "Session not found" });
         return true;
       }
+      stopTrackedSessionTurn({
+        reason: "session_deleted",
+      });
       tracker.removeSession(sessionId);
       deleteSessionRecordFromStateLedger(sessionId, resolveUiStateLedgerOptions(workspaceContext));
       invalidateDurableSessionListCache();
@@ -839,7 +1095,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
 
   if (action === "rename" && req.method === "POST") {
     try {
-      const session = getScopedSession();
+      const session = getScopedSessionRecord({ includeMessages: true });
       if (!session) {
         jsonResponse(res, 404, { ok: false, error: "Session not found" });
         return true;
@@ -850,7 +1106,31 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         jsonResponse(res, 400, { ok: false, error: "title is required" });
         return true;
       }
-      tracker.renameSession(sessionId, title);
+      const liveSession = tracker.getSessionById(sessionId) || tracker.getSessionMessages(sessionId);
+      if (liveSession) {
+        tracker.renameSession(sessionId, title);
+      }
+      const now = new Date().toISOString();
+      upsertSessionRecordToStateLedger({
+        ...session,
+        taskTitle: title,
+        title,
+        updatedAt: now,
+        lastActiveAt: now,
+        eventCount: Math.max(0, Number(session.eventCount ?? session.totalEvents ?? 0) || 0),
+        document: {
+          ...session,
+          taskTitle: title,
+          title,
+          updatedAt: now,
+          lastActiveAt: now,
+          metadata:
+            session.metadata && typeof session.metadata === "object"
+              ? { ...session.metadata, title }
+              : { title },
+        },
+      }, resolveUiStateLedgerOptions(workspaceContext));
+      invalidateDurableSessionListCache();
       jsonResponse(res, 200, { ok: true });
       broadcastUiEvent(["sessions"], "invalidate", { reason: "session-renamed", sessionId });
       broadcastSessionsSnapshot();

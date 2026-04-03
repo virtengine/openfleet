@@ -746,6 +746,91 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(history[0]?.taskIds || []).toContain("task-loop-1");
   });
 
+  it("keeps task identity isolated across concurrent loop dispatch items", async () => {
+    const observed = [];
+    registerNodeType("test.capture_multi_task_dispatch_context", {
+      describe: () => "Capture task context for concurrent loop dispatch",
+      schema: { type: "object", properties: {} },
+      async execute(_node, childCtx) {
+        observed.push({
+          taskId: childCtx.data?.taskId || null,
+          taskTitle: childCtx.data?.taskTitle || null,
+          currentTaskId: childCtx.data?.currentTask?.taskId || null,
+          branch: childCtx.data?.branch || null,
+          rootTaskId: childCtx.data?._workflowRootTaskId || null,
+        });
+        return { ok: true };
+      },
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Child Start", config: {} },
+        { id: "capture", type: "test.capture_multi_task_dispatch_context", label: "Capture", config: {} },
+      ],
+      [{ id: "c1", source: "trigger", target: "capture" }],
+      { id: "child-multi-task-context", name: "Child Multi Task Context" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Task Items",
+          config: {
+            items: "$data.items",
+            variable: "currentTask",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 2,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-multi-task-context", name: "Parent Multi Task Context" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const ctx = await engine.execute(parent.id, {
+      items: [
+        {
+          taskId: "task-loop-a",
+          taskTitle: "Loop Task A",
+          branch: "task/loop-a",
+        },
+        {
+          taskId: "task-loop-b",
+          taskTitle: "Loop Task B",
+          branch: "task/loop-b",
+        },
+      ],
+    });
+    expect(ctx.errors).toEqual([]);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: "task-loop-a",
+        taskTitle: "Loop Task A",
+        currentTaskId: "task-loop-a",
+        branch: "task/loop-a",
+        rootTaskId: "task-loop-a",
+      }),
+      expect.objectContaining({
+        taskId: "task-loop-b",
+        taskTitle: "Loop Task B",
+        currentTaskId: "task-loop-b",
+        branch: "task/loop-b",
+        rootTaskId: "task-loop-b",
+      }),
+    ]));
+  });
+
   it("overrides inherited parent task context with per-item loop task identity", async () => {
     const observed = [];
     registerNodeType("test.capture_inherited_task_override", {
@@ -2091,6 +2176,49 @@ describe("WorkflowEngine - run history details", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(existsSync(detailPath)).toBe(false);
+  });
+
+  it("persists active-run task identity without inherited parent task carryover", () => {
+    const ctx = new WorkflowContext({
+      taskId: "task-child-1",
+      activeTaskId: "task-child-1",
+      taskTitle: "Child Task",
+      task: {
+        id: "task-child-1",
+        title: "Child Task",
+      },
+      _workflowRootTaskId: "task-parent-root",
+      _workflowParentTaskId: "task-parent-root",
+      _taskWorkflowEvents: [
+        {
+          runId: "parent-run-1",
+          taskId: "task-parent-root",
+          taskTitle: "Parent Root Task",
+        },
+        {
+          runId: "child-run-1",
+          taskId: "task-child-1",
+          taskTitle: "Child Task",
+        },
+      ],
+    });
+    ctx.id = "child-run-1";
+    ctx.startedAt = Date.now() - 500;
+
+    engine._persistActiveRunState("child-run-1", "template-task-lifecycle", "Task Lifecycle", ctx);
+
+    const activeRunsPath = join(tmpDir, "runs", "_active-runs.json");
+    const entries = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runId: "child-run-1",
+        workflowId: "template-task-lifecycle",
+        workflowName: "Task Lifecycle",
+        taskId: "task-child-1",
+        taskTitle: "Child Task",
+        taskIds: ["task-child-1"],
+      }),
+    ]));
   });
 
   it("sanitizes live timeout handles before checkpoint persistence", async () => {

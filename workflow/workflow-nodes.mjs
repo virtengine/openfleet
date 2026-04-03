@@ -12,6 +12,7 @@ import {
   startCustomNodeDiscovery,
 } from "./workflow-nodes/custom-loader.mjs";
 import "./workflow-nodes/definitions.mjs";
+import "./workflow-contract.mjs";
 import "./workflow-nodes/agent.mjs";
 import "./workflow-nodes/triggers.mjs";
 import "./workflow-nodes/conditions.mjs";

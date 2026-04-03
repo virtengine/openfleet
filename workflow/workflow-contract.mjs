@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { registerNodeType } from "./workflow-engine.mjs";
 
 export const WORKFLOW_CONTRACT_FILENAME = "WORKFLOW.md";
 export const REQUIRED_WORKFLOW_CONTRACT_FIELDS = Object.freeze([
@@ -405,14 +406,16 @@ export function buildWorkflowContractPromptBlock(input) {
     ? loadWorkflowContract(input)
     : input;
 
-  if (!contract?.exists || !contract?.content) return "";
+  const rawContent = String(contract?.content || contract?.raw || "").trim();
+  const exists = contract?.exists === true || contract?.found === true || Boolean(rawContent);
+  if (!exists || !rawContent) return "";
 
   const lines = [
     "## WORKFLOW.md Contract",
     `- **Source:** ${contract.path}`,
     "- **Behavior:** Treat this file as a project-specific runtime contract.",
     "",
-    contract.content.trim(),
+    rawContent,
   ];
 
   return lines.join("\n").trim();
@@ -441,6 +444,86 @@ export function hasWorkflowContract(projectRoot) {
 export function validateContract(projectRoot) {
   return validateWorkflowContract(projectRoot);
 }
+
+function resolveContractRepoRoot(node, ctx) {
+  return resolve(
+    String(
+      node?.config?.repoRoot
+      || ctx?.data?.repoRoot
+      || ctx?.repoRoot
+      || process.cwd(),
+    ).trim() || process.cwd(),
+  );
+}
+
+registerNodeType("read-workflow-contract", {
+  describe: () => "Load WORKFLOW.md from the current repository root into workflow context.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root to inspect for WORKFLOW.md" },
+      useCache: { type: "boolean", description: "Reuse cached WORKFLOW.md parse results" },
+    },
+  },
+  async execute(node, ctx) {
+    const repoRoot = resolveContractRepoRoot(node, ctx);
+    const useCache = node?.config?.useCache !== false;
+    const contract = loadWorkflowContract(repoRoot, { useCache });
+    if (ctx?.data && typeof ctx.data === "object") {
+      ctx.data._workflowContract = contract;
+    }
+    ctx?.log?.(
+      node?.id || "read-workflow-contract",
+      contract.exists
+        ? `Loaded WORKFLOW.md contract from ${contract.path}`
+        : `No WORKFLOW.md contract found at ${contract.path}`,
+    );
+    return {
+      success: true,
+      found: contract.exists === true,
+      contract,
+      path: contract.path,
+    };
+  },
+});
+
+registerNodeType("workflow-contract-validation", {
+  describe: () => "Validate a loaded WORKFLOW.md contract before agent execution begins.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root to inspect for WORKFLOW.md" },
+    },
+  },
+  async execute(node, ctx) {
+    const repoRoot = resolveContractRepoRoot(node, ctx);
+    const contract =
+      ctx?.data?._workflowContract && typeof ctx.data._workflowContract === "object"
+        ? ctx.data._workflowContract
+        : loadWorkflowContract(repoRoot);
+    const validation = validateWorkflowContract(contract);
+    if (ctx?.data && typeof ctx.data === "object") {
+      ctx.data._workflowContract = validation.contract;
+    }
+    if (!validation.valid) {
+      const message = validation.errors.map((entry) => entry?.message || String(entry || "")).filter(Boolean).join(" ");
+      ctx?.log?.(node?.id || "workflow-contract-validation", message, "warn");
+      throw new Error(message || "WORKFLOW.md validation failed");
+    }
+    ctx?.log?.(
+      node?.id || "workflow-contract-validation",
+      validation.contract?.exists
+        ? `Validated WORKFLOW.md contract at ${validation.contract.path}`
+        : "No WORKFLOW.md contract present; continuing without project contract.",
+    );
+    return {
+      success: true,
+      valid: true,
+      contract: validation.contract,
+      found: validation.contract?.exists === true,
+    };
+  },
+});
 
 function normalizeLineageText(value) {
   const text = String(value ?? "").trim();

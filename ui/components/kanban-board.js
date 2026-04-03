@@ -22,7 +22,8 @@ import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
-import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Menu, MenuItem, Paper, Tooltip, Badge } from "@mui/material";
+import { AppContextMenu, useContextMenuState } from "./context-menu.js";
+import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Paper, Tooltip, Badge, Divider } from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -69,7 +70,7 @@ const PRIORITY_LABELS = {
 };
 
 const LOAD_MORE_THRESHOLD_PX = 140;
-const AUTO_LOAD_MAX_TASKS = 300;
+const AUTO_LOAD_MAX_TASKS = 1000;
 const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 2;
 const KANBAN_BOARD_FILTER_STORAGE_PREFIX = "kanban-board-filters";
 const KANBAN_BOARD_FILTER_LEGACY_KEY = "ve-kanban-board-filters";
@@ -361,6 +362,11 @@ function getTaskDueDate(task) {
   return String(task?.dueDate || task?.due_date || task?.meta?.dueDate || "").trim();
 }
 
+function getTaskStatusLabel(status) {
+  const columnId = getColumnForStatus(status);
+  return COLUMNS.find((column) => column.id === columnId)?.title || "Task";
+}
+
 /* ─── Derived column data ─── */
 const columnData = computed(() => {
   const tasks = tasksData.value || [];
@@ -590,7 +596,7 @@ async function createTaskInColumn(columnStatus, title) {
 }
 
 /* ─── KanbanCard ─── */
-function KanbanCard({ task, onOpen }) {
+function KanbanCard({ task, onOpen, onContextMenu = null }) {
   const onDragStart = useCallback((e) => {
     dragTaskId.value = task.id;
     e.dataTransfer.effectAllowed = "move";
@@ -730,6 +736,12 @@ function KanbanCard({ task, onOpen }) {
         if (Date.now() < _touchSuppressClickUntil) return;
         onOpen(task.id);
       }}
+      onContextMenu=${(event) => {
+        if (typeof onContextMenu !== "function") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onContextMenu(task, event);
+      }}
     >
       <${CardContent} sx=${{ p: '10px !important', '&:last-child': { pb: '10px !important' } }}>
         <${Stack} direction="row" spacing=${0.5} alignItems="center" flexWrap="wrap" sx=${{ mb: 0.5 }}>
@@ -809,6 +821,7 @@ function KanbanColumn({
   col,
   tasks,
   onOpen,
+  onTaskContextMenu = null,
   totalCount = 0,
   hasMoreTasks = false,
   loadingMoreTasks = false,
@@ -1001,7 +1014,12 @@ function KanbanColumn({
         `}
         ${tasks.length
           ? tasks.map((task) => html`
-              <${KanbanCard} key=${task.id} task=${task} onOpen=${onOpen} />
+              <${KanbanCard}
+                key=${task.id}
+                task=${task}
+                onOpen=${onOpen}
+                onContextMenu=${onTaskContextMenu}
+              />
             `)
           : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
@@ -1165,6 +1183,11 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const [hydratedWorkspaceScope, setHydratedWorkspaceScope] = useState(workspaceScope);
   const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
+  const {
+    contextMenu: taskContextMenu,
+    openContextMenu: openTaskContextMenuState,
+    closeContextMenu: closeTaskContextMenu,
+  } = useContextMenuState();
   const allTasks = tasksData.value || [];
   const boardTasksLoaded = Boolean(tasksLoaded.value);
   const knownRepos = useMemo(() => {
@@ -1244,6 +1267,47 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     : allTasks.length;
   const autoLoadMore = !hasBoardFilters && resolvedTotalTasks <= AUTO_LOAD_MAX_TASKS;
 
+  const openTaskContextMenu = useCallback((task, event) => {
+    if (!task?.id) return;
+    openTaskContextMenuState({
+      taskId: task.id,
+    }, event);
+  }, [openTaskContextMenuState]);
+
+  const handleTaskContextAction = useCallback(async (action) => {
+    const taskId = String(taskContextMenu?.taskId || "").trim();
+    if (!taskId) {
+      closeTaskContextMenu();
+      return;
+    }
+    const task = (tasksData.value || []).find((entry) => matchTaskId(entry?.id, taskId)) || null;
+    if (!task) {
+      closeTaskContextMenu();
+      return;
+    }
+    if (action === "open") {
+      closeTaskContextMenu();
+      onOpenTask?.(taskId);
+      return;
+    }
+    if (action === "copy-id") {
+      closeTaskContextMenu();
+      try {
+        await navigator.clipboard.writeText(taskId);
+      } catch {
+      }
+      return;
+    }
+    const nextStatus = COLUMN_TO_STATUS[action] || null;
+    closeTaskContextMenu();
+    if (!nextStatus) return;
+    try {
+      await executeBoardTransition(task, nextStatus, getTaskStatusLabel(nextStatus));
+    } catch (error) {
+      showToast(error?.message || "Failed to update task", "error");
+    }
+  }, [closeTaskContextMenu, onOpenTask, taskContextMenu?.taskId]);
+
   return html`
     <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
@@ -1264,9 +1328,24 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
             autoLoadMore=${autoLoadMore}
             globalTaskCount=${allTasks.length}
             onOpen=${onOpenTask}
+            onTaskContextMenu=${openTaskContextMenu}
           />
         `)}
       </${Box}>
+      <${AppContextMenu}
+        menu=${taskContextMenu}
+        onClose=${closeTaskContextMenu}
+        items=${[
+          { key: "open", label: "Open task", icon: ":chat:", onClick: () => handleTaskContextAction("open") },
+          { key: "backlog", label: "Move to Backlog", icon: ":clipboard:", onClick: () => handleTaskContextAction("backlog") },
+          { key: "in-progress", label: "Move to In Progress", icon: ":play:", onClick: () => handleTaskContextAction("inProgress") },
+          { key: "in-review", label: "Move to In Review", icon: ":eye:", onClick: () => handleTaskContextAction("inReview") },
+          { key: "blocked", label: "Move to Blocked", icon: ":alert:", onClick: () => handleTaskContextAction("blocked") },
+          { key: "done", label: "Move to Done", icon: ":check:", onClick: () => handleTaskContextAction("done") },
+          { kind: "divider", key: "copy-divider" },
+          { key: "copy-id", label: "Copy ID", icon: ":copy:", onClick: () => handleTaskContextAction("copy-id") },
+        ]}
+      />
     </${Box}>
   `;
 }

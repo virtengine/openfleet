@@ -26,6 +26,12 @@ describe("kanban scroll regression guards", () => {
     expect(boardSource).toMatch(/class="kanban-load-more"/);
   });
 
+  it("keeps task-card context controls available on right click", () => {
+    expect(boardSource).toContain("onTaskContextMenu");
+    expect(boardSource).toContain("Move to In Progress");
+    expect(boardSource).toContain("Copy ID");
+  });
+
   it("keeps the manual load-more affordance outside the scroll body", () => {
     const cardsIndex = boardSource.indexOf('class="kanban-cards"');
     const sentinelIndex = boardSource.indexOf('class="kanban-tail-sentinel"');
@@ -46,6 +52,15 @@ describe("kanban scroll regression guards", () => {
   it("gates persistence until workspace hydration completes", () => {
     expect(boardSource).toContain("hydratedWorkspaceScope");
     expect(boardSource).toContain("if (hydratedWorkspaceScope !== workspaceScope) return;");
+  });
+
+  it("raises the initial kanban fetch budget so large boards do not stop at half a page", () => {
+    const stateSource = readFileSync(
+      resolve(process.cwd(), "ui/modules/state.js"),
+      "utf8",
+    );
+    expect(stateSource).toContain("export const KANBAN_PAGE_SIZE = 500;");
+    expect(boardSource).toContain("const AUTO_LOAD_MAX_TASKS = 1000;");
   });
 });
 

@@ -213,10 +213,18 @@ registerNodeType("condition.slot_available", {
       baseBranch: { type: "string", description: "Base branch to check against" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
     const baseBranchLimit = node.config?.baseBranchLimit ?? 0;
-    const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
+    const workflowActiveTaskIds = new Set(
+      (typeof engine?.getActiveRuns === "function" ? engine.getActiveRuns() : [])
+        .map((run) => String(run?.taskId || "").trim())
+        .filter(Boolean),
+    );
+    const activeSlotCount = Number(
+      ctx.data?.activeSlotCount
+      ?? (workflowActiveTaskIds.size > 0 ? workflowActiveTaskIds.size : 0),
+    ) || 0;
     const slotsAvailable = activeSlotCount < maxParallel;
 
     let baseBranchOk = true;
@@ -236,7 +244,6 @@ registerNodeType("condition.slot_available", {
 });
 
 // ── action.allocate_slot ────────────────────────────────────────────────────
-
 
 
 

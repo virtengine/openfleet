@@ -236,6 +236,23 @@ function normalizeApprovalRequestStatus(value, fallback = "pending") {
   return fallback;
 }
 
+function deriveStaleApprovalResolution(request = {}) {
+  if (normalizeApprovalRequestStatus(request?.status, "pending") !== "pending") return null;
+  if (request?.resolution && typeof request.resolution === "object") return null;
+  const history = Array.isArray(request?.history) ? request.history : [];
+  const expiredRecord = [...history]
+    .reverse()
+    .find((entry) => normalizeApprovalRequestStatus(entry?.decision, "") === "expired");
+  if (!expiredRecord) return null;
+  const note = normalizeText(expiredRecord?.note) || "Approval target no longer exists.";
+  return {
+    decision: "expired",
+    actorId: normalizeText(expiredRecord?.actorId) || "system:reconcile",
+    note,
+    resolvedAt: normalizeTimestamp(expiredRecord?.timestamp || request?.updatedAt || request?.requestedAt),
+  };
+}
+
 function normalizeApprovalScopeType(value, fallback = "workflow-run") {
   const normalized = normalizeText(value).toLowerCase();
   return APPROVAL_SCOPE_TYPES.has(normalized) ? normalized : fallback;
@@ -742,6 +759,11 @@ export function listApprovalRequests(options = {}) {
   if (scopeType) {
     requests = requests.filter((entry) => normalizeText(entry?.scopeType).toLowerCase() === scopeType);
   }
+  requests = requests.map((entry) => {
+    const derivedResolution = deriveStaleApprovalResolution(entry);
+    if (!derivedResolution) return entry;
+    return applyApprovalResolutionRecord(entry, derivedResolution);
+  });
   if (status) {
     requests = requests.filter((entry) => normalizeApprovalRequestStatus(entry?.status, "") === status);
   } else if (!includeResolved) {
@@ -794,6 +816,72 @@ export function reconcileWorkflowRunApprovalRequests(options = {}) {
       note,
       resolvedAt: now,
     });
+    upsertApprovalRequestToStateLedger(next, resolveWorkflowLedgerOptions(repoRoot));
+    repaired.push({
+      requestId: next.requestId,
+      runId,
+      status: next.status,
+      note,
+    });
+    changed = true;
+    return next;
+  });
+
+  if (changed) {
+    writeApprovalQueue(repoRoot, nextRequests);
+  }
+
+  return {
+    ok: true,
+    path: queue.path,
+    requests: nextRequests.map((entry) => cloneJson(entry)),
+    repaired,
+  };
+}
+
+export function reconcileHarnessRunApprovalRequests(options = {}) {
+  const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  const queue = readApprovalQueue(repoRoot);
+  const requests = Array.isArray(queue.data.requests) ? queue.data.requests.slice() : [];
+  const now = new Date().toISOString();
+  const activeRunIds = options.activeRunIds instanceof Set
+    ? options.activeRunIds
+    : new Set(
+        Array.isArray(options.activeRunIds)
+          ? options.activeRunIds.map((value) => normalizeText(value)).filter(Boolean)
+          : [],
+      );
+  const repaired = [];
+  let changed = false;
+
+  const nextRequests = requests.map((entry) => {
+    if (normalizeText(entry?.scopeType) !== "harness-run") return entry;
+    if (normalizeApprovalRequestStatus(entry?.status, "pending") !== "pending") return entry;
+
+    const runId = normalizeText(entry?.scopeId || entry?.runId);
+    if (runId && activeRunIds.has(runId)) return entry;
+    const expiresAt = normalizeText(entry?.expiresAt);
+    const isExpired = expiresAt ? Number.isFinite(Date.parse(expiresAt)) && Date.parse(expiresAt) <= Date.now() : false;
+    const runPath = runId ? resolveHarnessRunRecordPath(repoRoot, runId) : "";
+    const runRecord = runPath && existsSync(runPath)
+      ? readJsonFile(runPath, {})
+      : (runId ? getHarnessRunFromStateLedger(runId, resolveHarnessLedgerOptions(repoRoot)) : null);
+    const hasDurableRun = runRecord && typeof runRecord === "object";
+    if (!isExpired && hasDurableRun) return entry;
+
+    let note = "Harness approval request expired before a decision was made.";
+    if (!runId) {
+      note = "Harness approval request is missing its run identifier.";
+    } else if (!hasDurableRun) {
+      note = `Harness run ${runId} no longer exists.`;
+    }
+    const next = applyApprovalResolutionRecord(entry, {
+      decision: "expired",
+      actorId: "system:reconcile",
+      note,
+      resolvedAt: now,
+    });
+    updateHarnessRunApprovalState(repoRoot, next, next.resolution);
     upsertApprovalRequestToStateLedger(next, resolveWorkflowLedgerOptions(repoRoot));
     repaired.push({
       requestId: next.requestId,

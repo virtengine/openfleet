@@ -2125,6 +2125,86 @@ describe("task-executor", () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
+    it("re-reads live workflow evidence before resetting a stale shared-state claim", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-stale-refresh-1",
+          title: "Workflow-owned stale claim refreshed from disk",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-stale-owner",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+      existsSync.mockImplementation(
+        (targetPath) => [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "run-refresh-1.json"),
+        ].includes(targetPath),
+      );
+      let activeRunsReads = 0;
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          activeRunsReads += 1;
+          if (activeRunsReads === 1) return JSON.stringify([]);
+          return JSON.stringify([
+            {
+              runId: "run-refresh-1",
+              workflowId: "template-task-lifecycle",
+              taskId: "wf-stale-refresh-1",
+            },
+          ]);
+        }
+        if (targetPath === resolve("/workflow-runs", "run-refresh-1.json")) {
+          return JSON.stringify({
+            id: "run-refresh-1",
+            startedAt: Date.now() - 2 * 60 * 1000,
+            endedAt: null,
+            data: {
+              taskId: "wf-stale-refresh-1",
+              _dagState: {
+                status: "running",
+                updatedAt: new Date(Date.now() - 30 * 1000).toISOString(),
+              },
+            },
+          });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(activeRunsReads).toBeGreaterThanOrEqual(2);
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-stale-refresh-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(releaseTaskClaim).not.toHaveBeenCalledWith({
+        taskId: "wf-stale-refresh-1",
+        force: true,
+      });
+      expect(invalidateThread).not.toHaveBeenCalledWith("wf-stale-refresh-1");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
     it("keeps workflow-owned tasks in progress when duplicate same-task runs contain a newer live history entry", async () => {
       const ex = new TaskExecutor({
         projectId: "proj-1",

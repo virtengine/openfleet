@@ -22,8 +22,13 @@ export async function tryHandleHarnessApprovalRoutes(context = {}) {
     try {
       const {
         listApprovalRequests,
+        reconcileHarnessRunApprovalRequests,
       } = await import("../../workflow/approval-queue.mjs");
       const approvalsRepoRoot = resolveHarnessApprovalRepoRoot();
+      reconcileHarnessRunApprovalRequests({
+        repoRoot: approvalsRepoRoot,
+        activeRunIds: new Set(activeHarnessRuns.keys()),
+      });
       const listed = listApprovalRequests({
         repoRoot: approvalsRepoRoot,
         scopeType: "harness-run",

@@ -243,6 +243,38 @@ describe("workflow canvas history", () => {
     ]);
   });
 
+  it("preserves configured branch ports even when stored outputPorts only contain default", () => {
+    const nodes = [
+      {
+        id: "condition",
+        type: "condition.expression",
+        label: "Condition",
+        position: { x: 0, y: 0 },
+        config: {},
+        outputs: ["yes", "no"],
+        outputPorts: [{ name: "default", label: "default", type: "Boolean" }],
+      },
+      {
+        id: "next",
+        type: "action.run_command",
+        label: "Next",
+        position: { x: 120, y: 0 },
+        config: {},
+        inputs: ["default"],
+      },
+    ];
+
+    const issues = validateCanvasEdgePorts(nodes, [{
+      id: "condition->next",
+      source: "condition",
+      target: "next",
+      sourcePort: "yes",
+      targetPort: "default",
+    }], []);
+
+    expect(issues).toEqual([]);
+  });
+
   it("undo/redo restores node move, edge creation, and config edits", () => {
     const nodeA = makeNode("node-a", 20, 40);
     const nodeB = makeNode("node-b", 280, 40);

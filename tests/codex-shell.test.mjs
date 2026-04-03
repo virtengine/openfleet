@@ -193,6 +193,73 @@ describe("codex-shell stream safeguards", () => {
     expect(normalized.endsWith("/logs/sessions")).toBe(false);
   });
 
+  it("allows concurrent persistent turns in different sessions", async () => {
+    let releaseFirstTurn;
+    let markFirstRunning;
+    const firstRunning = new Promise((resolve) => {
+      markFirstRunning = resolve;
+    });
+    let startCount = 0;
+
+    mockStartThread.mockImplementation(() => {
+      startCount += 1;
+      const threadIndex = startCount;
+      return {
+        id: `codex-test-thread-concurrent-${threadIndex}`,
+        runStreamed: async () => {
+          if (threadIndex === 1) {
+            markFirstRunning();
+            return {
+              events: {
+                async *[Symbol.asyncIterator]() {
+                  await new Promise((resolve) => {
+                    releaseFirstTurn = resolve;
+                  });
+                  yield {
+                    type: "item.completed",
+                    item: { type: "agent_message", text: "first session completed" },
+                  };
+                  yield { type: "turn.completed" };
+                },
+              },
+            };
+          }
+          return {
+            events: {
+              async *[Symbol.asyncIterator]() {
+                yield {
+                  type: "item.completed",
+                  item: { type: "agent_message", text: "second session completed" },
+                };
+                yield { type: "turn.completed" };
+              },
+            },
+          };
+        },
+      };
+    });
+
+    const firstPromise = execCodexPrompt("run first session", {
+      persistent: true,
+      sessionId: "persistent-a",
+      timeoutMs: 5000,
+    });
+    await firstRunning;
+
+    const second = await execCodexPrompt("run second session", {
+      persistent: true,
+      sessionId: "persistent-b",
+      timeoutMs: 5000,
+    });
+
+    expect(second.finalResponse).toContain("second session completed");
+    expect(startCount).toBe(2);
+
+    releaseFirstTurn();
+    const first = await firstPromise;
+    expect(first.finalResponse).toContain("first session completed");
+  });
+
   it("retries when first stream event never arrives", async () => {
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS = "1000";
 

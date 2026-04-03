@@ -120,6 +120,53 @@ describe("task CLI store persistence", () => {
     expect((readStore(storePath).tasks || {})[task.id]).toBeUndefined();
   });
 
+  it("lists multiple statuses when --status receives a comma-separated filter", async () => {
+    const storePath = makeTempStorePath();
+    configureTaskStore({ storePath });
+    loadStore();
+    addTask({
+      id: randomUUID(),
+      title: "Todo task",
+      status: "todo",
+      draft: false,
+      workspace: "virtengine-gh",
+      repository: "bosun",
+    });
+    addTask({
+      id: randomUUID(),
+      title: "Blocked task",
+      status: "blocked",
+      draft: false,
+      workspace: "virtengine-gh",
+      repository: "bosun",
+    });
+    addTask({
+      id: randomUUID(),
+      title: "Done task",
+      status: "done",
+      draft: false,
+      workspace: "virtengine-gh",
+      repository: "bosun",
+    });
+    await waitForStoreWrites();
+
+    const result = spawnSync(
+      process.execPath,
+      ["cli.mjs", "task", "list", "--status", "todo,blocked", "--json"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const stdout = String(result.stdout || "");
+    const jsonStart = stdout.lastIndexOf("\n[");
+    const listed = JSON.parse(jsonStart >= 0 ? stdout.slice(jsonStart + 1) : stdout);
+    expect(listed.map((task) => task.status).sort()).toEqual(["blocked", "todo"]);
+  });
+
   it("canonicalizes workspace and repository keys on create", () => {
     const storePath = makeTempStorePath();
     const result = spawnSync(

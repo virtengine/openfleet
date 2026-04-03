@@ -854,6 +854,9 @@ async function ensureWorkflowAutomationEngine() {
       if (!wfNodes) {
         throw new Error("workflow nodes unavailable");
       }
+      if (typeof wfNodes.ensureWorkflowNodeTypesLoaded === "function") {
+        await wfNodes.ensureWorkflowNodeTypesLoaded({ repoRoot });
+      }
 
       const kanbanService = {
         createTask: async (projectIdOrTaskData = {}, taskDataArg = undefined) => {
@@ -13255,6 +13258,22 @@ function getInternalActiveSlotCount() {
   return 0;
 }
 
+function getActiveWorkflowRunSummaries() {
+  try {
+    if (!workflowAutomationEngine || typeof workflowAutomationEngine.getActiveRuns !== "function") {
+      return [];
+    }
+    const activeRuns = workflowAutomationEngine.getActiveRuns();
+    return Array.isArray(activeRuns) ? activeRuns.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getActiveWorkflowRunCount() {
+  return getActiveWorkflowRunSummaries().length;
+}
+
 function getRuntimeRestartProtection() {
   if (ALLOW_INTERNAL_RUNTIME_RESTARTS) {
     return { defer: false, reason: "" };
@@ -13268,6 +13287,13 @@ function getRuntimeRestartProtection() {
     return {
       defer: true,
       reason: `${activeSlots} internal task agent(s) active`,
+    };
+  }
+  const activeWorkflowRuns = getActiveWorkflowRunCount();
+  if (activeWorkflowRuns > 0) {
+    return {
+      defer: true,
+      reason: `${activeWorkflowRuns} workflow run(s) active`,
     };
   }
   return { defer: false, reason: "" };
@@ -13321,6 +13347,7 @@ function selfRestartForSourceChange(
   // This should never trigger because attemptSelfRestartAfterQuiet() already
   // defers, but provides defense-in-depth against race conditions.
   const activeSlots = getInternalActiveSlotCount();
+  const activeWorkflowRuns = getActiveWorkflowRunCount();
   if (activeSlots > 0 && !forceActiveAgentExit) {
     console.warn(
       `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeSlots} active agent(s)! Deferring instead of killing.`,
@@ -13329,9 +13356,22 @@ function selfRestartForSourceChange(
     selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
     return;
   }
+  if (activeWorkflowRuns > 0 && !forceActiveAgentExit) {
+    console.warn(
+      `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeWorkflowRuns} active workflow run(s)! Deferring instead of killing.`,
+    );
+    pendingSelfRestart = filename;
+    selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
+    return;
+  }
   if (activeSlots > 0 && forceActiveAgentExit) {
     console.warn(
       `[monitor] FORCED self-restart: proceeding with ${activeSlots} active agent(s) after defer hard cap`,
+    );
+  }
+  if (activeWorkflowRuns > 0 && forceActiveAgentExit) {
+    console.warn(
+      `[monitor] FORCED self-restart: proceeding with ${activeWorkflowRuns} active workflow run(s) after defer hard cap`,
     );
   }
   console.log(
@@ -13524,6 +13564,41 @@ function attemptSelfRestartAfterQuiet() {
       selfRestartTimer = safeSetTimeout("self-restart-agent-wait-retry", attemptSelfRestartAfterQuiet, 60_000);
       return;
     }
+  }
+
+  const activeWorkflowRuns = getActiveWorkflowRunSummaries();
+  if (activeWorkflowRuns.length > 0) {
+    if (!selfRestartFirstDeferredAt) {
+      selfRestartFirstDeferredAt = now;
+    }
+    const deferCount = (selfRestartDeferCount =
+      (selfRestartDeferCount || 0) + 1);
+    const deferElapsedMs = Math.max(0, now - selfRestartFirstDeferredAt);
+    const hitCountCap = deferCount >= SELF_RESTART_DEFER_HARD_CAP;
+    const hitTimeCap = deferElapsedMs >= SELF_RESTART_MAX_DEFER_MS;
+    if (hitCountCap || hitTimeCap) {
+      console.warn(
+        `[monitor] self-restart deferred ${deferCount} times over ${Math.round(deferElapsedMs / 1000)}s while waiting for active workflow runs — restarting anyway`,
+      );
+      selfRestartDeferCount = 0;
+      selfRestartFirstDeferredAt = 0;
+      selfRestartForSourceChange(filename, { forceActiveAgentExit: true });
+      return;
+    }
+    const runNames = activeWorkflowRuns
+      .slice(0, 5)
+      .map((run) => String(run?.workflowName || run?.runId || "workflow").trim())
+      .filter(Boolean)
+      .join(", ");
+    console.log(
+      `[monitor] self-restart deferred — ${activeWorkflowRuns.length} workflow run(s) still active: ${runNames}`,
+    );
+    console.log(
+      `[monitor] will retry restart in 60s (workflow runs must finish first)` +
+        ` (defer #${deferCount}, elapsed ${Math.round(deferElapsedMs / 1000)}s)`,
+    );
+    selfRestartTimer = safeSetTimeout("self-restart-workflow-wait-retry", attemptSelfRestartAfterQuiet, 60_000);
+    return;
   }
 
   selfRestartDeferCount = 0;

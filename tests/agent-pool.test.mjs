@@ -2043,6 +2043,50 @@ describe("launchOrResumeThread", () => {
     }));
   });
 
+  it("does not throw when a managed session controller is asked to continue without a prompt", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    const sessionManagerMod = await import("../agent/session-manager.mjs");
+    const sessionManager = sessionManagerMod.getBosunSessionManager();
+    let noPromptResult = null;
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      ({
+        id: "managed-thread-no-prompt",
+        runStreamed: async () => ({
+          events: {
+            async *[Symbol.asyncIterator]() {
+              const controller = sessionManager.getSessionController("managed-session-no-prompt");
+              noPromptResult = controller ? await controller.run({}) : null;
+              yield {
+                type: "item.completed",
+                item: { type: "agent_message", text: "first output" },
+              };
+            },
+          },
+        }),
+      }),
+    );
+
+    const first = await launchOrResumeThread("first task turn", process.cwd(), 5000, {
+      taskKey: "task-no-prompt-continue",
+      sessionId: "managed-session-no-prompt",
+      sessionScope: "workflow-task",
+      sessionType: "task",
+      sdk: "codex",
+    });
+
+    expect(first.success).toBe(true);
+    expect(noPromptResult).toEqual(expect.objectContaining({
+      sessionId: "managed-session-no-prompt",
+    }));
+    expect(mockCodexResumeThread).not.toHaveBeenCalled();
+  });
+
   it("drops poisoned codex thread metadata when resume state is corrupted", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     setPoolSdk("codex");

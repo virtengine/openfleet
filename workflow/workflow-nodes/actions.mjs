@@ -24,6 +24,7 @@ import {
   finalizeWorkflowLinkedSessionExecution,
   resolveWorkflowSessionManager,
 } from "../harness-session-node.mjs";
+import { buildWorkflowContractPromptBlock } from "../workflow-contract.mjs";
 import { executeHarnessSubagentNode } from "../harness-subagent-node.mjs";
 import { executeHarnessToolNode } from "../harness-tool-node.mjs";
 import {
@@ -180,6 +181,7 @@ import {
   initSharedKnowledge,
   retrieveKnowledgeEntries,
 } from "../../workspace/shared-knowledge.mjs";
+import { compactCommandOutputPayload } from "../../workspace/context-cache.mjs";
 import { findReusableSkillbookStrategies } from "../../workspace/skillbook-store.mjs";
 import { repairCommonMojibake } from "../../lib/mojibake-repair.mjs";
 import { bootstrapWorktreeForPath, fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
@@ -800,6 +802,12 @@ function deriveWorkflowAgentSessionStatus(result = {}, { streamEventCount = 0 } 
   return result?.success === true ? "completed" : "failed";
 }
 
+function isNullSessionIdCrash(error) {
+  return /Cannot read properties of null \(reading 'sessionId'\)/i.test(
+    String(error?.message || error || "").trim(),
+  );
+}
+
 function resolveSuccessfulWorkflowAgentSessionStatus(result = {}) {
   return classifyWorkflowAgentBlockedStatus(result) || "completed";
 }
@@ -1047,6 +1055,84 @@ function appendBosunCreatedPrFooter(body = "") {
   return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
 }
 
+const WORKFLOW_INLINE_EXPRESSION_TEMPLATE_RE = /^\{\{([\s\S]+)\}\}$/;
+const GITHUB_REPO_SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function resolveWorkflowDynamicValue(value, ctx) {
+  if (typeof value !== "string") return value;
+  const exactExpression = value.match(WORKFLOW_INLINE_EXPRESSION_TEMPLATE_RE);
+  if (exactExpression) {
+    const expression = String(exactExpression[1] || "").trim();
+    if (expression) {
+      try {
+        const fn = new Function("$data", "$ctx", `return (${expression});`);
+        return fn(ctx?.data, ctx);
+      } catch {
+        // Fall through to plain template resolution when the value is not a JS expression.
+      }
+    }
+  }
+  return ctx.resolve(value);
+}
+
+function resolveWorkflowDynamicObject(value, ctx) {
+  if (typeof value === "string") return resolveWorkflowDynamicValue(value, ctx);
+  if (Array.isArray(value)) return value.map((entry) => resolveWorkflowDynamicObject(entry, ctx));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, resolveWorkflowDynamicObject(entry, ctx)]),
+    );
+  }
+  return value;
+}
+
+function isWorkflowTestRuntime() {
+  return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+}
+
+function normalizeWorkflowAutoMergeMethod(value) {
+  const normalized = String(value || "merge").trim().toLowerCase();
+  return ["merge", "squash", "rebase"].includes(normalized) ? normalized : "merge";
+}
+
+function buildWorkflowAutoMergeState(enabled, method, overrides = {}) {
+  return {
+    enabled,
+    attempted: false,
+    method,
+    reason: enabled ? "not_attempted" : "disabled",
+    ...overrides,
+  };
+}
+
+function attachCompactedCommandOutput(baseResult, {
+  command,
+  stdout = "",
+  stderr = "",
+  exitCode = null,
+  durationMs = null,
+} = {}) {
+  return compactCommandOutputPayload({
+    command,
+    output: String(stdout || ""),
+    stderr: String(stderr || ""),
+    exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : undefined,
+    durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : undefined,
+  }).then((compacted) => ({
+    ...baseResult,
+    output: compacted.text || baseResult.output || "",
+    outputCompacted: compacted.compacted === true,
+    rawOutputChars: compacted.originalChars,
+    compactedOutputChars: compacted.compactedChars,
+    outputBudgetPolicy: compacted.budgetPolicy || null,
+    outputBudgetReason: compacted.budgetReason || "",
+    outputContextEnvelope: compacted.contextEnvelope || null,
+    outputDiagnostics: compacted.commandDiagnostics || null,
+    outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
+    outputHint: compacted.commandDiagnostics?.summary || compacted.commandDiagnostics?.hint || null,
+  }));
+}
+
 const HTML_TEXT_BREAK_TAGS = new Set([
   "address",
   "article",
@@ -1228,6 +1314,7 @@ registerNodeType("action.run_agent", {
       label: "Task",
       type: "TaskDef",
       description: "Optional task payload forwarded into the agent execution context.",
+      accepts: ["JSON", "AgentResult", "TriggerEvent", "String", "Boolean", "Any"],
     },
   ],
   outputs: [
@@ -2007,7 +2094,7 @@ registerNodeType("action.run_agent", {
               node.id,
               `${passLabel} Recovery: harness-agent-service taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
             );
-            result = await harnessAgentService.runTask(passPrompt, {
+            const baseRunTaskOptions = {
               autoRecover,
               taskKey: recoveryTaskKey,
               cwd,
@@ -2028,7 +2115,25 @@ registerNodeType("action.run_agent", {
               slotMeta,
               onSlotQueued: launchExtra.onSlotQueued,
               onSlotAcquired: launchExtra.onSlotAcquired,
-            });
+            };
+            try {
+              result = await harnessAgentService.runTask(passPrompt, baseRunTaskOptions);
+            } catch (err) {
+              if (!isNullSessionIdCrash(err)) throw err;
+              const freshSessionId = `${managedSessionId || recoveryTaskKey}:fresh-${Date.now()}`;
+              ctx.log(
+                node.id,
+                `${passLabel || "Agent"} Recovery: stale session state detected, retrying with a fresh managed session (${freshSessionId})`.trim(),
+                "warn",
+              );
+              ctx.data.sessionId = null;
+              ctx.data.threadId = null;
+              result = await harnessAgentService.runTask(passPrompt, {
+                ...baseRunTaskOptions,
+                autoRecover: false,
+                sessionId: freshSessionId,
+              });
+            }
           }
           success = result?.success === true;
         } finally {
@@ -2418,7 +2523,7 @@ registerNodeType("action.run_command", {
       ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd()),
       ctx.data?.worktreePath || process.cwd(),
     );
-    const resolvedEnvConfig = resolveWorkflowNodeValue(node.config?.env ?? {}, ctx);
+    const resolvedEnvConfig = resolveWorkflowDynamicObject(node.config?.env ?? {}, ctx);
     const commandEnv = applyResolvedWorkflowEnv(process.env, resolvedEnvConfig);
     const timeout = node.config?.timeoutMs || 300000;
     const resolvedArgsConfig = resolveWorkflowNodeValue(node.config?.args ?? [], ctx);
@@ -2447,11 +2552,13 @@ registerNodeType("action.run_command", {
       }
     };
     const usedArgv = commandArgs.length > 0;
+    const commandLabel = usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command;
+    const startedAt = Date.now();
 
     if (command !== resolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
-    ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
+    ctx.log(node.id, `Running: ${commandLabel}`);
     await requireWorkflowActionApproval({
       node,
       ctx,
@@ -2462,7 +2569,7 @@ registerNodeType("action.run_command", {
       args: commandArgs,
     });
     try {
-      const output = await spawnAsync(command, usedArgv ? commandArgs : [], {
+      const stdout = await spawnAsync(command, usedArgv ? commandArgs : [], {
         cwd,
         timeout,
         stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
@@ -2470,7 +2577,26 @@ registerNodeType("action.run_command", {
         shell: !usedArgv,
       });
       ctx.log(node.id, `Command succeeded`);
-      return { success: true, output: parseOutput(output), exitCode: 0 };
+      const parsedOutput = parseOutput(stdout);
+      const baseResult = {
+        success: true,
+        output: parsedOutput,
+        exitCode: 0,
+        items: [{
+          type: "command_execution",
+          command: commandLabel,
+          exit_code: 0,
+          aggregated_output: String(stdout || ""),
+        }],
+      };
+      if (shouldParseJson) return baseResult;
+      return await attachCompactedCommandOutput(baseResult, {
+        command: commandLabel,
+        stdout,
+        stderr: "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
@@ -2480,12 +2606,26 @@ registerNodeType("action.run_command", {
         stderr,
         exitCode: err.status,
         error: err.message,
+        items: [{
+          type: "command_execution",
+          command: commandLabel,
+          exit_code: Number.isFinite(Number(err.status)) ? Number(err.status) : null,
+          aggregated_output: String(output || ""),
+          stderr: String(stderr || ""),
+        }],
       };
       if (node.config?.failOnError) {
         const reason = trimLogText(stderr || output || err.message, 400) || err.message;
         throw new Error(reason);
       }
-      return result;
+      if (shouldParseJson) return result;
+      return await attachCompactedCommandOutput(result, {
+        command: commandLabel,
+        stdout: output,
+        stderr,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
     }
   },
 });
@@ -2686,6 +2826,15 @@ registerNodeType("action.create_task", {
         priority: node.config?.priority,
         tags: node.config?.tags,
         projectId: node.config?.projectId,
+        meta: {
+          workflow: {
+            runId: String(ctx?.id || ctx?.data?._runId || "").trim() || null,
+            workflowId: String(ctx?.data?._workflowId || "").trim() || null,
+            workflowName: String(ctx?.data?._workflowName || "").trim() || null,
+            sourceNodeId: String(node?.id || "").trim() || null,
+            sourceNodeType: String(node?.type || "").trim() || null,
+          },
+        },
       }, node.config?.projectId);
       bindTaskContext(ctx, {
         taskId: task?.id,
@@ -2945,6 +3094,13 @@ registerNodeType("action.create_pr", {
       branch: { type: "string", description: "Head branch (source)" },
       repoSlug: { type: "string", description: "Optional owner/repo override for gh commands" },
       draft: { type: "boolean", default: false },
+      enableAutoMerge: { type: "boolean", default: false, description: "Queue GitHub auto-merge after PR creation" },
+      autoMergeMethod: {
+        type: "string",
+        enum: ["merge", "squash", "rebase"],
+        default: "merge",
+        description: "Merge method to request when auto-merge is enabled",
+      },
       labels: {
         oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
         description: "Comma-separated or array of labels",
@@ -2978,19 +3134,27 @@ registerNodeType("action.create_pr", {
     };
 
     const title = normalizePrText(ctx.resolve(node.config?.title || ""));
-    const body = ctx.resolve(node.config?.body || "");
-    const resolvedBody = appendBosunCreatedPrFooter(body);
+    const body = appendBosunCreatedPrFooter(ctx.resolve(node.config?.body || ""));
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
       base = normalizeBaseBranch(base).branch;
     } catch {
     }
-    const branch = ctx.resolve(node.config?.branch || "");
+    const branch = String(ctx.resolve(node.config?.branch || "") || "").trim();
     const repoSlug = ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || "");
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const enableAutoMerge = parseBooleanSetting(
+      resolveWorkflowDynamicValue(node.config?.enableAutoMerge ?? false, ctx),
+      false,
+    );
+    const autoMergeMethod = normalizeWorkflowAutoMergeMethod(
+      resolveWorkflowDynamicValue(node.config?.autoMergeMethod || "merge", ctx),
+    );
+    const buildAutoMergeState = (overrides = {}) =>
+      buildWorkflowAutoMergeState(enableAutoMerge, autoMergeMethod, overrides);
     await requireWorkflowActionApproval({
       node,
       ctx,
@@ -2998,6 +3162,58 @@ registerNodeType("action.create_pr", {
       nodeType: "action.create_pr",
       repoRoot: ctx?.data?.repoRoot || ctx?.data?.repoPath || cwd,
     });
+
+    if (repoSlug && !GITHUB_REPO_SLUG_RE.test(String(repoSlug).trim())) {
+      return {
+        success: false,
+        blocked: true,
+        reason: "invalid_repo_slug",
+        blocking: {
+          field: "repoSlug",
+          retryable: false,
+        },
+        title,
+        body,
+        base,
+        branch: branch || null,
+        repoSlug,
+        autoMerge: buildAutoMergeState({ reason: enableAutoMerge ? "blocked" : "disabled" }),
+      };
+    }
+    if (branch && isUnresolvedTemplateToken(branch)) {
+      return {
+        success: false,
+        blocked: true,
+        reason: "unresolved_branch_placeholder",
+        blocking: {
+          field: "branch",
+          retryable: false,
+        },
+        title,
+        body,
+        base,
+        branch,
+        repoSlug: repoSlug || null,
+        autoMerge: buildAutoMergeState({ reason: enableAutoMerge ? "blocked" : "disabled" }),
+      };
+    }
+    if (ctx.data?._hasNewCommits === false) {
+      return {
+        success: false,
+        blocked: true,
+        reason: "no_new_commits",
+        blocking: {
+          field: "commits",
+          retryable: false,
+        },
+        title,
+        body,
+        base,
+        branch: branch || null,
+        repoSlug: repoSlug || null,
+        autoMerge: buildAutoMergeState({ reason: enableAutoMerge ? "blocked" : "disabled" }),
+      };
+    }
 
     // Normalize labels/reviewers to arrays
     const toList = (v) => {
@@ -3014,7 +3230,16 @@ registerNodeType("action.create_pr", {
     if (!title) {
       const error = "PR title is required";
       ctx.log(node.id, error);
-      return { success: false, error, title, base, branch: branch || null, repoSlug: repoSlug || null };
+      return {
+        success: false,
+        error,
+        title,
+        body,
+        base,
+        branch: branch || null,
+        repoSlug: repoSlug || null,
+        autoMerge: buildAutoMergeState({ reason: enableAutoMerge ? "blocked" : "disabled" }),
+      };
     }
     const execOptions = {
       cwd,
@@ -3059,23 +3284,71 @@ registerNodeType("action.create_pr", {
           prUrl: String(existing?.url || "").trim(),
           prNumber,
           title,
+          body,
           base: base || String(existing?.baseRefName || "").trim() || null,
           branch: branch || String(existing?.headRefName || "").trim() || null,
           draft,
           labels,
           reviewers,
           output: String(existing?.url || `existing-pr-${prNumber}`),
+          createdByBosun: true,
         };
       } catch {
         return null;
       }
     };
 
+    const attachAutoMerge = (result) => {
+      const baseResult = result && typeof result === "object" ? { ...result } : {};
+      if (!enableAutoMerge) {
+        baseResult.autoMerge = buildAutoMergeState({ enabled: false, attempted: false, reason: "disabled" });
+        return baseResult;
+      }
+      if (isWorkflowTestRuntime()) {
+        baseResult.autoMerge = buildAutoMergeState({
+          enabled: true,
+          attempted: false,
+          reason: "test_runtime_skip",
+        });
+        return baseResult;
+      }
+      const prNumber = Number.parseInt(baseResult.prNumber, 10);
+      if (!Number.isFinite(prNumber) || prNumber <= 0) {
+        baseResult.autoMerge = buildAutoMergeState({
+          enabled: true,
+          attempted: false,
+          reason: "missing_pr_number",
+        });
+        return baseResult;
+      }
+      const mergeArgs = ["pr", "merge", String(prNumber), "--auto"];
+      if (autoMergeMethod === "rebase") mergeArgs.push("--rebase");
+      else if (autoMergeMethod === "squash") mergeArgs.push("--squash");
+      else mergeArgs.push("--merge");
+      if (repoSlug) mergeArgs.push("--repo", repoSlug);
+      try {
+        execFileSync("gh", mergeArgs, execOptions);
+        baseResult.autoMerge = buildAutoMergeState({
+          enabled: true,
+          attempted: true,
+          reason: "queued",
+        });
+      } catch (error) {
+        baseResult.autoMerge = buildAutoMergeState({
+          enabled: true,
+          attempted: true,
+          reason: "merge_failed",
+          error: error?.stderr?.toString?.()?.trim() || error?.message || String(error),
+        });
+      }
+      return baseResult;
+    };
+
     // Build gh pr create command
     const args = ["gh", "pr", "create"];
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
-    args.push("--body", JSON.stringify(String(resolvedBody)));
+    args.push("--body", JSON.stringify(String(body)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (repoSlug) args.push("--repo", repoSlug);
@@ -3094,11 +3367,12 @@ registerNodeType("action.create_pr", {
       const prNumber = urlMatch ? parseInt(urlMatch[1], 10) : null;
       const prUrl = urlMatch ? urlMatch[0] : trimmed;
       ctx.log(node.id, `PR created: ${prUrl}`);
-      return {
+      return attachAutoMerge({
         success: true,
         prUrl,
         prNumber,
         title,
+        body,
         base,
         branch: branch || null,
         draft,
@@ -3106,28 +3380,28 @@ registerNodeType("action.create_pr", {
         reviewers,
         output: trimmed,
         createdByBosun: true,
-      };
+      });
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
       ctx.log(node.id, `PR creation failed: ${errorMsg}`);
       const existingPr = findExistingPr();
       if (existingPr) {
         ctx.log(node.id, `Resolved existing PR #${existingPr.prNumber}: ${existingPr.prUrl || "(url unavailable)"}`);
-        return existingPr;
+        return attachAutoMerge(existingPr);
       }
       if (failOnError) {
-        return { success: false, error: errorMsg, command: cmd };
+        return attachAutoMerge({ success: false, error: errorMsg, command: cmd, title, body, base, branch: branch || null, repoSlug: repoSlug || null });
       }
       // Graceful fallback — record handoff for Bosun management
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
-      return {
+      return attachAutoMerge({
         success: true,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",
         message: "gh CLI failed; Bosun manages pull-request lifecycle.",
         title,
-        body: resolvedBody,
+        body,
         base,
         branch: branch || null,
         draft,
@@ -3136,7 +3410,7 @@ registerNodeType("action.create_pr", {
         cwd,
         ghError: errorMsg,
         createdByBosun: true,
-      };
+      });
     }
   },
 });
@@ -3153,7 +3427,7 @@ registerNodeType("action.write_file", {
     },
     required: ["path", "content"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const filePath = ctx.resolve(node.config?.path || "");
     const rawContent = ctx.resolve(node.config?.content || "");
     const content = repairCommonMojibake(rawContent);
@@ -3181,7 +3455,7 @@ registerNodeType("action.read_file", {
     },
     required: ["path"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const filePath = ctx.resolve(node.config?.path || "");
     if (!existsSync(filePath)) {
       return { success: false, error: `File not found: ${filePath}` };
@@ -5258,6 +5532,110 @@ registerNodeType("action.refresh_worktree", {
   },
 });
 
+registerNodeType("action.recover_worktree", {
+  describe: () =>
+    "Repair a poisoned managed worktree by removing broken git state and pruning stale worktree metadata before reacquire.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root path" },
+      worktreePath: { type: "string", description: "Managed worktree path to repair" },
+      branch: { type: "string", description: "Working branch name" },
+      taskId: { type: "string", description: "Task ID that owns the worktree" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const branch = cfgOrCtx(node, ctx, "branch");
+    const resolvedRepoRoot = resolveWorkflowRepoRoot(node, ctx);
+    const repoRoot = findContainingGitRepoRoot(resolvedRepoRoot) || resolvedRepoRoot;
+
+    if (!repoRoot || !hasGitMetadata(repoRoot)) {
+      ctx.log(node.id, "Skipping worktree recovery outside a git repository");
+      return { success: true, skipped: true, reason: "no_git_repo" };
+    }
+
+    const worktreePath = resolve(
+      cfgOrCtx(node, ctx, "worktreePath")
+      || ctx.data?.worktreePath
+      || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId || branch || "worktree")),
+    );
+    const gitDir = resolveWorktreeGitDir(worktreePath);
+    const managed = isManagedBosunWorktree(worktreePath, repoRoot);
+    const state = existsSync(worktreePath)
+      ? inspectManagedWorktreeState(worktreePath)
+      : { invalid: false, issues: [], conflictFiles: [], gitDir };
+    const detectedIssues = Array.from(new Set([
+      ...(Array.isArray(state?.issues) ? state.issues : []),
+      ...(managed ? [] : ["unmanaged_worktree"]),
+    ]));
+    const eventBase = {
+      reason: "poisoned_worktree",
+      branch: branch || null,
+      taskId: taskId || null,
+      worktreePath,
+      detectedIssues,
+      phase: "recover_worktree",
+      timestamp: new Date().toISOString(),
+    };
+
+    if (!managed) {
+      ctx.log(node.id, `Skipping unmanaged worktree recovery: ${worktreePath}`);
+      await recordWorktreeRecoveryEvent(repoRoot, {
+        ...eventBase,
+        outcome: "recreation_failed",
+        error: "Refusing to recover unmanaged worktree path.",
+      });
+      return {
+        success: false,
+        recovered: false,
+        worktreePath,
+        retryable: false,
+        needsManualResolution: true,
+        error: "Refusing to recover unmanaged worktree path.",
+        detectedIssues,
+      };
+    }
+
+    try {
+      resetManagedWorktree(repoRoot, worktreePath, state.gitDir || gitDir);
+      ctx.data._worktreeCreated = false;
+      ctx.data._worktreeManaged = false;
+      await recordWorktreeRecoveryEvent(repoRoot, {
+        ...eventBase,
+        outcome: "recreated",
+      });
+      ctx.log(
+        node.id,
+        `Recovered managed worktree: ${worktreePath}${detectedIssues.length ? ` (issues=${detectedIssues.join(",")})` : ""}`,
+      );
+      return {
+        success: true,
+        recovered: true,
+        worktreePath,
+        detectedIssues,
+        removed: true,
+        needsReacquire: true,
+      };
+    } catch (error) {
+      const message = String(error?.message || error || "worktree recovery failed");
+      await recordWorktreeRecoveryEvent(repoRoot, {
+        ...eventBase,
+        outcome: "recreation_failed",
+        error: message,
+      });
+      ctx.log(node.id, `Worktree recovery failed: ${message}`, "warn");
+      return {
+        success: false,
+        recovered: false,
+        worktreePath,
+        detectedIssues,
+        error: message,
+      };
+    }
+  },
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MCP Tool Call — execute a tool on an installed MCP server
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6075,7 +6453,7 @@ registerNodeType("action.claim_task", {
     },
     required: ["taskId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
     const ttlMinutes = node.config?.ttlMinutes ?? 180;
@@ -6086,6 +6464,36 @@ registerNodeType("action.claim_task", {
     const model = cfgOrCtx(node, ctx, "resolvedModel", cfgOrCtx(node, ctx, "model"));
 
     if (!taskId) throw new Error("action.claim_task: taskId is required");
+
+    const workflowEngine = engine || ctx?.engine || null;
+    const normalizedTaskId = String(taskId || "").trim();
+    const currentLineageRunIds = new Set(
+      [ctx.id, ctx.data?._workflowRootRunId, ctx.data?._workflowParentRunId]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    );
+    const currentWorkflowId = String(ctx.data?._workflowId || "").trim();
+    const duplicateActiveRun = Array.from(workflowEngine?._activeRuns?.values?.() || []).some((info) => {
+      const activeRunId = String(info?.ctx?.id || "").trim();
+      if (activeRunId && currentLineageRunIds.has(activeRunId)) return false;
+      const activeTaskId = String(
+        info?.ctx?.data?.taskId || info?.ctx?.data?.task?.id || "",
+      ).trim();
+      if (activeTaskId !== normalizedTaskId) return false;
+      const activeWorkflowId = String(info?.workflowId || info?.ctx?.data?._workflowId || "").trim();
+      if (currentWorkflowId && activeWorkflowId && currentWorkflowId !== activeWorkflowId) return false;
+      return true;
+    });
+    if (duplicateActiveRun) {
+      ctx.log(node.id, `Task ${normalizedTaskId} already has an active workflow run; skipping duplicate claim`, "warn");
+      return {
+        success: false,
+        taskId: normalizedTaskId,
+        instanceId,
+        reason: "task_already_active",
+        duplicateActiveTask: true,
+      };
+    }
 
     const runtimeState = getWorkflowRuntimeState(ctx);
     if (!runtimeState.delegationTransitionResults || typeof runtimeState.delegationTransitionResults !== "object") {
@@ -7702,6 +8110,12 @@ registerNodeType("action.build_task_prompt", {
     if (normalizedTaskUrl) {
       userParts.push("## Task Reference");
       userParts.push(normalizedTaskUrl);
+      userParts.push("");
+    }
+
+    const workflowContractBlock = buildWorkflowContractPromptBlock(ctx.data?._workflowContract || null);
+    if (workflowContractBlock) {
+      userParts.push(workflowContractBlock);
       userParts.push("");
     }
 

@@ -9,6 +9,7 @@ import { createProviderKernel } from "./provider-kernel.mjs";
 import { getBosunSessionManager } from "./session-manager.mjs";
 import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
 import { createShellAdapterRegistry } from "../shell/shell-adapter-registry.mjs";
+import { buildContextEnvelope, maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 const INTERACTIVE_MODE_PREFIXES = Object.freeze({
   ask: "[MODE: ask] Respond briefly and directly. Avoid using tools unless absolutely necessary. Do not make code changes.\n\n",
@@ -205,6 +206,67 @@ function normalizeInteractivePrompt(value, fallback = "") {
     || value?.userMessage
     || fallback,
   );
+}
+
+function summarizeContextCompressionItems(items) {
+  const envelope = buildContextEnvelope({ scope: "continuation", items });
+  if (!envelope) return null;
+  return {
+    total: envelope.meta?.total || 0,
+    counts: envelope.meta?.counts || { agent: 0, user: 0, tool: 0, other: 0 },
+    detail: envelope.meta?.detail || "",
+    toolFamilies: envelope.meta?.toolFamilies || {},
+    budgetPolicies: envelope.meta?.budgetPolicies || {},
+    lowSignalToolCount: envelope.meta?.lowSignalToolCount || 0,
+    content: envelope.content,
+  };
+}
+
+function emitInteractiveTurnSummary(onEvent, sessionType, result) {
+  if (typeof onEvent !== "function" || !result) return;
+  const assistantItems = Array.isArray(result?.items) ? result.items : [];
+  const latestAssistantItem = [...assistantItems]
+    .reverse()
+    .find((item) => String(item?.role || "").toLowerCase() === "assistant" && String(item?.text || "").trim());
+  const text = String(
+    result.finalResponse
+    || result.text
+    || result.message
+    || latestAssistantItem?.text
+    || "",
+  ).trim();
+  if (text) {
+    onEvent({
+      id: latestAssistantItem?.id || undefined,
+      role: "assistant",
+      content: text,
+      timestamp: new Date().toISOString(),
+      _sessionType: sessionType,
+      meta: result?.usage
+        ? {
+            usage: { ...result.usage },
+          }
+        : undefined,
+      _compressed: latestAssistantItem?._compressed || undefined,
+      _originalLength:
+        Number.isFinite(Number(latestAssistantItem?._originalLength))
+          ? Number(latestAssistantItem._originalLength)
+          : undefined,
+      _cachedLogId: latestAssistantItem?._cachedLogId || undefined,
+    });
+  }
+  const compressionSummary = summarizeContextCompressionItems(result?.items);
+  if (compressionSummary) {
+    onEvent({
+      role: "system",
+      type: "system",
+      content: compressionSummary.content,
+      timestamp: new Date().toISOString(),
+      meta: {
+        contextCompression: compressionSummary,
+      },
+    });
+  }
 }
 
 export function createHarnessAgentService(options = {}) {
@@ -477,10 +539,21 @@ export function createHarnessAgentService(options = {}) {
         subagentMaxParallel: input.subagentMaxParallel ?? options.subagentMaxParallel,
       });
       const state = entry.providerSession.getState();
-      const normalized = normalizeTurnResult(result, {
+      const compressedItems = await maybeCompressSessionItems(result?.items, {
+        sessionType: entry.sessionType,
+        agentType: entry.selectionId,
+        sessionId,
+        force: input.forceContextShredding === true,
+        skip: input.skipContextShredding === true,
+      });
+      const normalized = normalizeTurnResult({
+        ...result,
+        items: compressedItems,
+      }, {
         adapter: entry.selectionId,
         threadId: state.threadId || result?.threadId || sessionId,
       });
+      emitInteractiveTurnSummary(input.onEvent || options.onEvent, entry.sessionType, normalized);
       sessionManager.finalizeExternalExecution(sessionId, {
         success: normalized.success !== false,
         status: normalized.status || (normalized.success === false ? "failed" : "completed"),

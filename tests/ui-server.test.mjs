@@ -936,6 +936,47 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 15000);
 
+  it("serves available agent inventory plus mode control endpoints", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const availableResponse = await fetch(`http://127.0.0.1:${port}/api/agents/available`);
+      const availableJson = await availableResponse.json();
+      expect(availableResponse.status).toBe(200);
+      expect(availableJson.ok).toBe(true);
+      expect(Array.isArray(availableJson.agents)).toBe(true);
+      expect(Array.isArray(availableJson.manualAgents)).toBe(true);
+      expect(typeof availableJson.active).toBe("string");
+      expect(availableJson.agents.length).toBeGreaterThan(0);
+      expect(availableJson.agents[0]).toEqual(expect.objectContaining({
+        id: expect.any(String),
+        name: expect.any(String),
+        available: expect.any(Boolean),
+        models: expect.any(Array),
+        capabilities: expect.any(Array),
+      }));
+
+      const modeResponse = await fetch(`http://127.0.0.1:${port}/api/agents/mode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "agent" }),
+      });
+      const modeJson = await modeResponse.json();
+      expect(modeResponse.status).toBe(200);
+      expect(modeJson.ok).toBe(true);
+      expect(modeJson.mode).toBe("agent");
+    } finally {
+      mod.stopTelegramUiServer();
+    }
+  }, 15000);
+
   it("returns provider inventory with auth state, capabilities, and model catalogs", async () => {
     const savedOpenAiApiKey = process.env.OPENAI_API_KEY;
     const savedDefaultProvider = process.env.BOSUN_PROVIDER_DEFAULT;
@@ -6096,6 +6137,98 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 20000);
 
+  it("reconciles orphaned harness approvals out of the generic workflow approval queue", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-harness-approvals-orphan-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_CONFIG_PATH = join(isolatedDir, "bosun.config.json");
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.BOSUN_STATE_LEDGER_PATH = join(isolatedDir, ".bosun", ".cache", "state-ledger.sqlite");
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+    process.env.REPO_ROOT = isolatedDir;
+    resetStateLedgerCache();
+    const workspaceId = "approval-harness-orphan-ws";
+    writeFileSync(process.env.BOSUN_CONFIG_PATH, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      activeWorkspace: workspaceId,
+      workspaces: [
+        {
+          id: workspaceId,
+          name: "Harness Approval Orphan Workspace",
+          path: isolatedDir,
+          activeRepo: "repo",
+          repos: [{ name: "repo", path: isolatedDir, primary: true }],
+        },
+      ],
+    }, null, 2) + "\n", "utf8");
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const approvalQueueModule = await import("../workflow/approval-queue.mjs");
+
+    approvalQueueModule.upsertHarnessRunApprovalRequest({
+      runId: "voice-ghost-run",
+      requestedBy: "voice",
+      stageId: "tool:delegate_to_agent",
+      stageType: "tool",
+      reason: "Tool delegate_to_agent requires operator approval.",
+    }, { repoRoot: isolatedDir });
+
+    const fakeEngine = {
+      getRunHistoryPage: vi.fn(() => ({
+        runs: [],
+        total: 0,
+        offset: 0,
+        limit: 50,
+        nextOffset: null,
+        hasMore: false,
+      })),
+      getRunDetail: vi.fn(() => null),
+      getTaskTraceEvents: vi.fn(() => []),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+      on() {},
+      off() {},
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const listed = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=pending&workspace=${workspaceId}`).then((r) => r.json());
+      expect(listed.ok).toBe(true);
+      expect(listed.requests).toEqual([]);
+
+      const allApprovals = await fetch(`http://127.0.0.1:${port}/api/workflows/approvals?status=all&workspace=${workspaceId}`).then((r) => r.json());
+      expect(allApprovals.ok).toBe(true);
+      expect(allApprovals.requests).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          requestId: "harness-run:voice-ghost-run",
+          status: "expired",
+          resolution: expect.objectContaining({
+            actorId: "system:reconcile",
+            note: "Harness run voice-ghost-run no longer exists.",
+          }),
+        }),
+      ]));
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(isolatedDir);
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  }, 20000);
+
   it("lists and resolves workflow-gate approval requests through the generic approval queue API", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-gate-approvals-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -6404,6 +6537,20 @@ describeUiServer("ui-server mini app", () => {
 
     const mod = await import("../server/ui-server.mjs");
     const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-run-history-cache-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        workspace: {
+          repoRoot: tmpDir,
+        },
+      }, null, 2) + "\n",
+      "utf8",
+    );
     const fakeEngine = {
       getRunHistoryPage: vi.fn(async () => ({
         runs: [
@@ -6447,13 +6594,22 @@ describeUiServer("ui-server mini app", () => {
       expect(first.ok).toBe(true);
       expect(second.ok).toBe(true);
       expect(fakeEngine.getRunHistoryPage).toHaveBeenCalledTimes(1);
-      expect(first.runs).toHaveLength(1);
-      expect(second.runs).toHaveLength(1);
+      expect(first.runs).toEqual(second.runs);
+      expect(first.runs).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          runId: "run-history-1",
+          workflowId: "wf-1",
+          status: "completed",
+        }),
+      ]));
     } finally {
       if (server) {
         await new Promise((resolve) => server.close(resolve));
       }
       await settleUiRuntimeCleanup();
+      rmSync(tmpDir, { recursive: true, force: true });
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
       mod._testInjectWorkflowEngine(workflowEngineModule, null);
     }
   }, 15000);
@@ -9535,7 +9691,7 @@ describeUiServer("ui-server mini app", () => {
     }
   });
 
-  it("marks stale ledger-only active snapshots as non-live runtime state", async () => {
+  it("reclassifies stale ledger-only active snapshots to terminal lifecycle state", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-ledger-stale-live-"));
     const workspaceDir = join(isolatedRepoRoot, "workspaces", "workspace-stale", "repo");
@@ -9596,9 +9752,11 @@ describeUiServer("ui-server mini app", () => {
       expect(detailRes.status).toBe(200);
       expect(detailJson.session).toEqual(expect.objectContaining({
         id: "ledger-stale-active-1",
-        lifecycleStatus: "active",
-        runtimeState: "running",
+        lifecycleStatus: "no_output",
+        status: "no_output",
+        runtimeState: "stopped",
         runtimeIsLive: false,
+        endedAt: "2026-03-31T10:05:00.000Z",
       }));
     } finally {
       await new Promise((resolve) => server.close(resolve));

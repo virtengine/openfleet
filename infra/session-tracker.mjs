@@ -58,6 +58,7 @@ const MAX_MESSAGE_CHARS = 100_000;
 
 /** Maximum total sessions to keep in memory. */
 const MAX_SESSIONS = 100;
+const RETIRED_SESSION_SUPPRESSION_MS = 5 * 60 * 1000;
 const TERMINAL_SESSION_STATUSES = new Set([
   "completed",
   "failed",
@@ -367,8 +368,16 @@ function extractUsageFromMeta(meta) {
   const totalTokens = normalizeTokenNumber(
     usage.totalTokens ?? usage.total_tokens ?? (inputTokens + outputTokens),
   );
-  if (inputTokens <= 0 && outputTokens <= 0 && totalTokens <= 0) return null;
-  return { inputTokens, outputTokens, totalTokens };
+  const cacheInputTokens = normalizeTokenNumber(
+    usage.cacheInputTokens
+    ?? usage.cachedInputTokens
+    ?? usage.cache_input_tokens
+    ?? usage.cached_input_tokens
+    ?? usage.prompt_tokens_details?.cached_tokens
+    ?? usage.input_tokens_details?.cached_tokens,
+  );
+  if (inputTokens <= 0 && outputTokens <= 0 && totalTokens <= 0 && cacheInputTokens <= 0) return null;
+  return { inputTokens, outputTokens, totalTokens, cacheInputTokens };
 }
 
 function cloneTurns(turns) {
@@ -380,7 +389,8 @@ function sumTurnTokenUsage(turns = []) {
     inputTokens: acc.inputTokens + (Number(turn?.inputTokens) || 0),
     outputTokens: acc.outputTokens + (Number(turn?.outputTokens) || 0),
     totalTokens: acc.totalTokens + (Number(turn?.totalTokens) || 0),
-  }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    cacheInputTokens: acc.cacheInputTokens + (Number(turn?.cacheInputTokens) || 0),
+  }), { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheInputTokens: 0 });
 }
 
 function resolveSessionTokenUsage(session, turns = null) {
@@ -394,6 +404,7 @@ function resolveSessionTokenUsage(session, turns = null) {
           inputTokens: 0,
           outputTokens: 0,
           totalTokens: 0,
+          cacheInputTokens: 0,
         });
 }
 
@@ -642,6 +653,7 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
     tokenCount: effectiveTokenUsage.totalTokens || 0,
     inputTokens: effectiveTokenUsage.inputTokens || 0,
     outputTokens: effectiveTokenUsage.outputTokens || 0,
+    cacheInputTokens: effectiveTokenUsage.cacheInputTokens || 0,
     tokenUsage: effectiveTokenUsage,
     createdAt: session?.createdAt || new Date(session?.startedAt || Date.now()).toISOString(),
     lastActiveAt,
@@ -743,10 +755,12 @@ function buildLightweightSessionSummaryRecord(
     tokenCount: Number(session?.tokenCount ?? tokenUsage.totalTokens ?? session?.totalTokens ?? 0) || 0,
     inputTokens: Number(session?.inputTokens ?? tokenUsage.inputTokens ?? 0) || 0,
     outputTokens: Number(session?.outputTokens ?? tokenUsage.outputTokens ?? 0) || 0,
+    cacheInputTokens: Number(session?.cacheInputTokens ?? tokenUsage.cacheInputTokens ?? 0) || 0,
     tokenUsage: {
       totalTokens: Number(session?.tokenCount ?? tokenUsage.totalTokens ?? session?.totalTokens ?? 0) || 0,
       inputTokens: Number(session?.inputTokens ?? tokenUsage.inputTokens ?? 0) || 0,
       outputTokens: Number(session?.outputTokens ?? tokenUsage.outputTokens ?? 0) || 0,
+      cacheInputTokens: Number(session?.cacheInputTokens ?? tokenUsage.cacheInputTokens ?? 0) || 0,
     },
     createdAt: session?.createdAt || new Date(session?.startedAt || Date.now()).toISOString(),
     lastActiveAt,
@@ -985,6 +999,7 @@ function updateTurnTimeline(session, msg) {
     turn.inputTokens = Math.max(turn.inputTokens || 0, usage.inputTokens || 0);
     turn.outputTokens = Math.max(turn.outputTokens || 0, usage.outputTokens || 0);
     turn.totalTokens = Math.max(turn.totalTokens || 0, usage.totalTokens || 0);
+    turn.cacheInputTokens = Math.max(turn.cacheInputTokens || 0, usage.cacheInputTokens || 0);
     if (!session.insights || typeof session.insights !== "object") {
       session.insights = {};
     }
@@ -992,11 +1007,13 @@ function updateTurnTimeline(session, msg) {
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      cacheInputTokens: 0,
     };
     session.insights.tokenUsage = {
       inputTokens: Math.max(priorUsage.inputTokens, usage.inputTokens || 0),
       outputTokens: Math.max(priorUsage.outputTokens, usage.outputTokens || 0),
       totalTokens: Math.max(priorUsage.totalTokens, usage.totalTokens || 0),
+      cacheInputTokens: Math.max(priorUsage.cacheInputTokens, usage.cacheInputTokens || 0),
     };
   }
   turn.durationMs = Math.max(0, Number(turn.endedAt || timestampMs) - Number(turn.startedAt || timestampMs));
@@ -1061,6 +1078,12 @@ function buildSessionTelemetryEvent(session, eventType, payload = {}, message = 
         inputTokens: Number(message.meta.usage.inputTokens || message.meta.usage.promptTokens || 0),
         outputTokens: Number(message.meta.usage.outputTokens || message.meta.usage.completionTokens || 0),
         totalTokens: Number(message.meta.usage.totalTokens || 0),
+        cacheInputTokens: Number(
+          message.meta.usage.cacheInputTokens
+          || message.meta.usage.cachedInputTokens
+          || message.meta.usage.prompt_tokens_details?.cached_tokens
+          || 0,
+        ),
       }
     : null;
   return {
@@ -1149,6 +1172,9 @@ export class SessionTracker {
 
   /** @type {Set<string>} session IDs with pending disk writes */
   #dirty = new Set();
+
+  /** @type {Map<string, number>} recently retired session IDs suppressed from auto-recreation */
+  #retiredSessions = new Map();
 
   /** @type {{ loadedAt: number, sessions: Array<Object> }} */
   #persistedSummaryCache = { loadedAt: 0, sessions: [] };
@@ -1255,6 +1281,7 @@ export class SessionTracker {
 
     // Auto-create session if it doesn't exist yet
     if (!session) {
+      if (this.#isSessionRetired(taskId)) return;
       if (event && (event.role || event.type)) {
         this.#autoCreateSession(taskId, event);
         session = this.#sessions.get(taskId);
@@ -1537,6 +1564,7 @@ export class SessionTracker {
    * @param {string} taskId
    */
   removeSession(taskId) {
+    this.#markSessionRetired(taskId);
     const session = this.#sessions.get(taskId);
     this.#accumulateCompletedSession(session, taskId);
     this.#sessions.delete(taskId);
@@ -1573,6 +1601,7 @@ export class SessionTracker {
    * @param {{ id: string, type?: string, taskId?: string, metadata?: Object }} opts
    */
   createSession({ id, type = "manual", taskId, metadata = {}, maxMessages, sessionKey }) {
+    this.#clearRetiredSession(id);
     // Evict oldest non-active sessions if at capacity
     if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(id)) {
       this.#evictOldest();
@@ -1746,6 +1775,10 @@ export class SessionTracker {
     if (!session) return;
     session.taskTitle = newTitle;
     session.title = newTitle;
+    session.metadata = session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+    session.metadata.title = newTitle;
     this.#markDirty(sessionId);
     persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-renamed", { title: newTitle });
@@ -1915,6 +1948,7 @@ export class SessionTracker {
 
   /** Auto-create a session when recordEvent is called for an unknown taskId. */
   #autoCreateSession(taskId, event) {
+    if (this.#isSessionRetired(taskId)) return;
     const type = event._sessionType || "task";
     this.createSession({
       id: taskId,
@@ -1923,6 +1957,32 @@ export class SessionTracker {
       taskId,
       metadata: { autoCreated: true },
     });
+  }
+
+  #markSessionRetired(taskId, ttlMs = RETIRED_SESSION_SUPPRESSION_MS) {
+    const sessionId = String(taskId || "").trim();
+    if (!sessionId) return;
+    const ttl = Number(ttlMs);
+    const expiresAt = Date.now() + (Number.isFinite(ttl) && ttl > 0 ? ttl : 0);
+    this.#retiredSessions.set(sessionId, expiresAt);
+  }
+
+  #clearRetiredSession(taskId) {
+    const sessionId = String(taskId || "").trim();
+    if (!sessionId) return;
+    this.#retiredSessions.delete(sessionId);
+  }
+
+  #isSessionRetired(taskId) {
+    const sessionId = String(taskId || "").trim();
+    if (!sessionId) return false;
+    const expiresAt = Number(this.#retiredSessions.get(sessionId) || 0);
+    if (!expiresAt) return false;
+    if (expiresAt <= Date.now()) {
+      this.#retiredSessions.delete(sessionId);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -2428,6 +2488,7 @@ export class SessionTracker {
 
       if (itemType === "agent_message" && item.text) {
         return {
+          id: item.id || event.itemId || undefined,
           type: "agent_message",
           content: item.text.slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,
@@ -2448,6 +2509,7 @@ export class SessionTracker {
 
       if (itemType === "function_call") {
         return {
+          id: item.id || event.itemId || undefined,
           type: "tool_call",
           content: `${item.name}(${(item.arguments || "").slice(0, 500)})`,
           timestamp: ts,
@@ -2457,6 +2519,7 @@ export class SessionTracker {
 
       if (itemType === "function_call_output") {
         return {
+          id: item.id || event.itemId || item.toolCallId || undefined,
           type: "tool_result",
           content: (item.output || "").slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,
@@ -2491,6 +2554,7 @@ export class SessionTracker {
 ${output}`
           : `${command || "(command)"}${statusLabel}`;
         return {
+          id: item.id || event.itemId || undefined,
           type: "tool_call",
           content: content.slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,
@@ -2502,6 +2566,7 @@ ${output}`
         const detail = toText(item.text || item.summary || "");
         if (!detail) return null;
         return {
+          id: item.id || event.itemId || undefined,
           type: "system",
           content: detail.slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,
@@ -2516,6 +2581,7 @@ ${output}`
         const partial = toText(item.text || item.delta);
         if (!partial) return null;
         return {
+          id: item.id || event.itemId || undefined,
           type: "agent_message",
           content: partial.slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,

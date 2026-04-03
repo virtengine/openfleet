@@ -18,7 +18,7 @@ import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
-import { buildContextEnvelope } from "../workspace/context-cache.mjs";
+import { buildContextEnvelope, maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
 import { executorToAdapterName, normalizeProviderAdapterName } from "./provider-registry.mjs";
@@ -990,11 +990,27 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     const text = typeof result === "string"
       ? result
       : result.finalResponse || result.text || result.message || JSON.stringify(result);
+    const assistantItems = Array.isArray(result?.items) ? result.items : [];
+    const latestAssistantItem = [...assistantItems]
+      .reverse()
+      .find((item) => String(item?.role || "").toLowerCase() === "assistant" && String(item?.text || "").trim());
     tracker.recordEvent(sessionId, {
+      id: latestAssistantItem?.id || undefined,
       role: "assistant",
       content: text,
       timestamp: new Date().toISOString(),
       _sessionType: sessionType,
+      meta: result?.usage
+        ? {
+            usage: { ...result.usage },
+          }
+        : undefined,
+      _compressed: latestAssistantItem?._compressed || undefined,
+      _originalLength:
+        Number.isFinite(Number(latestAssistantItem?._originalLength))
+          ? Number(latestAssistantItem._originalLength)
+          : undefined,
+      _cachedLogId: latestAssistantItem?._cachedLogId || undefined,
     });
     const compressionSummary = summarizeContextCompressionItems(result?.items);
     if (compressionSummary) {
@@ -1079,7 +1095,17 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         recovered ? `${adapterName}.exec.retry` : `${adapterName}.exec`,
         timeoutAbort,
       );
-      return finalizePrimaryTurnResult(rawResult);
+      const compressedItems = await maybeCompressSessionItems(rawResult?.items, {
+        sessionType,
+        agentType: adapterName,
+        sessionId,
+        force: options.forceContextShredding === true,
+        skip: options.skipContextShredding === true,
+      });
+      return finalizePrimaryTurnResult({
+        ...rawResult,
+        items: compressedItems,
+      });
     },
     async recoverAdapter({ adapterName, adapter, retry, maxRetries }) {
       console.warn(

@@ -846,6 +846,36 @@ describe("session manager foundation", () => {
     }
   });
 
+  it("does not invoke a bound controller run without a continuation prompt", async () => {
+    const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-session-manager-no-prompt-"));
+    vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
+    try {
+      const manager = createBosunSessionManager();
+      const run = vi.fn(async () => ({ success: true }));
+
+      manager.beginExternalSession({
+        sessionId: "external-no-prompt-session",
+        scope: "workflow-task",
+        sessionType: "task",
+        taskKey: "external-no-prompt-task",
+        cwd: "C:/repo",
+        source: "workflow",
+      });
+      manager.bindExternalController("external-no-prompt-session", { run });
+
+      expect(manager.continueSession("external-no-prompt-session")).toEqual(
+        expect.objectContaining({
+          sessionId: "external-no-prompt-session",
+          status: "running",
+        }),
+      );
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(testCacheDir, { recursive: true, force: true });
+    }
+  });
+
   it("applies a canonical subagent pool when child harness sessions run concurrently", async () => {
     const testCacheDir = mkdtempSync(join(tmpdir(), "bosun-subagent-pool-session-"));
     vi.stubEnv("BOSUN_TEST_CACHE_DIR", testCacheDir);
@@ -1459,6 +1489,95 @@ describe("harness agent service foundation", () => {
       resumeFrom: expect.objectContaining({
         threadId: "provider-thread-2",
       }),
+    }));
+  });
+
+  it("forwards interactive usage metadata through assistant summary events", async () => {
+    const sessionManager = createBosunSessionManager();
+    const onEvent = vi.fn();
+    const runTurn = vi.fn(async () => ({
+      success: true,
+      status: "completed",
+      finalResponse: "current assistant response",
+      threadId: "provider-thread-3",
+      providerId: "openai-responses",
+      usage: {
+        inputTokens: 120,
+        outputTokens: 24,
+        totalTokens: 144,
+        cacheInputTokens: 18,
+      },
+      items: [
+        {
+          id: "assistant-old",
+          role: "assistant",
+          type: "agent_message",
+          text: "I inspected the repository, compared the last commits, and gathered detailed command evidence. ".repeat(4),
+        },
+        {
+          id: "tool-result-1",
+          type: "tool_result",
+          output: "git diff --stat\n".repeat(40),
+        },
+        {
+          id: "assistant-middle",
+          role: "assistant",
+          type: "agent_message",
+          text: "Intermediate assistant output after the first tool result.",
+        },
+        {
+          id: "tool-result-2",
+          type: "tool_result",
+          output: "npm test -- --runInBand\n".repeat(40),
+        },
+        {
+          id: "assistant-current",
+          role: "assistant",
+          type: "agent_message",
+          text: "current assistant response",
+        },
+      ],
+    }));
+    const createExecutionSession = vi.fn(() => ({
+      runTurn,
+      getState: () => ({
+        sessionId: "chat-session-3",
+        threadId: "provider-thread-3",
+        model: "gpt-5.4",
+      }),
+      adapter: null,
+    }));
+    const service = createHarnessAgentService({
+      sessionManager,
+      providerKernel: {
+        createExecutionSession,
+      },
+      getPrimaryAgentName: () => "openai-responses",
+      getAgentMode: () => "agent",
+    });
+
+    const result = await service.runInteractivePrompt("compress this turn", {
+      sessionId: "chat-session-3",
+      sessionType: "primary",
+      cwd: "C:/repo",
+      onEvent,
+      forceContextShredding: true,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      finalResponse: "current assistant response",
+    }));
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      id: "assistant-current",
+      role: "assistant",
+      content: "current assistant response",
+      meta: {
+        usage: expect.objectContaining({
+          totalTokens: 144,
+          cacheInputTokens: 18,
+        }),
+      },
     }));
   });
 });

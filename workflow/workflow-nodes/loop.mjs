@@ -143,6 +143,37 @@ registerNodeType("loop.for_each", {
             _loopIteration: itemIndex,
             _loopTotal: items.length,
           };
+          if (item && typeof item === "object" && !Array.isArray(item)) {
+            const taskId = String(item.taskId || item.id || item.task_id || "").trim();
+            const taskTitle = String(item.taskTitle || item.title || taskId).trim();
+            const taskRecord = {
+              ...item,
+              ...(taskId ? { id: taskId } : {}),
+              ...(taskTitle ? { title: taskTitle } : {}),
+            };
+            if (taskId) {
+              bindTaskContext({ data: itemData }, { taskId, taskTitle, task: taskRecord });
+              itemData._workflowRootTaskId = taskId;
+              itemData._workflowParentTaskId = taskId;
+              itemData._workflowRootSessionId = taskId;
+              itemData._workflowParentSessionId = taskId;
+            }
+            const description = String(item.taskDescription || item.description || "").trim();
+            const branch = String(item.branch || item.branchName || "").trim();
+            const baseBranch = String(item.baseBranch || item.base_branch || "").trim();
+            const repository = String(item.repository || "").trim();
+            const workspace = String(item.workspace || "").trim();
+            const scope = String(item.scope || "").trim();
+            if (description) itemData.taskDescription = description;
+            if (branch) {
+              itemData.branch = branch;
+              itemData.branchName = branch;
+            }
+            if (baseBranch) itemData.baseBranch = baseBranch;
+            if (repository) itemData.repository = repository;
+            if (workspace) itemData.workspace = workspace;
+            if (scope) itemData.scope = scope;
+          }
           try {
             const runCtx = await engine.execute(subWorkflowId, itemData);
             const ok = !runCtx?.errors?.length;
@@ -318,4 +349,3 @@ registerNodeType("loop.while", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  SESSION / AGENT MANAGEMENT — Direct session control
 // ═══════════════════════════════════════════════════════════════════════════
-

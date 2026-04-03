@@ -8,6 +8,7 @@ import {
   expireApprovalRequest,
   getApprovalRequest,
   getHarnessRunApprovalRequest,
+  reconcileHarnessRunApprovalRequests,
   reconcileWorkflowRunApprovalRequests,
   resolveApprovalQueuePath,
   resolveApprovalRequest,
@@ -236,6 +237,34 @@ describe("workflow approval queue", () => {
       latestApproval: expect.objectContaining({
         decision: "approved",
         actorId: "sql-reviewer",
+      }),
+    });
+  });
+
+  it("reconciles stale harness approvals when the run no longer exists", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-harness-approval-stale-"));
+    tempRoots.push(repoRoot);
+    upsertHarnessRunApprovalRequest({
+      runId: "ghost-run",
+      requestedBy: "voice",
+      reason: "Stale voice approval.",
+      timeoutMs: 0,
+    }, { repoRoot });
+
+    const reconciled = reconcileHarnessRunApprovalRequests({ repoRoot });
+
+    expect(reconciled.repaired).toEqual([
+      expect.objectContaining({
+        requestId: "harness-run:ghost-run",
+        runId: "ghost-run",
+        status: "expired",
+      }),
+    ]);
+    expect(getHarnessRunApprovalRequest("ghost-run", { repoRoot })).toMatchObject({
+      requestId: "harness-run:ghost-run",
+      status: "expired",
+      resolution: expect.objectContaining({
+        actorId: "system:reconcile",
       }),
     });
   });

@@ -1680,6 +1680,112 @@ describe("action.claim_task", () => {
       claimSpy.mockRestore();
     }
   });
+
+  it("returns task_already_active when another workflow run already owns the same task", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-should-not-be-used",
+    });
+
+    try {
+      const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+      ctx.id = "run-current";
+      const node = makeNode("action.claim_task", {
+        taskId: "task-active-1",
+        taskTitle: "Already active elsewhere",
+        renewIntervalMs: 0,
+      });
+      const engine = {
+        _activeRuns: new Map([
+          [
+            "run-other",
+            {
+              ctx: {
+                id: "run-other",
+                data: {
+                  taskId: "task-active-1",
+                },
+              },
+            },
+          ],
+        ]),
+      };
+
+      const result = await nt.execute(node, ctx, engine);
+
+      expect(result).toEqual(expect.objectContaining({
+        success: false,
+        taskId: "task-active-1",
+        reason: "task_already_active",
+        duplicateActiveTask: true,
+      }));
+      expect(claimSpy).not.toHaveBeenCalled();
+      expect(initSpy).not.toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+
+  it("ignores an active parent batch run in the current lineage when claiming a task", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-real-child",
+    });
+
+    try {
+      const ctx = makeCtx({
+        repoRoot: "/tmp/repo-root",
+        _workflowId: "template-task-lifecycle",
+        _workflowRootRunId: "run-batch-root",
+        _workflowParentRunId: "run-batch-root",
+      });
+      ctx.id = "run-child";
+      ctx.getDelegationTransitionGuard = () => null;
+      ctx.data._delegationTransitionGuards = {};
+      const node = makeNode("action.claim_task", {
+        taskId: "task-active-parent-batch-1",
+        taskTitle: "Claim through batch child",
+        renewIntervalMs: 0,
+        idempotencyKey: "claim-parent-batch-lineage-1",
+      });
+      const engine = {
+        _activeRuns: new Map([
+          [
+            "run-batch-root",
+            {
+              workflowId: "fcd7047d-ba1e-410a-adaa-23455441c3b7",
+              workflowName: "Task Batch Processor",
+              ctx: {
+                id: "run-batch-root",
+                data: {
+                  taskId: "task-active-parent-batch-1",
+                },
+              },
+            },
+          ],
+        ]),
+      };
+
+      const result = await nt.execute(node, ctx, engine);
+
+      expect(result).toEqual(expect.objectContaining({
+        success: true,
+        taskId: "task-active-parent-batch-1",
+      }));
+      expect(result.reason).toBeUndefined();
+      expect(result.duplicateActiveTask).not.toBe(true);
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

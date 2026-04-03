@@ -421,8 +421,16 @@ export async function taskList(filters = {}) {
   const store = await initStore();
   let tasks = store.getAllTasks();
 
-  if (filters.status) {
-    tasks = tasks.filter((t) => t.status === filters.status);
+  const statusFilters = Array.isArray(filters.statuses)
+    ? filters.statuses
+    : (typeof filters.status === "string"
+      ? filters.status.split(",").map((value) => value.trim()).filter(Boolean)
+      : []);
+  if (statusFilters.length === 1) {
+    tasks = tasks.filter((t) => t.status === statusFilters[0]);
+  } else if (statusFilters.length > 1) {
+    const allowedStatuses = new Set(statusFilters);
+    tasks = tasks.filter((t) => allowedStatuses.has(String(t?.status || "").trim()));
   }
   if (filters.priority) {
     tasks = tasks.filter((t) => t.priority === filters.priority);
@@ -1217,7 +1225,11 @@ async function cliList(args) {
   const limit = getArgValue(args, "--limit");
   const json = hasFlag(args, "--json");
 
-  if (status) filters.status = status;
+  if (status) {
+    const statuses = status.split(",").map((value) => value.trim()).filter(Boolean);
+    if (statuses.length > 1) filters.statuses = statuses;
+    else filters.status = statuses[0];
+  }
   if (priority) filters.priority = priority;
   if (tag) filters.tag = tag;
   if (search) filters.search = search;

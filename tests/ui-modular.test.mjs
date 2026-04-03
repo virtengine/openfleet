@@ -18,6 +18,7 @@ import {
   validateSetting as validateAppSetting,
 } from "../ui/modules/settings-schema.js";
 import {
+  guardrailsData,
   isPlaceholderTaskDescription,
   sanitizeTaskText,
 } from "../ui/modules/state.js";
@@ -296,6 +297,25 @@ function normalizeTaskWorkflowRunEntry(entry) {
     meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
   };
 }
+
+describe("modular UI state regressions", () => {
+  it("exports guardrails state and keeps the mirrored site loader wired", () => {
+    expect(guardrailsData).toBeDefined();
+    expect(typeof guardrailsData).toBe("object");
+    expect("value" in guardrailsData).toBe(true);
+
+    const appStateSource = readFileSync(resolve(process.cwd(), "ui/modules/state.js"), "utf8");
+    const siteStateSource = readFileSync(resolve(process.cwd(), "site/ui/modules/state.js"), "utf8");
+
+    expect(appStateSource).toContain("export const guardrailsData = signal(null);");
+    expect(appStateSource).toContain("export async function loadGuardrails()");
+    expect(appStateSource).toContain("guardrails: () => loadGuardrails()");
+
+    expect(siteStateSource).toContain("export const guardrailsData = signal(null);");
+    expect(siteStateSource).toContain("export async function loadGuardrails()");
+    expect(siteStateSource).toContain("guardrails: () => loadGuardrails()");
+  });
+});
 
 function buildTaskWorkflowRunLineageBadges(run) {
   const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;

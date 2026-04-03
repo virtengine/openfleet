@@ -20,6 +20,7 @@ import {
   installTemplateSet,
 } from "../workflow/workflow-templates.mjs";
 import {
+  isTaskBatchDispatchEligible,
   validateTaskBatchPayload,
 } from "../workflow-templates/task-batch.mjs";
 import {
@@ -1264,9 +1265,115 @@ describe("workflow setup profiles", () => {
     for (const script of queryScripts) {
       expect(script).toContain("const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();");
       expect(script).toContain('path.join(repoRoot, "kanban", "kanban-adapter.mjs")');
-      expect(script).toContain('const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);');
+      expect(script).toContain("const looksDispatchable = function isTaskBatchDispatchEligible");
+      expect(script).toContain('const filtered = (tasks || []).filter((task) => looksDispatchable(task));');
       expect(script).not.toContain("repository.length > 0 && workspace.length > 0");
     }
+  });
+
+  it("treats structurally empty synthetic tasks as ineligible for autonomous batch dispatch", () => {
+    expect(isTaskBatchDispatchEligible({
+      id: "TASK-DIAG-1",
+      title: "Diagnostics export",
+      status: "todo",
+      draft: false,
+      projectId: null,
+      tags: [],
+      description: "",
+      branchName: null,
+      baseBranch: null,
+      meta: {},
+    })).toBe(false);
+
+    expect(isTaskBatchDispatchEligible({
+      id: "task-export-1",
+      title: "Export me",
+      status: "todo",
+      draft: false,
+      projectId: "internal",
+      tags: [],
+      description: "",
+      branchName: null,
+      baseBranch: null,
+      repository: null,
+      workspace: null,
+      meta: {
+        timeline: [{ type: "task.created", source: "test" }],
+        workflowRuns: [{ runId: "run-1" }],
+      },
+    })).toBe(false);
+
+    expect(isTaskBatchDispatchEligible({
+      id: "TASK-DIAG-LOCAL",
+      title: "Diagnostics export",
+      status: "todo",
+      draft: false,
+      projectId: "internal",
+      tags: [],
+      description: "",
+      branchName: null,
+      baseBranch: null,
+      repository: null,
+      workspace: null,
+      meta: {
+        timeline: [{ type: "task.created", source: "task-store" }],
+        workflowRuns: [{ runId: "run-local-1" }],
+      },
+    })).toBe(false);
+
+    expect(isTaskBatchDispatchEligible({
+      id: "task-import-1",
+      title: "Updated title",
+      status: "todo",
+      draft: false,
+      projectId: "internal",
+      tags: [],
+      description: "",
+      branchName: null,
+      baseBranch: null,
+      repository: null,
+      workspace: null,
+      meta: {
+        reviewFixLifecycle: {
+          mode: "review_redispatch",
+          state: "session_rebind_requested",
+        },
+      },
+    })).toBe(false);
+
+    expect(isTaskBatchDispatchEligible({
+      id: "d5325eca-de7e-433a-8b64-ddd01bc1e7f3",
+      title: "[s] feat(reliability): expose auto-update breaker state and reset controls",
+      status: "todo",
+      draft: false,
+      projectId: "internal",
+      tags: ["planning", "autonomous", "reliability"],
+      description: "Expose auto-update breaker state",
+      branchName: "task/d5325eca",
+      baseBranch: "origin/main",
+      meta: {
+        planner: { impact: 8 },
+        workflow: { workflowId: "template-task-replenish" },
+        repo_areas: ["infra/update-check.mjs"],
+      },
+    })).toBe(true);
+
+    expect(isTaskBatchDispatchEligible({
+      id: "a6a0198e-a547-4eb7-872c-af2c83604b5f",
+      title: "[m] agent logging: enrich session metadata from VK API when missing",
+      status: "todo",
+      draft: true,
+      projectId: "internal",
+      tags: [],
+      description: "Add VK metadata enrichment to session startup flows.",
+      branchName: null,
+      baseBranch: "main",
+      repository: "virtengine/bosun",
+      workspace: "virtengine-gh",
+      meta: {
+        planner: { impact: 7 },
+      },
+    })).toBe(true);
   });
 
   it("alerts Telegram only for failed batch items and logs the routine summary", () => {

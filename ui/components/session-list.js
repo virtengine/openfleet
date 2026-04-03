@@ -26,11 +26,13 @@ import {
 } from "../modules/session-api.js";
 import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
+import { clearAgentStatus } from "../modules/streaming.js";
+import { AppContextMenu, useContextMenuState } from "./context-menu.js";
 import {
   List, ListItem, ListItemButton, ListItemText, ListItemIcon,
   ListItemSecondaryAction, Typography, Box, Stack, IconButton,
   Chip, Divider, TextField, InputAdornment, CircularProgress,
-  Tooltip, Menu, MenuItem, Paper, Skeleton, Button, Alert,
+  Tooltip, Paper, Skeleton, Button, Alert,
 } from "@mui/material";
 
 const html = htm.bind(h);
@@ -118,6 +120,41 @@ function clearUnavailableSelectedSession(targetSessionId) {
     sessionMessages.value = [];
     sessionPagination.value = null;
   }
+}
+
+function sessionLooksLikeTestLeak(session) {
+  if (!session || typeof session !== "object") return true;
+  const metadata =
+    session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const identifiers = [
+    session.id,
+    session.taskId,
+    session.title,
+    session.taskTitle,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const hasWorkspaceAssignment = Boolean(
+    String(session?.workspaceId || session?.workspace || metadata?.workspaceId || "").trim()
+      || String(metadata?.workspaceDir || "").trim()
+      || String(metadata?.workspaceRoot || "").trim(),
+  );
+  const normalizedSource = String(metadata?.source || "").trim().toLowerCase();
+  if (metadata?.hiddenInLists === true || metadata?.hidden === true || metadata?.testSession === true) {
+    return true;
+  }
+  if (normalizedSource === "voice-http" || normalizedSource === "voice-http-tool" || normalizedSource === "vision-http") {
+    return true;
+  }
+  if (identifiers.some((value) => /^(?:null|undefined|\(null\)|session|null session)$/i.test(value))) {
+    return true;
+  }
+  if (!hasWorkspaceAssignment && (Number(session?.turnCount || 0) <= 0) && !String(session?.preview || session?.lastMessage || "").trim()) {
+    return true;
+  }
+  return false;
 }
 
 /* ─── Data loaders ─── */
@@ -534,6 +571,7 @@ export async function createSession(options = {}) {
         (s) =>
         s.type === type &&
         getSessionLifecycleState(s).isActive &&
+        !sessionLooksLikeTestLeak(s) &&
         (s.turnCount || 0) === 0 &&
         (!s.preview || s.preview.trim() === ""),
       )
@@ -587,7 +625,8 @@ export async function archiveSession(id) {
     const url = sessionPath(id, "archive");
     if (!url) return false;
     await apiFetch(url, { method: "POST" });
-    if (selectedSessionId.value === id) selectedSessionId.value = null;
+    clearAgentStatus(id);
+    clearUnavailableSelectedSession(id);
     await loadSessions(_lastLoadFilter);
     return true;
   } catch {
@@ -600,7 +639,8 @@ export async function deleteSession(id) {
     const url = sessionPath(id, "delete");
     if (!url) return false;
     await apiFetch(url, { method: "POST" });
-    if (selectedSessionId.value === id) selectedSessionId.value = null;
+    clearAgentStatus(id);
+    clearUnavailableSelectedSession(id);
     await loadSessions(_lastLoadFilter);
     return true;
   } catch {
@@ -957,7 +997,11 @@ export function SessionList({
 }) {
   const [search, setSearch] = useState("");
   const [revealedActions, setRevealedActions] = useState(null);
-  const [contextMenu, setContextMenu] = useState(null);
+  const {
+    contextMenu,
+    openContextMenu,
+    closeContextMenu,
+  } = useContextMenuState();
   const [uncontrolledSessionView, setUncontrolledSessionView] = useState(
     normalizeSessionViewFilter(sessionView),
   );
@@ -1103,16 +1147,10 @@ export function SessionList({
 
   const handleContextMenu = useCallback((id, event) => {
     setRevealedActions(null);
-    setContextMenu({
+    openContextMenu({
       id,
-      mouseX: event.clientX + 2,
-      mouseY: event.clientY - 6,
-    });
-  }, []);
-
-  const closeContextMenu = useCallback(() => {
-    setContextMenu(null);
-  }, []);
+    }, event);
+  }, [openContextMenu]);
 
   const handleContextAction = useCallback(async (action) => {
     const targetId = contextMenu?.id;
@@ -1470,28 +1508,29 @@ export function SessionList({
         </${Box}>
       `}
 
-      <${Menu}
-        open=${Boolean(contextMenu)}
+      <${AppContextMenu}
+        menu=${contextMenu}
         onClose=${closeContextMenu}
-        anchorReference="anchorPosition"
-        anchorPosition=${contextMenu ? { top: contextMenu.mouseY, left: contextMenu.mouseX } : undefined}
-      >
-        <${MenuItem} onClick=${() => handleContextAction("open")}>${resolveIcon(":chat:")} Open</${MenuItem}>
-        <${MenuItem} onClick=${() => handleContextAction("rename")}>${resolveIcon(":edit:")} Edit title</${MenuItem}>
-        <${MenuItem} onClick=${() => handleContextAction("archive")}>
-          ${(() => {
-            const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
-            return target?.status === "archived"
-              ? html`${resolveIcon(":workflow:")} Unarchive`
-              : html`${resolveIcon(":box:")} Archive`;
-          })()}
-        </${MenuItem}>
-        <${MenuItem} onClick=${() => handleContextAction("copy-id")}>${resolveIcon(":copy:")} Copy ID</${MenuItem}>
-        <${Divider} />
-        <${MenuItem} onClick=${() => handleContextAction("delete")} sx=${{ color: "error.main" }}>
-          ${resolveIcon(":trash:")} Delete
-        </${MenuItem}>
-      </${Menu}>
+        items=${[
+          { key: "open", label: "Open", icon: ":chat:", onClick: () => handleContextAction("open") },
+          { key: "rename", label: "Edit title", icon: ":edit:", onClick: () => handleContextAction("rename") },
+          {
+            key: "archive",
+            label: (() => {
+              const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
+              return target?.status === "archived" ? "Unarchive" : "Archive";
+            })(),
+            icon: (() => {
+              const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
+              return target?.status === "archived" ? ":workflow:" : ":box:";
+            })(),
+            onClick: () => handleContextAction("archive"),
+          },
+          { key: "copy-id", label: "Copy ID", icon: ":copy:", onClick: () => handleContextAction("copy-id") },
+          { kind: "divider", key: "danger-divider" },
+          { key: "delete", label: "Delete", icon: ":trash:", danger: true, onClick: () => handleContextAction("delete") },
+        ]}
+      />
     </${Paper}>
   `;
 }

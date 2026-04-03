@@ -372,17 +372,8 @@ const DEFAULT_WORKING_DIRECTORY = REPO_ROOT;
 let CodexClass = null; // The Codex class from SDK
 const CODEX_SDK_SPECIFIER = "@openai/codex-sdk"; // Define the SDK specifier
 let codexInstance = null; // Singleton Codex instance
-let activeThread = null; // Current persistent Thread
-let activeThreadId = null; // Thread ID for resume
-let activeTurn = null; // Whether a turn is in-flight
-let turnCount = 0; // Number of turns in this thread
-let currentSessionId = null; // Active session identifier
-let activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY; // Session/thread cwd
-let threadNeedsPriming = false; // True when a fresh thread needs the system prompt on next turn
-let codexRuntimeCaps = {
-  hasSteeringApi: false,
-  steeringMethod: null,
-};
+let currentSessionId = null; // Most recently selected persistent session identifier
+const persistentSessionStates = new Map();
 let agentSdk = resolveAgentSdkConfig();
 const codexSessionCompat = createShellSessionCompat({
   adapterName: "codex",
@@ -405,8 +396,82 @@ function normalizeWorkingDirectory(input) {
   }
 }
 
-function getWorkingDirectory() {
-  return normalizeWorkingDirectory(activeWorkingDirectory) || DEFAULT_WORKING_DIRECTORY;
+function createRuntimeCaps() {
+  return {
+    hasSteeringApi: false,
+    steeringMethod: null,
+  };
+}
+
+function createRuntimeState(overrides = {}) {
+  return {
+    thread: null,
+    threadId: null,
+    activeTurn: false,
+    turnCount: 0,
+    workingDirectory: DEFAULT_WORKING_DIRECTORY,
+    threadNeedsPriming: false,
+    runtimeCaps: createRuntimeCaps(),
+    createdAt: timestamp(),
+    lastActiveAt: timestamp(),
+    ...overrides,
+  };
+}
+
+function getSessionRuntimeState(sessionId, { create = true } = {}) {
+  const normalizedSessionId = toTrimmedString(sessionId);
+  if (!normalizedSessionId) return null;
+  const existing = persistentSessionStates.get(normalizedSessionId);
+  if (existing || !create) return existing || null;
+  const next = createRuntimeState();
+  persistentSessionStates.set(normalizedSessionId, next);
+  return next;
+}
+
+function getWorkingDirectory(state = null) {
+  return normalizeWorkingDirectory(state?.workingDirectory) || DEFAULT_WORKING_DIRECTORY;
+}
+
+function clearRuntimeState(state) {
+  if (!state || typeof state !== "object") return;
+  state.thread = null;
+  state.threadId = null;
+  state.activeTurn = false;
+  state.turnCount = 0;
+  state.workingDirectory = DEFAULT_WORKING_DIRECTORY;
+  state.threadNeedsPriming = false;
+  state.runtimeCaps = createRuntimeCaps();
+  state.lastActiveAt = timestamp();
+}
+
+function findSingleBusySessionId() {
+  const busyEntries = [...persistentSessionStates.entries()]
+    .filter(([, state]) => state?.activeTurn);
+  return busyEntries.length === 1 ? busyEntries[0][0] : null;
+}
+
+function resolveRuntimeStateForIntrospection(sessionId = null) {
+  const explicit = toTrimmedString(sessionId);
+  if (explicit) {
+    return {
+      sessionId: explicit,
+      state: getSessionRuntimeState(explicit, { create: false }),
+    };
+  }
+  const busySessionId = findSingleBusySessionId();
+  if (busySessionId) {
+    return {
+      sessionId: busySessionId,
+      state: getSessionRuntimeState(busySessionId, { create: false }),
+    };
+  }
+  if (currentSessionId) {
+    return {
+      sessionId: currentSessionId,
+      state: getSessionRuntimeState(currentSessionId, { create: false }),
+    };
+  }
+  return { sessionId: null, state: null };
 }
 
 function resolveCodexTransport() {
@@ -490,7 +555,7 @@ async function loadCodexSdk() {
   }
   if (CodexClass) return CodexClass;
   try {
-    const resolvedSdk = resolveCodexSdkInstall({ extraRoots: [getWorkingDirectory()] });
+    const resolvedSdk = resolveCodexSdkInstall({ extraRoots: [getWorkingDirectory(getSessionRuntimeState(currentSessionId, { create: false }))] });
     if (!resolvedSdk?.entryPath) {
       console.error("[codex-shell] failed to load SDK: no complete @openai/codex-sdk install found");
       return null;
@@ -511,45 +576,53 @@ async function loadState() {
   try {
     const raw = await readFile(STATE_FILE, "utf8");
     const data = JSON.parse(raw);
-    activeThreadId = data.threadId || null;
-    turnCount = data.turnCount || 0;
     currentSessionId = data.currentSessionId || null;
-    activeWorkingDirectory =
-      normalizeWorkingDirectory(data.workingDirectory) ||
-      DEFAULT_WORKING_DIRECTORY;
+    persistentSessionStates.clear();
+    if (currentSessionId) {
+      persistentSessionStates.set(currentSessionId, createRuntimeState({
+        threadId: data.threadId || null,
+        turnCount: data.turnCount || 0,
+        workingDirectory:
+          normalizeWorkingDirectory(data.workingDirectory) ||
+          DEFAULT_WORKING_DIRECTORY,
+        createdAt: data.createdAt || timestamp(),
+        lastActiveAt: data.updatedAt || timestamp(),
+      }));
+    }
+    const currentState = getSessionRuntimeState(currentSessionId, { create: false });
     console.log(
-      `[codex-shell] loaded state: threadId=${activeThreadId}, turns=${turnCount}, session=${currentSessionId}, cwd=${getWorkingDirectory()}`,
+      `[codex-shell] loaded state: threadId=${currentState?.threadId || null}, turns=${currentState?.turnCount || 0}, session=${currentSessionId}, cwd=${getWorkingDirectory(currentState)}`,
     );
     codexSessionCompat.hydrate({
       sessionId: currentSessionId,
-      threadId: activeThreadId,
-      cwd: getWorkingDirectory(),
-      status: activeThreadId ? "active" : "idle",
+      threadId: currentState?.threadId || null,
+      cwd: getWorkingDirectory(currentState),
+      status: currentState?.threadId ? "active" : "idle",
       metadata: {
-        providerThreadId: activeThreadId,
-        turnCount,
+        providerThreadId: currentState?.threadId || null,
+        turnCount: currentState?.turnCount || 0,
       },
     });
   } catch {
-    activeThreadId = null;
-    turnCount = 0;
     currentSessionId = null;
-    activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
+    persistentSessionStates.clear();
     codexSessionCompat.reset({ keepManagedRecord: false });
   }
 }
 
 async function saveState() {
   try {
+    const currentState = getSessionRuntimeState(currentSessionId, { create: false });
     await mkdir(resolve(__dirname, "..", "logs"), { recursive: true });
     await writeFile(
       STATE_FILE,
       JSON.stringify(
         {
-          threadId: activeThreadId,
-          turnCount,
+          threadId: currentState?.threadId || null,
+          turnCount: currentState?.turnCount || 0,
           currentSessionId,
-          workingDirectory: getWorkingDirectory(),
+          workingDirectory: getWorkingDirectory(currentState),
+          createdAt: currentState?.createdAt || null,
           updatedAt: timestamp(),
         },
         null,
@@ -592,59 +665,76 @@ async function saveSessionData(sessionId, data) {
   }
 }
 
-async function saveCurrentSession() {
-  if (!currentSessionId) return;
-  await saveSessionData(currentSessionId, {
-    threadId: activeThreadId,
-    turnCount,
-    workingDirectory: getWorkingDirectory(),
-    createdAt: (await loadSessionData(currentSessionId))?.createdAt || timestamp(),
-    lastActiveAt: timestamp(),
+async function persistSessionState(sessionId, state, { activate = false, status = null } = {}) {
+  const normalizedSessionId = toTrimmedString(sessionId);
+  if (!normalizedSessionId || !state) return;
+  const existing = await loadSessionData(normalizedSessionId);
+  const createdAt = state.createdAt || existing?.createdAt || timestamp();
+  const lastActiveAt = timestamp();
+  state.createdAt = createdAt;
+  state.lastActiveAt = lastActiveAt;
+  await saveSessionData(normalizedSessionId, {
+    threadId: state.threadId,
+    turnCount: state.turnCount,
+    workingDirectory: getWorkingDirectory(state),
+    createdAt,
+    lastActiveAt,
   });
-  codexSessionCompat.ensureManagedSession(currentSessionId, {
-    activate: false,
-    threadId: activeThreadId,
-    cwd: getWorkingDirectory(),
-    status: activeThreadId ? "active" : "idle",
+  codexSessionCompat.ensureManagedSession(normalizedSessionId, {
+    activate,
+    threadId: state.threadId,
+    cwd: getWorkingDirectory(state),
+    status: status || (state.activeTurn ? "running" : state.threadId ? "active" : "idle"),
     metadata: {
-      providerThreadId: activeThreadId,
-      turnCount,
+      providerThreadId: state.threadId,
+      turnCount: state.turnCount,
     },
   });
+  if (activate || normalizedSessionId === currentSessionId) {
+    currentSessionId = normalizedSessionId;
+    await saveState();
+  }
 }
 
 async function loadSession(sessionId) {
-  // Save current session before switching
-  await saveCurrentSession();
+  const normalizedSessionId = toTrimmedString(sessionId);
+  if (!normalizedSessionId) return null;
+  let state = getSessionRuntimeState(normalizedSessionId, { create: false });
+  let source = "memory";
+  if (!state) {
   const data = await loadSessionData(sessionId);
   if (data) {
-    activeThreadId = data.threadId || null;
-    turnCount = data.turnCount || 0;
-    activeThread = null; // will be re-created/resumed via getThread()
-    currentSessionId = sessionId;
-    activeWorkingDirectory =
-      normalizeWorkingDirectory(data.workingDirectory) ||
-      DEFAULT_WORKING_DIRECTORY;
-    console.log(`[codex-shell] loaded session ${sessionId}: threadId=${activeThreadId}, turns=${turnCount}, cwd=${getWorkingDirectory()}`);
+      state = createRuntimeState({
+        threadId: data.threadId || null,
+        turnCount: data.turnCount || 0,
+        workingDirectory:
+          normalizeWorkingDirectory(data.workingDirectory) ||
+          DEFAULT_WORKING_DIRECTORY,
+        createdAt: data.createdAt || timestamp(),
+        lastActiveAt: data.lastActiveAt || timestamp(),
+      });
+      source = "compat-session-file";
+      console.log(`[codex-shell] loaded session ${normalizedSessionId}: threadId=${state.threadId}, turns=${state.turnCount}, cwd=${getWorkingDirectory(state)}`);
   } else {
-    activeThread = null;
-    activeThreadId = null;
-    turnCount = 0;
-    currentSessionId = sessionId;
-    activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
-    console.log(`[codex-shell] created new session ${sessionId}`);
+      state = createRuntimeState();
+      source = "compat-session-created";
+      console.log(`[codex-shell] created new session ${normalizedSessionId}`);
+    }
+    persistentSessionStates.set(normalizedSessionId, state);
   }
-  codexSessionCompat.switchSession(sessionId, {
-    threadId: activeThreadId,
-    cwd: getWorkingDirectory(),
-    status: activeThreadId ? "active" : "idle",
+  currentSessionId = normalizedSessionId;
+  codexSessionCompat.switchSession(normalizedSessionId, {
+    threadId: state.threadId,
+    cwd: getWorkingDirectory(state),
+    status: state.activeTurn ? "running" : state.threadId ? "active" : "idle",
     metadata: {
-      providerThreadId: activeThreadId,
-      turnCount,
-      source: data ? "compat-session-file" : "compat-session-created",
+      providerThreadId: state.threadId,
+      turnCount: state.turnCount,
+      source,
     },
   });
   await saveState();
+  return state;
 }
 
 // ── Thread Management ────────────────────────────────────────────────────────
@@ -707,10 +797,10 @@ const THREAD_BASE_OPTIONS = {
   // codex-config.mjs ensureFeatureFlags() handles this during setup.
 };
 
-function buildThreadOptions() {
+function buildThreadOptions(state = null) {
   return {
     ...THREAD_BASE_OPTIONS,
-    workingDirectory: getWorkingDirectory(),
+    workingDirectory: getWorkingDirectory(state),
   };
 }
 
@@ -719,9 +809,10 @@ function buildThreadOptions() {
  * Uses fresh-thread mode by default to avoid context bloat.
  * In CLI transport compatibility mode, reuse persisted thread IDs when possible.
  */
-async function getThread() {
-  if (activeThread) return activeThread;
-  const threadOptions = buildThreadOptions();
+async function getThread(state, options = {}) {
+  if (!state) throw new Error("Codex runtime state is required");
+  if (state.thread) return state.thread;
+  const threadOptions = buildThreadOptions(state);
 
   if (!codexInstance) {
     const Cls = await loadCodexSdk();
@@ -737,7 +828,7 @@ async function getThread() {
       stream_max_retries: 15,
       request_max_retries: 6,
     };
-    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory());
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory(state));
 
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_ORGANIZATION;
@@ -770,21 +861,21 @@ async function getThread() {
   const transport = resolveCodexTransport();
   const shouldResume = transport === "cli";
 
-  if (activeThreadId && shouldResume) {
+  if (state.threadId && shouldResume) {
     if (typeof codexInstance.resumeThread === "function") {
       try {
-        activeThread = codexInstance.resumeThread(
-          activeThreadId,
+        state.thread = codexInstance.resumeThread(
+          state.threadId,
           threadOptions,
         );
-        if (activeThread) {
-          detectThreadCapabilities(activeThread);
-          console.log(`[codex-shell] resumed thread ${activeThreadId}`);
-          return activeThread;
+        if (state.thread) {
+          detectThreadCapabilities(state.thread, state);
+          console.log(`[codex-shell] resumed thread ${state.threadId}`);
+          return state.thread;
         }
       } catch (err) {
         console.warn(
-          `[codex-shell] failed to resume thread ${activeThreadId}: ${err.message} — starting fresh`,
+          `[codex-shell] failed to resume thread ${state.threadId}: ${err.message} — starting fresh`,
         );
       }
     } else {
@@ -792,49 +883,55 @@ async function getThread() {
         "[codex-shell] SDK does not expose resumeThread(); starting fresh thread",
       );
     }
-    activeThreadId = null;
+    state.threadId = null;
   }
 
   // Fresh-thread mode (default): avoid token overflow from long-running reuse.
-  if (activeThreadId && !shouldResume) {
+  if (state.threadId && !shouldResume) {
     console.log(
-      `[codex-shell] discarding previous thread ${activeThreadId} — creating fresh thread per task`,
+      `[codex-shell] discarding previous thread ${state.threadId} — creating fresh thread per task`,
     );
-    activeThreadId = null;
+    state.threadId = null;
   }
 
   // Start a new thread — defer the system prompt to the first user message so
   // the priming turn is STREAMED (runStreamed) instead of blocking (run).
   // This eliminates the 2-5 minute silent delay the chat UI suffered because
   // the old `thread.run(SYSTEM_PROMPT)` call produced zero streaming events.
-  activeThread = codexInstance.startThread(threadOptions);
-  detectThreadCapabilities(activeThread);
-  threadNeedsPriming = true;
+  state.thread = codexInstance.startThread(threadOptions);
+  detectThreadCapabilities(state.thread, state);
+  state.threadNeedsPriming = true;
 
-  if (activeThread.id) {
-    activeThreadId = activeThread.id;
-    await saveState();
-    console.log(`[codex-shell] new thread started: ${activeThreadId} (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
+  if (state.thread.id) {
+    state.threadId = state.thread.id;
+    if (options.sessionId) {
+      await persistSessionState(options.sessionId, state);
+    } else if (currentSessionId) {
+      await saveState();
+    }
+    console.log(`[codex-shell] new thread started: ${state.threadId} (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
   } else {
     console.log(`[codex-shell] new thread started (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
   }
 
-  return activeThread;
+  return state.thread;
 }
 
-function detectThreadCapabilities(thread) {
+function detectThreadCapabilities(thread, state = null) {
   if (!thread || typeof thread !== "object") {
-    codexRuntimeCaps = { hasSteeringApi: false, steeringMethod: null };
-    return codexRuntimeCaps;
+    const fallbackCaps = createRuntimeCaps();
+    if (state) state.runtimeCaps = fallbackCaps;
+    return fallbackCaps;
   }
   const candidates = ["steer", "sendSteer", "steering"];
   const method =
     candidates.find((name) => typeof thread?.[name] === "function") || null;
-  codexRuntimeCaps = {
+  const caps = {
     hasSteeringApi: !!method,
     steeringMethod: method,
   };
-  return codexRuntimeCaps;
+  if (state) state.runtimeCaps = caps;
+  return caps;
 }
 
 // ── Event Formatting ─────────────────────────────────────────────────────────
@@ -1007,7 +1104,23 @@ export async function execCodexPrompt(userMessage, options = {}) {
     };
   }
 
-  if (activeTurn) {
+  const persistentSessionId = persistent
+    ? (toTrimmedString(sessionId || "") || "primary")
+    : "";
+  const logicalSessionId = persistentSessionId || `codex-task-${Date.now()}`;
+  const shouldActivateManagedSession = persistent || Boolean(currentSessionId || persistentSessionId);
+  const providerRuntime = codexSessionCompat.resolveProvider({
+    providerSelection: options.providerSelection || "codex",
+    model: process.env.CODEX_MODEL || null,
+  });
+  const requestedWorkingDirectory = normalizeWorkingDirectory(cwd);
+  const state = persistent
+    ? (await loadSession(persistentSessionId))
+    : createRuntimeState({
+        workingDirectory: requestedWorkingDirectory || DEFAULT_WORKING_DIRECTORY,
+      });
+
+  if (state.activeTurn) {
     return {
       finalResponse:
         ":clock: Agent is still executing a previous task. Please wait.",
@@ -1016,68 +1129,53 @@ export async function execCodexPrompt(userMessage, options = {}) {
     };
   }
 
-  activeTurn = true;
+  state.activeTurn = true;
 
   try {
     const streamSafety = resolveCodexStreamSafety(normalizedTimeoutMs);
-    const requestedWorkingDirectory = normalizeWorkingDirectory(cwd);
 
     if (!persistent) {
       // Task executor path — keep existing fresh-thread behavior
-      activeThread = null;
-      activeWorkingDirectory =
-        requestedWorkingDirectory || DEFAULT_WORKING_DIRECTORY;
-    } else if (sessionId && sessionId !== currentSessionId) {
-      // Switching to a different persistent session
-      await loadSession(sessionId);
-    } else if (!currentSessionId) {
-      // First persistent call — initialise the default "primary" session
-      await loadSession(sessionId || "primary");
-    } else if (turnCount >= MAX_PERSISTENT_TURNS) {
+      state.thread = null;
+      state.threadId = null;
+      state.turnCount = 0;
+      state.threadNeedsPriming = false;
+      state.workingDirectory = requestedWorkingDirectory || DEFAULT_WORKING_DIRECTORY;
+    } else if (state.turnCount >= MAX_PERSISTENT_TURNS) {
       // Thread is too long — start fresh within the same session
-      console.log(`[codex-shell] session ${currentSessionId} hit ${MAX_PERSISTENT_TURNS} turns — rotating thread`);
-      activeThread = null;
-      activeThreadId = null;
-      turnCount = 0;
+      console.log(`[codex-shell] session ${persistentSessionId} hit ${MAX_PERSISTENT_TURNS} turns — rotating thread`);
+      state.thread = null;
+      state.threadId = null;
+      state.turnCount = 0;
+      state.threadNeedsPriming = false;
     }
-    // else: persistent && same session && under limit → reuse activeThread
+    // else: persistent && same session && under limit → reuse state.thread
 
     if (
       requestedWorkingDirectory &&
-      requestedWorkingDirectory !== getWorkingDirectory()
+      requestedWorkingDirectory !== getWorkingDirectory(state)
     ) {
-      activeWorkingDirectory = requestedWorkingDirectory;
-      activeThread = null;
-      activeThreadId = null;
-      turnCount = 0;
-      threadNeedsPriming = false;
-      await saveState();
-      if (persistent && currentSessionId) {
-        await saveCurrentSession();
+      state.workingDirectory = requestedWorkingDirectory;
+      state.thread = null;
+      state.threadId = null;
+      state.turnCount = 0;
+      state.threadNeedsPriming = false;
+      if (persistent) {
+        await persistSessionState(persistentSessionId, state, { activate: true });
       }
       console.log(
-        `[codex-shell] switched working directory to ${requestedWorkingDirectory} for session ${currentSessionId || "(ephemeral)"}`,
+        `[codex-shell] switched working directory to ${requestedWorkingDirectory} for session ${persistentSessionId || "(ephemeral)"}`,
       );
     }
-
-  const logicalSessionId =
-      currentSessionId
-      || toTrimmedString(sessionId || "")
-      || (persistent ? "primary" : `codex-task-${Date.now()}`);
-  const shouldActivateManagedSession = persistent || Boolean(currentSessionId || sessionId);
-  const providerRuntime = codexSessionCompat.resolveProvider({
-    providerSelection: options.providerSelection || "codex",
-    model: process.env.CODEX_MODEL || null,
-  });
     codexSessionCompat.beginTurn(logicalSessionId, {
       activate: shouldActivateManagedSession,
       status: "running",
-      threadId: activeThreadId,
-      cwd: getWorkingDirectory(),
+      threadId: state.threadId,
+      cwd: getWorkingDirectory(state),
       providerSelection: providerRuntime.providerId || "codex",
       model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
       metadata: {
-        providerThreadId: activeThreadId,
+        providerThreadId: state.threadId,
         persistent,
         mode: mode || null,
       },
@@ -1110,7 +1208,9 @@ export async function execCodexPrompt(userMessage, options = {}) {
     let threadResetDone = false;
 
     for (let attempt = 0; attempt < MAX_STREAM_RETRIES; attempt += 1) {
-      const thread = await getThread();
+      const thread = await getThread(state, {
+        sessionId: persistent ? persistentSessionId : null,
+      });
 
       // If the thread is freshly created (or was just reset in a recovery path),
       // prepend the system prompt so the agent gets its identity/context on the
@@ -1120,7 +1220,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
       // 2-5+ minutes.  Checking threadNeedsPriming INSIDE the retry loop
       // ensures a freshly-reset thread still receives the primer.
       let attemptPrompt = safePrompt;
-      if (threadNeedsPriming) {
+      if (state.threadNeedsPriming) {
         // Ask mode gets a lightweight primer — no heavy executor directives
         // that contradict the "don't use tools" instruction.
         const primer = isAskMode
@@ -1130,7 +1230,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
         attemptPrompt = sanitizeAndTruncatePrompt(
           primer + "\n\n---\n\n" + prompt,
         );
-        threadNeedsPriming = false;
+        state.threadNeedsPriming = false;
       }
 
       // Each attempt gets a fresh AbortController tied to the same timeout budget.
@@ -1172,8 +1272,8 @@ export async function execCodexPrompt(userMessage, options = {}) {
           eventCount += 1;
           codexSessionCompat.recordStreamEvent(logicalSessionId, event, {
             activate: shouldActivateManagedSession,
-            threadId: activeThreadId || event?.thread_id || null,
-            cwd: getWorkingDirectory(),
+            threadId: state.threadId || event?.thread_id || null,
+            cwd: getWorkingDirectory(state),
             providerSelection: providerRuntime.providerId || "codex",
             model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
           });
@@ -1183,17 +1283,21 @@ export async function execCodexPrompt(userMessage, options = {}) {
           }
           // Capture thread ID on first turn
           if (event.type === "thread.started" && event.thread_id) {
-            activeThreadId = event.thread_id;
-            await saveState();
+            state.threadId = event.thread_id;
+            if (persistent) {
+              await persistSessionState(persistentSessionId, state, { activate: true, status: "running" });
+            } else if (currentSessionId) {
+              await saveState();
+            }
             codexSessionCompat.beginTurn(logicalSessionId, {
               activate: shouldActivateManagedSession,
               status: "running",
-              threadId: activeThreadId,
-              cwd: getWorkingDirectory(),
+              threadId: state.threadId,
+              cwd: getWorkingDirectory(state),
               providerSelection: providerRuntime.providerId || "codex",
               model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
               metadata: {
-                providerThreadId: activeThreadId,
+                providerThreadId: state.threadId,
                 persistent,
               },
             });
@@ -1238,21 +1342,22 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
           // Track usage
           if (event.type === "turn.completed") {
-            turnCount++;
-            await saveState();
-            if (persistent && currentSessionId) {
-              await saveCurrentSession();
+            state.turnCount++;
+            if (persistent) {
+              await persistSessionState(persistentSessionId, state, { activate: true, status: "active" });
+            } else if (currentSessionId) {
+              await saveState();
             }
             codexSessionCompat.completeTurn(logicalSessionId, {
               activate: shouldActivateManagedSession,
               status: "completed",
-              threadId: activeThreadId,
-              cwd: getWorkingDirectory(),
+              threadId: state.threadId,
+              cwd: getWorkingDirectory(state),
               providerSelection: providerRuntime.providerId || "codex",
               model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
               metadata: {
-                providerThreadId: activeThreadId,
-                turnCount,
+                providerThreadId: state.threadId,
+                turnCount: state.turnCount,
                 persistent,
               },
             });
@@ -1306,13 +1411,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
             codexSessionCompat.abortTurn(logicalSessionId, {
               activate: shouldActivateManagedSession,
               status: reason === "user_stop" ? "aborted" : "timeout",
-              threadId: activeThreadId,
-              cwd: getWorkingDirectory(),
+              threadId: state.threadId,
+              cwd: getWorkingDirectory(state),
               error: msg,
               providerSelection: providerRuntime.providerId || "codex",
               model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
               metadata: {
-                providerThreadId: activeThreadId,
+                providerThreadId: state.threadId,
                 persistent,
               },
             });
@@ -1325,7 +1430,10 @@ export async function execCodexPrompt(userMessage, options = {}) {
           console.warn(
             `[codex-shell] recoverable thread error: ${err.message || err} — resetting thread`,
           );
-          await resetThread();
+          clearRuntimeState(state);
+          if (persistent) {
+            await persistSessionState(persistentSessionId, state, { activate: true, status: "idle" });
+          }
           threadResetDone = true;
           continue; // retry without counting against stream-retry budget
         }
@@ -1348,13 +1456,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
           codexSessionCompat.failTurn(logicalSessionId, {
             activate: shouldActivateManagedSession,
             status: "failed",
-            threadId: activeThreadId,
-            cwd: getWorkingDirectory(),
+            threadId: state.threadId,
+            cwd: getWorkingDirectory(state),
             error: err?.message || String(err),
             providerSelection: providerRuntime.providerId || "codex",
             model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
             metadata: {
-              providerThreadId: activeThreadId,
+              providerThreadId: state.threadId,
               persistent,
             },
           });
@@ -1368,13 +1476,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
         codexSessionCompat.failTurn(logicalSessionId, {
           activate: shouldActivateManagedSession,
           status: "failed",
-          threadId: activeThreadId,
-          cwd: getWorkingDirectory(),
+          threadId: state.threadId,
+          cwd: getWorkingDirectory(state),
           error: err?.message || String(err),
           providerSelection: providerRuntime.providerId || "codex",
           model: providerRuntime.providerConfig?.model || process.env.CODEX_MODEL || null,
           metadata: {
-            providerThreadId: activeThreadId,
+            providerThreadId: state.threadId,
             persistent,
           },
         });
@@ -1388,7 +1496,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
       usage: null,
     };
   } finally {
-    activeTurn = false;
+    state.activeTurn = false;
   }
 }
 
@@ -1396,7 +1504,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
  * Try to steer an in-flight agent without stopping the run.
  * Best-effort: uses SDK steering APIs if available, else returns unsupported.
  */
-export async function steerCodexPrompt(message) {
+export async function steerCodexPrompt(message, options = {}) {
   try {
     agentSdk = resolveAgentSdkConfig({ reload: true });
     if (agentSdk.primary !== "codex") {
@@ -1405,8 +1513,18 @@ export async function steerCodexPrompt(message) {
     if (!agentSdk.capabilities?.steering) {
       return { ok: false, reason: "steering_disabled" };
     }
-    const thread = await getThread();
-    const runtimeCaps = detectThreadCapabilities(thread);
+    const explicitSessionId = toTrimmedString(options?.sessionId || "");
+    const targetSessionId =
+      explicitSessionId
+      || findSingleBusySessionId()
+      || currentSessionId
+      || null;
+    const state = getSessionRuntimeState(targetSessionId, { create: false });
+    if (!state) {
+      return { ok: false, reason: "no_active_session" };
+    }
+    const thread = await getThread(state, { sessionId: targetSessionId });
+    const runtimeCaps = detectThreadCapabilities(thread, state);
     const steerFn = runtimeCaps.steeringMethod
       ? thread?.[runtimeCaps.steeringMethod]
       : null;
@@ -1430,34 +1548,46 @@ export async function steerCodexPrompt(message) {
  * Check if a turn is currently in flight.
  */
 export function isCodexBusy() {
-  return !!activeTurn;
+  return [...persistentSessionStates.values()].some((state) => state?.activeTurn);
 }
 
 /**
  * Get thread info for display.
  */
-export function getThreadInfo() {
+export function getThreadInfo(sessionId = null) {
+  const target = resolveRuntimeStateForIntrospection(sessionId);
+  const state = target.state;
   return codexSessionCompat.getSessionInfo({
-    threadId: activeThreadId,
-    turnCount,
-    isActive: !!activeThread,
-    isBusy: !!activeTurn,
-    sessionId: currentSessionId,
-    cwd: getWorkingDirectory(),
+    threadId: state?.threadId || null,
+    turnCount: state?.turnCount || 0,
+    isActive: !!state?.thread,
+    isBusy: !!state?.activeTurn,
+    sessionId: target.sessionId,
+    cwd: getWorkingDirectory(state),
+    sessionCount: persistentSessionStates.size,
   });
 }
 
 /**
  * Reset the thread — starts a fresh conversation.
  */
-export async function resetThread() {
-  activeThread = null;
-  activeThreadId = null;
-  turnCount = 0;
-  activeTurn = null;
+export async function resetThread(sessionId = null) {
+  const normalizedSessionId = toTrimmedString(sessionId);
+  if (normalizedSessionId) {
+    const state = getSessionRuntimeState(normalizedSessionId, { create: false });
+    if (state) {
+      clearRuntimeState(state);
+      await persistSessionState(normalizedSessionId, state, { activate: normalizedSessionId === currentSessionId, status: "idle" });
+    }
+    if (normalizedSessionId === currentSessionId) {
+      currentSessionId = null;
+      await saveState();
+    }
+    console.log(`[codex-shell] session reset: ${normalizedSessionId}`);
+    return;
+  }
+  persistentSessionStates.clear();
   currentSessionId = null;
-  activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
-  threadNeedsPriming = false;
   codexSessionCompat.reset({
     status: "idle",
     threadId: null,
@@ -1574,7 +1704,7 @@ export async function initCodexShell() {
       stream_max_retries: 15,
       request_max_retries: 6,
     };
-    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory());
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory(getSessionRuntimeState(currentSessionId, { create: false })));
 
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_ORGANIZATION;

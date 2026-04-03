@@ -912,7 +912,10 @@ function startDaemon() {
         detached: true,
         stdio: daemonLogFd == null ? "ignore" : ["ignore", daemonLogFd, daemonLogFd],
         windowsHide: process.platform === "win32",
-        env: launchSpec.env,
+        env: {
+          ...launchSpec.env,
+          ...(daemonLogFd == null ? {} : { BOSUN_DAEMON_STDIO_REDIRECTED: "1" }),
+        },
         // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
         cwd: launchSpec.cwd,
       },
@@ -1801,54 +1804,58 @@ async function main() {
       process.exit(0);
     }
     writePidFile(process.pid);
-    // Redirect console to log file on daemon child
-    const { createWriteStream } = await import("node:fs");
-    const logStream = createWriteStream(DAEMON_LOG, { flags: "a" });
-    let logStreamErrored = false;
-    logStream.on("error", () => {
-      logStreamErrored = true;
-    });
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    const isBenignDaemonStreamError = (err) => {
-      const message = String(err?.message || "");
-      return !!(
-        err &&
-        (err.code === "EPIPE" ||
-          err.code === "EIO" ||
-          err.code === "ERR_STREAM_DESTROYED" ||
-          err.code === "ERR_STREAM_WRITE_AFTER_END" ||
-          err.code === "ERR_STREAM_PREMATURE_CLOSE" ||
-          /\bEIO\b/.test(message) ||
-          /\bEPIPE\b/.test(message) ||
-          /\bEOF\b/.test(message) ||
-          /stream was destroyed/i.test(message) ||
-          /write after end/i.test(message) ||
-          /This socket has been ended/i.test(message))
-      );
-    };
-    const safeWrite = (writeFn, chunk, args) => {
-      try {
-        return writeFn(chunk, ...args);
-      } catch (err) {
-        if (isBenignDaemonStreamError(err)) {
-          return false;
+    const daemonStdIoRedirected = process.env.BOSUN_DAEMON_STDIO_REDIRECTED === "1";
+    if (!daemonStdIoRedirected) {
+      // Redirect console to log file on daemon child when the launcher did not
+      // already redirect stdio there (for example the Windows Start-Process fallback).
+      const { createWriteStream } = await import("node:fs");
+      const logStream = createWriteStream(DAEMON_LOG, { flags: "a" });
+      let logStreamErrored = false;
+      logStream.on("error", () => {
+        logStreamErrored = true;
+      });
+      const origStdout = process.stdout.write.bind(process.stdout);
+      const origStderr = process.stderr.write.bind(process.stderr);
+      const isBenignDaemonStreamError = (err) => {
+        const message = String(err?.message || "");
+        return !!(
+          err &&
+          (err.code === "EPIPE" ||
+            err.code === "EIO" ||
+            err.code === "ERR_STREAM_DESTROYED" ||
+            err.code === "ERR_STREAM_WRITE_AFTER_END" ||
+            err.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+            /\bEIO\b/.test(message) ||
+            /\bEPIPE\b/.test(message) ||
+            /\bEOF\b/.test(message) ||
+            /stream was destroyed/i.test(message) ||
+            /write after end/i.test(message) ||
+            /This socket has been ended/i.test(message))
+        );
+      };
+      const safeWrite = (writeFn, chunk, args) => {
+        try {
+          return writeFn(chunk, ...args);
+        } catch (err) {
+          if (isBenignDaemonStreamError(err)) {
+            return false;
+          }
+          throw err;
         }
-        throw err;
-      }
-    };
-    process.stdout.write = (chunk, ...a) => {
-      if (!logStreamErrored) {
-        safeWrite(logStream.write.bind(logStream), chunk, []);
-      }
-      return safeWrite(origStdout, chunk, a);
-    };
-    process.stderr.write = (chunk, ...a) => {
-      if (!logStreamErrored) {
-        safeWrite(logStream.write.bind(logStream), chunk, []);
-      }
-      return safeWrite(origStderr, chunk, a);
-    };
+      };
+      process.stdout.write = (chunk, ...a) => {
+        if (!logStreamErrored) {
+          safeWrite(logStream.write.bind(logStream), chunk, []);
+        }
+        return safeWrite(origStdout, chunk, a);
+      };
+      process.stderr.write = (chunk, ...a) => {
+        if (!logStreamErrored) {
+          safeWrite(logStream.write.bind(logStream), chunk, []);
+        }
+        return safeWrite(origStderr, chunk, a);
+      };
+    }
     console.log(
       `\n[daemon] bosun started at ${new Date().toISOString()} (PID ${process.pid})`,
     );

@@ -4421,11 +4421,19 @@ class TaskExecutor {
       // then the shared-state owner. If none of those exist, the task is
       // ownerless and must be reset even when still "fresh".
       if (this.workflowOwnsTaskLifecycle) {
-        const recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(
+        let recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(
           task,
           internalTask,
           activeWorkflowEvidenceByTaskId,
         );
+        if (!recentWorkflowEvidence) {
+          // Recovery snapshots can race a just-started workflow run. Re-read the
+          // active-runs/index evidence before treating the task as ownerless.
+          recentWorkflowEvidence = this._resolveRecentWorkflowEvidence(
+            task,
+            internalTask,
+          );
+        }
         const hasWorkflowEvidence = Boolean(recentWorkflowEvidence);
         const hasWorkflowLiveness = hasWorkflowEvidence || hasThread;
         if (hasStaleSharedClaim) {

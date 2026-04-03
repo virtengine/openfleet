@@ -30,6 +30,57 @@ import { repairCommonMojibake } from "../lib/mojibake-repair.mjs";
 import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.mjs";
 
 const gzipAsync = promisify(zlibGzip);
+const DURABLE_ACTIVE_SESSION_EXPIRY_MS = 10 * 60 * 1000;
+const DURABLE_SESSION_PLACEHOLDER_OUTPUTS = new Set([
+  "continued",
+  "model response continued",
+  "turn completed",
+  "session completed",
+  "agent is composing a response...",
+  "agent is composing a response…",
+]);
+const DURABLE_REPO_BLOCK_PATTERNS = [
+  /merge conflict/i,
+  /unmerged files/i,
+  /protected branch/i,
+  /non-fast-forward/i,
+  /failed to push/i,
+  /push rejected/i,
+  /cannot rebase/i,
+  /pre-push hook/i,
+  /hook declined/i,
+  /working tree has changes/i,
+  /index contains uncommitted changes/i,
+];
+const DURABLE_ENV_BLOCK_PATTERNS = [
+  /prompt quality/i,
+  /missing task (description|url)/i,
+  /missing tool/i,
+  /not recognized as an internal or external command/i,
+  /command not found/i,
+  /spawn .*enoent/i,
+  /enoent/i,
+  /permission denied/i,
+  /access is denied/i,
+  /authentication failed/i,
+  /not authenticated/i,
+  /missing credentials/i,
+  /token/i,
+  /connection refused/i,
+  /connection reset/i,
+  /network/i,
+  /timeout/i,
+  /sdk unavailable/i,
+  /failed to list models/i,
+];
+const DURABLE_COMMIT_BLOCK_PATTERNS = [
+  /commit blocked/i,
+  /implementation_done_commit_blocked/i,
+  /git commit/i,
+  /git push/i,
+  /pre-push hook/i,
+  /hook/i,
+];
 
 function execSync(command, options = {}) {
   return nodeExecSync(command, {
@@ -321,6 +372,7 @@ import {
   getRunAuditBundleFromStateLedger,
   getTaskAuditBundleFromStateLedger,
   getSessionActivityFromStateLedger,
+  getWorkflowRunDetailFromStateLedger,
   listSessionActivitiesFromStateLedger,
   listAuditEventsFromStateLedger,
   listPromotedStrategiesFromStateLedger,
@@ -2176,6 +2228,10 @@ function readActiveWorkflowRunIndexEntries(runsDir) {
           workflowId: String(entry?.workflowId || "").trim() || null,
           workflowName: String(entry?.workflowName || entry?.name || "").trim() || null,
           startedAt: entry?.startedAt || null,
+          taskId: String(entry?.taskId || "").trim() || null,
+          taskTitle: String(entry?.taskTitle || "").trim() || null,
+          sessionId: String(entry?.sessionId || "").trim() || null,
+          sessionIds: Array.isArray(entry?.sessionIds) ? entry.sessionIds.slice(0, 12) : [],
           activeNodeCount: Number.isFinite(Number(entry?.activeNodeCount))
             ? Number(entry.activeNodeCount)
             : 0,
@@ -2190,6 +2246,68 @@ function readActiveWorkflowRunIndexEntries(runsDir) {
   } catch {
     return [];
   }
+}
+
+function buildWorkflowOwnedExecutorSlots(workflowRunDetails = []) {
+  const seenTaskIds = new Set();
+  const seenRunIds = new Set();
+  const slots = [];
+  for (const entry of Array.isArray(workflowRunDetails) ? workflowRunDetails : []) {
+    const runId = String(entry?.runId || "").trim();
+    const taskId = String(entry?.taskId || "").trim();
+    const dedupeKey = taskId || runId;
+    if (!dedupeKey) continue;
+    if (taskId) {
+      if (seenTaskIds.has(taskId)) continue;
+      seenTaskIds.add(taskId);
+    } else if (seenRunIds.has(runId)) {
+      continue;
+    } else {
+      seenRunIds.add(runId);
+    }
+    const startedAtRaw = entry?.startedAt;
+    const startedAtMs =
+      Number.isFinite(Number(startedAtRaw))
+        ? Number(startedAtRaw)
+        : (Date.parse(String(startedAtRaw || "")) || Date.now());
+    slots.push({
+      taskId: taskId || runId,
+      taskTitle: String(entry?.taskTitle || entry?.workflowName || taskId || runId).trim() || runId,
+      branch: null,
+      baseBranch: null,
+      sdk: "workflow",
+      model: "",
+      attempt: 1,
+      agentInstanceId: runId || null,
+      startedAt: startedAtMs,
+      runningFor: Math.max(0, Math.round((Date.now() - startedAtMs) / 1000)),
+      status: "running",
+      workflowRunId: runId || null,
+      workflowId: String(entry?.workflowId || "").trim() || null,
+      workflowName: String(entry?.workflowName || "").trim() || null,
+      sessionId: String(entry?.sessionId || "").trim() || null,
+      sessionIds: Array.isArray(entry?.sessionIds) ? entry.sessionIds.slice(0, 12) : [],
+      synthetic: true,
+      workflowOwned: true,
+    });
+  }
+  return slots;
+}
+
+function mergeExecutorSlotsWithWorkflowRuns(execStatus = null, workflowRunDetails = []) {
+  const legacySlots = Array.isArray(execStatus?.slots)
+    ? execStatus.slots.map((slot) => ({ ...slot }))
+    : [];
+  const legacyTaskIds = new Set(
+    legacySlots
+      .map((slot) => String(slot?.taskId || slot?.task_id || "").trim())
+      .filter(Boolean),
+  );
+  const workflowSlots = buildWorkflowOwnedExecutorSlots(workflowRunDetails).filter((slot) => {
+    const taskId = String(slot?.taskId || "").trim();
+    return !taskId || !legacyTaskIds.has(taskId);
+  });
+  return [...legacySlots, ...workflowSlots];
 }
 
 
@@ -4114,11 +4232,10 @@ function resolveWorkspaceFleetConfig(workspaceContext = {}) {
   return workspace && typeof workspace === "object" ? workspace : null;
 }
 
-function buildWorkspaceExecutorSummary(execStatus, workspaceContext) {
+function buildWorkspaceExecutorSummary(execStatus, workspaceContext, workflowRunDetails = []) {
   if (!execStatus || typeof execStatus !== "object" || !workspaceContext) return null;
-  const allSlots = Array.isArray(execStatus.slots)
-    ? execStatus.slots.map((slot, slotIndex) => ({ ...slot, slotIndex }))
-    : [];
+  const allSlots = mergeExecutorSlotsWithWorkflowRuns(execStatus, workflowRunDetails)
+    .map((slot, slotIndex) => ({ ...slot, slotIndex }));
   const workspace = resolveWorkspaceFleetConfig(workspaceContext);
   const executors =
     workspace?.executors && typeof workspace.executors === "object"
@@ -4163,7 +4280,7 @@ function buildWorkspaceExecutorSummary(execStatus, workspaceContext) {
     freeSlots: Math.max(0, maxParallel - activeSlots),
     capacityPct: maxParallel > 0 ? Math.round((activeSlots / maxParallel) * 100) : 0,
     globalMaxParallel,
-    globalActiveSlots: Math.max(0, Number(execStatus.activeSlots || 0) || 0),
+    globalActiveSlots: Math.max(activeSlots, Math.max(0, Number(execStatus.activeSlots || 0) || 0)),
     slots,
   };
 }
@@ -8862,6 +8979,57 @@ async function resolveVoiceRelay() {
 const sessionRunAbortControllers = new Map();
 let _activeSessions = [];
 
+function getDurableSessionTextCandidates(document = {}) {
+  const candidates = [];
+  const pushText = (value) => {
+    const text = String(value || "").trim();
+    if (text) candidates.push(text);
+  };
+  pushText(document.preview);
+  pushText(document.lastMessage);
+  pushText(document.summary?.latestStep?.summary);
+  pushText(document.summary?.summary);
+  for (const message of Array.isArray(document.messages) ? document.messages : []) {
+    pushText(message?.content || message?.summary);
+  }
+  for (const turn of Array.isArray(document.turns) ? document.turns : []) {
+    pushText(turn?.summary);
+  }
+  return candidates;
+}
+
+function hasMeaningfulDurableSessionOutput(document = {}) {
+  return getDurableSessionTextCandidates(document).some((text) => {
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized || DURABLE_SESSION_PLACEHOLDER_OUTPUTS.has(normalized)) return false;
+    return /edit|write|create|patch|commit|push|search|diff|test|tool|agent/i.test(text) || normalized.length > 0;
+  });
+}
+
+function classifyDurableBlockedSessionText(document = {}) {
+  const normalized = getDurableSessionTextCandidates(document)
+    .join("\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return null;
+  if (DURABLE_COMMIT_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "implementation_done_commit_blocked";
+  }
+  if (DURABLE_REPO_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_repo";
+  }
+  if (DURABLE_ENV_BLOCK_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "blocked_by_env";
+  }
+  return null;
+}
+
+function deriveExpiredDurableSessionStatus(document = {}) {
+  const blockedStatus = classifyDurableBlockedSessionText(document);
+  if (blockedStatus) return blockedStatus;
+  return hasMeaningfulDurableSessionOutput(document) ? "stalled" : "no_output";
+}
+
 function normalizeLedgerSessionDocument(activity, options = {}) {
   const includeMessages = options.includeMessages === true;
   const document = activity?.document && typeof activity.document === "object"
@@ -8895,6 +9063,30 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
   const workspaceId = document.workspaceId || metadata.workspaceId || activity?.workspaceId || null;
   const workspaceDir = normalizeCandidatePath(document.workspaceDir || metadata.workspaceDir);
   const workspaceRoot = normalizeCandidatePath(document.workspaceRoot || metadata.workspaceRoot || workspaceDir);
+  const rawLifecycleStatus = String(
+    document.lifecycleStatus || activity?.latestStatus || document.status || "completed",
+  ).trim() || "completed";
+  const rawStatus = String(
+    document.status || document.lifecycleStatus || activity?.latestStatus || "completed",
+  ).trim() || "completed";
+  const rawRuntimeState = String(
+    document.runtimeState || document.status || activity?.latestStatus || "",
+  ).trim() || null;
+  const rawLifecycleLower = rawLifecycleStatus.toLowerCase();
+  const lastActiveMs = Date.parse(lastActiveAt);
+  const durableActiveExpired =
+    rawLifecycleLower === "active"
+    && Number.isFinite(lastActiveMs)
+    && (Date.now() - lastActiveMs) >= DURABLE_ACTIVE_SESSION_EXPIRY_MS;
+  const effectiveLifecycleStatus = durableActiveExpired
+    ? deriveExpiredDurableSessionStatus(document)
+    : rawLifecycleStatus;
+  const effectiveStatus = durableActiveExpired
+    ? effectiveLifecycleStatus
+    : rawStatus;
+  const effectiveRuntimeState = durableActiveExpired
+    ? "stopped"
+    : rawRuntimeState;
   return {
     ...document,
     id: sessionId,
@@ -8903,15 +9095,16 @@ function normalizeLedgerSessionDocument(activity, options = {}) {
     taskTitle: repairText(document.taskTitle || document.title || activity?.latestTaskTitle || null),
     title: repairText(document.title || document.taskTitle || activity?.latestTaskTitle || null),
     type: document.type || document.sessionType || activity?.sessionType || "task",
-    status: document.status || document.lifecycleStatus || activity?.latestStatus || "completed",
-    lifecycleStatus: document.lifecycleStatus || activity?.latestStatus || document.status || "completed",
-    runtimeState: document.runtimeState || document.status || activity?.latestStatus || null,
+    status: effectiveStatus,
+    lifecycleStatus: effectiveLifecycleStatus,
+    runtimeState: effectiveRuntimeState,
     runtimeIsLive: false,
     workspaceId,
     workspaceDir,
     workspaceRoot,
     createdAt,
     lastActiveAt,
+    endedAt: document.endedAt || (durableActiveExpired ? lastActiveAt : null),
     totalEvents: Math.max(0, Number(document.totalEvents ?? document.eventCount ?? activity?.eventCount ?? 0) || 0),
     turnCount: Math.max(0, Number(document.turnCount || 0) || 0),
     turns: Array.isArray(document.turns) ? document.turns.map((turn) => ({ ...turn })) : [],
@@ -10975,6 +11168,10 @@ function shouldHideSessionFromDefaultList(session) {
   );
   if (hasSyntheticHistoricIdentifier) return true;
   const normalizedWorkspaceId = String(session.workspaceId || metadata.workspaceId || "").trim();
+  const hasWorkspaceAssignment =
+    Boolean(normalizedWorkspaceId)
+    || Boolean(normalizedWorkspaceDir)
+    || Boolean(normalizedWorkspaceRoot);
   const tempWorkspacePattern = /(?:\\|\/)(?:temp|tmp)(?:\\|\/)/i;
   const looksTemporaryWorkspace =
     tempWorkspacePattern.test(normalizedWorkspaceDir)
@@ -10996,6 +11193,10 @@ function shouldHideSessionFromDefaultList(session) {
   ).trim();
   const totalEvents = Number(session.totalEvents || session.eventCount || 0);
   const turnCount = Number(session.turnCount || 0);
+  const nullishFixtureIdentifier = identifiers.some((value) =>
+    /^(?:null|undefined|\(null\)|session|null session)$/i.test(String(value || "").trim()),
+  );
+  if (nullishFixtureIdentifier && !hasWorkspaceAssignment) return true;
   const createdAtMs = Date.parse(
     String(
       session.createdAt
@@ -18595,14 +18796,26 @@ async function handleApi(req, res, url) {
           break;
         }
       }
-      const activeWorkflowRuns = workflowRunDetails.length;
+      const mergedSlots = mergeExecutorSlotsWithWorkflowRuns(execStatus, workflowRunDetails);
+      const mergedActiveSlots = mergedSlots.filter((slot) => {
+        const status = String(slot?.status || "").trim().toLowerCase();
+        return status === "running" || status === "busy";
+      }).length;
+      const activeWorkflowRuns = buildWorkflowOwnedExecutorSlots(workflowRunDetails).length;
       const workspaceSummary = execStatus
-        ? buildWorkspaceExecutorSummary(execStatus, workspaceContext)
+        ? buildWorkspaceExecutorSummary(execStatus, workspaceContext, workflowRunDetails)
         : null;
       return {
         ok: true,
         data: execStatus
-          ? { ...execStatus, workspaceSummary, activeWorkflowRuns, workflowRunDetails: workflowRunDetails.slice(0, 20) }
+          ? {
+              ...execStatus,
+              activeSlots: Math.max(Number(execStatus?.activeSlots || 0) || 0, mergedActiveSlots),
+              slots: mergedSlots,
+              workspaceSummary,
+              activeWorkflowRuns,
+              workflowRunDetails: workflowRunDetails.slice(0, 20),
+            }
           : null,
         mode,
         paused: executor?.isPaused?.() || false,
@@ -19129,17 +19342,17 @@ async function handleApi(req, res, url) {
     const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
-      200,
+      500,
       Math.max(5, Number(url.searchParams.get("pageSize") || url.searchParams.get("limit") || "15")),
     );
     const includeStartGuards =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeStartGuards"), true);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeStartGuards"), false);
     const includeBlockedDiagnostics =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeBlockedDiagnostics"), true);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeBlockedDiagnostics"), false);
     const includeWorkflowRuns =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeWorkflowRuns"), true);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeWorkflowRuns"), false);
     const includeSupervisorDiagnostics =
-      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeSupervisorDiagnostics"), true);
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeSupervisorDiagnostics"), false);
     try {
       const workflowContext = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
       const adapter = getKanbanAdapter();
@@ -23769,6 +23982,97 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  if (path === "/api/agents/available" && req.method === "GET") {
+    try {
+      const providerInventory = buildProviderInventory();
+      const modelsByProviderId = new Map(
+        (providerInventory?.items || []).map((entry) => [
+          String(entry?.providerId || "").trim(),
+          Array.isArray(entry?.modelCatalog?.models)
+            ? entry.modelCatalog.models.map((model) => String(model?.id || "").trim()).filter(Boolean)
+            : [],
+        ]),
+      );
+      const agents = getAvailableAgents().map((entry) => {
+        const providerId = String(entry?.providerId || entry?.id || entry?.provider || "").trim();
+        const models = modelsByProviderId.get(providerId) || [];
+        const capabilities = Array.isArray(entry?.capabilities)
+          ? entry.capabilities.slice()
+          : (entry?.capabilities && typeof entry.capabilities === "object"
+            ? Object.keys(entry.capabilities).filter((key) => entry.capabilities[key])
+            : []);
+        return {
+          ...entry,
+          providerId,
+          models,
+          capabilities,
+        };
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        active: getPrimaryAgentSelection() || getPrimaryAgentName(),
+        mode: getAgentMode(),
+        agents,
+        manualAgents: [],
+      });
+    } catch (err) {
+      jsonResponse(res, 200, {
+        ok: true,
+        active: getPrimaryAgentSelection() || getPrimaryAgentName(),
+        mode: getAgentMode(),
+        agents: [],
+        manualAgents: [],
+        error: err?.message || "",
+      });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/switch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const requestedAgent = String(body?.agent || body?.id || "").trim();
+      if (!requestedAgent) {
+        jsonResponse(res, 400, { ok: false, error: "agent is required" });
+        return;
+      }
+      const result = await switchPrimaryAgent(requestedAgent);
+      jsonResponse(res, 200, {
+        ok: result?.ok !== false,
+        agent: String(
+          result?.selectionId
+          || result?.adapter
+          || getPrimaryAgentSelection()
+          || getPrimaryAgentName(),
+        ).trim(),
+        result: result && typeof result === "object" ? result : null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/mode" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const requestedMode = String(body?.mode || "").trim();
+      if (!requestedMode) {
+        jsonResponse(res, 400, { ok: false, error: "mode is required" });
+        return;
+      }
+      const result = setAgentMode(requestedMode);
+      jsonResponse(res, result?.ok === false ? 400 : 200, {
+        ok: result?.ok !== false,
+        mode: result?.mode || getAgentMode(),
+        error: result?.error || null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/agents") {
     try {
       const executor = uiDeps.getInternalExecutor?.();
@@ -24896,15 +25200,23 @@ if (path === "/api/agent-logs/context") {
         const limit = Number.isFinite(rawLimit) && rawLimit > 0
           ? Math.min(rawLimit, 500)
           : 20;
-        const activeRuns = readActiveWorkflowRunIndexEntries(workspacePaths.runsDir).map((entry) => ({
-          runId: entry.runId,
-          workflowId: entry.workflowId || null,
-          workflowName: entry.workflowName || null,
-          startedAt: entry.startedAt || null,
-          updatedAt: entry.startedAt || null,
-          status: "running",
-          activeNodeCount: Number(entry.activeNodeCount || 0) || 0,
-        }));
+        const activeRuns = readActiveWorkflowRunIndexEntries(workspacePaths.runsDir)
+          .filter((entry) => {
+            const detail = getWorkflowRunDetailFromStateLedger(entry.runId, {
+              anchorPath: workspacePaths.runsDir,
+            });
+            const detailStatus = String(detail?.status || "").trim().toLowerCase();
+            return !detailStatus || detailStatus === "running";
+          })
+          .map((entry) => ({
+            runId: entry.runId,
+            workflowId: entry.workflowId || null,
+            workflowName: entry.workflowName || null,
+            startedAt: entry.startedAt || null,
+            updatedAt: entry.startedAt || null,
+            status: "running",
+            activeNodeCount: Number(entry.activeNodeCount || 0) || 0,
+          }));
         const activeRunIds = new Set(activeRuns.map((entry) => String(entry.runId || "").trim()).filter(Boolean));
         const persistedPage = typeof workflowEngine?.getRunHistoryPage === "function"
           ? await workflowEngine.getRunHistoryPage(null, {
@@ -24972,6 +25284,7 @@ if (path === "/api/agent-logs/context") {
       const {
         listApprovalRequests,
         reconcileWorkflowRunApprovalRequests,
+        reconcileHarnessRunApprovalRequests,
         upsertWorkflowRunApprovalRequest,
         isWorkflowRunApprovalPending,
       } =
@@ -24989,6 +25302,15 @@ if (path === "/api/agent-logs/context") {
           && (!statusFilter || statusFilter === "pending" || statusFilter === "all")
         ) {
           reconcileWorkflowRunApprovalRequests({ repoRoot: repoRootForApprovals });
+        }
+        if (
+          (!scopeTypeFilter || scopeTypeFilter === "harness-run")
+          && (!statusFilter || statusFilter === "pending" || statusFilter === "all")
+        ) {
+          reconcileHarnessRunApprovalRequests({
+            repoRoot: repoRootForApprovals,
+            activeRunIds: new Set(activeHarnessRuns.keys()),
+          });
         }
 
         let listing = listApprovalRequests({
@@ -25152,13 +25474,28 @@ if (path === "/api/agent-logs/context") {
         const workflow = typeof engine.get === "function"
           ? await engine.get(String(run?.workflowId || "").trim())
           : null;
-        const nodeForensics =
-          nodeId && typeof engine.getNodeForensics === "function"
-            ? await engine.getNodeForensics(runId, nodeId)
-            : null;
-        const runForensics = typeof engine.getRunForensics === "function"
-          ? await engine.getRunForensics(runId)
-          : null;
+        let nodeForensics = null;
+        if (nodeId && typeof engine.getNodeForensics === "function") {
+          try {
+            nodeForensics = await engine.getNodeForensics(runId, nodeId);
+          } catch (error) {
+            nodeForensics = {
+              available: false,
+              error: String(error?.message || error || "Failed to load node forensics"),
+            };
+          }
+        }
+        let runForensics = null;
+        if (typeof engine.getRunForensics === "function") {
+          try {
+            runForensics = await engine.getRunForensics(runId);
+          } catch (error) {
+            runForensics = {
+              available: false,
+              error: String(error?.message || error || "Failed to load run forensics"),
+            };
+          }
+        }
         const payload = buildRunCopilotContextPayload(run, {
           intent,
           nodeId,

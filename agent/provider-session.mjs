@@ -52,6 +52,7 @@ function sumUsage(left = null, right = null) {
     inputTokens: Number(base.inputTokens || 0) + Number(next.inputTokens || 0),
     outputTokens: Number(base.outputTokens || 0) + Number(next.outputTokens || 0),
     totalTokens: Number(base.totalTokens || 0) + Number(next.totalTokens || 0),
+    cacheInputTokens: Number(base.cacheInputTokens || 0) + Number(next.cacheInputTokens || 0),
     costUsd: Number(base.costUsd || 0) + Number(next.costUsd || 0),
     raw: {
       ...(base.raw && typeof base.raw === "object" ? base.raw : {}),

@@ -74,6 +74,7 @@ import {
 } from "../components/agent-selector.js";
 import {
   addPendingMessage,
+  agentStatus as streamingAgentStatus,
   clearAgentStatus,
   confirmMessage,
   rejectMessage,
@@ -390,6 +391,7 @@ export function ChatTab() {
   const sendMenuRef = useRef(null);
   const messageQueueRef = useRef([]);
   const chatDropDepthRef = useRef(0);
+  const lastAppliedRouteSessionIdRef = useRef(null);
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [stoppingAgent, setStoppingAgent] = useState(false);
@@ -563,14 +565,20 @@ export function ChatTab() {
       setRouteParams({}, { replace: true, skipGuard: true });
       return;
     }
+    if (lastAppliedRouteSessionIdRef.current === routeSessionId && sessionId && sessionId !== routeSessionId) {
+      return;
+    }
     if (sessionId === routeSessionId) return;
+    lastAppliedRouteSessionIdRef.current = routeSessionId;
     selectedSessionId.value = routeSessionId;
   }, [isLoadingSessionList, routeSessionId, sessionId]);
 
   useEffect(() => {
     if (sessionId) {
+      lastAppliedRouteSessionIdRef.current = sessionId;
       setRouteParams({ sessionId }, { replace: true, skipGuard: true });
     } else {
+      lastAppliedRouteSessionIdRef.current = null;
       setRouteParams({}, { replace: true, skipGuard: true });
     }
   }, [sessionId]);
@@ -817,8 +825,9 @@ export function ChatTab() {
           method: "POST",
           body: JSON.stringify({}),
         });
+        clearAgentStatus(sessionId);
+        optimisticMarkIdle();
         if (stopResult?.stopped) {
-          optimisticMarkIdle();
           showToast("Stopped current agent turn", "info");
         } else {
           showToast("No active agent turn to stop", "info");
@@ -830,6 +839,7 @@ export function ChatTab() {
           method: "POST",
           body: JSON.stringify({ command: "/stop" }),
         });
+        clearAgentStatus();
         optimisticMarkIdle();
         showToast("Agent stopped", "info");
       }
@@ -885,14 +895,6 @@ export function ChatTab() {
     document.addEventListener("mousedown", handleOutside);
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [showSendMenu]);
-
-  // Clear one-shot stop UI lock as soon as the selected agent reports idle.
-  useEffect(() => {
-    if (!stoppingAgent) return;
-    if (!activeAgentInfo.value?.busy) {
-      setStoppingAgent(false);
-    }
-  }, [stoppingAgent, activeAgentInfo.value?.busy]);
 
   /* ── Keyboard handling ── */
   function handleKeyDown(e) {
@@ -1045,6 +1047,15 @@ export function ChatTab() {
   const sessionTitle = activeSession?.title || activeSession?.taskId || "Session";
   const sessionLifecycle = getSessionLifecycleState(activeSession);
   const sessionRuntime = getSessionRuntimeState(activeSession);
+  const trackedAgentStatus = streamingAgentStatus.value || {};
+  const trackedSessionId = String(trackedAgentStatus.sessionId || "").trim();
+  const currentSessionId = String(sessionId || "").trim();
+  const sessionAgentBusy =
+    Boolean(currentSessionId)
+    && trackedSessionId === currentSessionId
+    && String(trackedAgentStatus.state || "").trim().toLowerCase() !== "idle";
+  const providerBusy = Boolean(activeAgentInfo.value?.busy);
+  const composerBusy = sessionAgentBusy || (!currentSessionId && providerBusy);
   const sessionFreshnessAt = getSessionRecencyTimestamp(activeSession);
   const sessionFreshnessLabel = sessionFreshnessAt ? new Date(sessionFreshnessAt).toLocaleString() : "unknown";
   const sessionMeta = [
@@ -1055,6 +1066,14 @@ export function ChatTab() {
   ]
     .filter(Boolean)
     .join(" · ");
+
+  // Clear one-shot stop UI lock as soon as the selected agent reports idle.
+  useEffect(() => {
+    if (!stoppingAgent) return;
+    if (!composerBusy) {
+      setStoppingAgent(false);
+    }
+  }, [composerBusy, stoppingAgent]);
 
   useEffect(() => {
     const key = String(sessionId || DRAFT_SESSION_KEY);
@@ -1414,7 +1433,7 @@ export function ChatTab() {
                 disabled=${sending}
                 title="Live voice mode"
               />
-              ${activeAgentInfo.value?.busy && !stoppingAgent && html`
+              ${composerBusy && !stoppingAgent && html`
                 <${IconButton}
                   onClick=${handleStop}
                   title="Stop agent"
@@ -1427,8 +1446,8 @@ export function ChatTab() {
                 <${IconButton}
                   color="primary"
                   disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
-                  onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
-                  title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
+                  onClick=${composerBusy ? handleSteerWithMessage : handleSend}
+                  title=${composerBusy ? "Steer with Message (Enter)" : "Send (Enter)"}
                   size="small"
                 >➤<//>
                 <${IconButton}
