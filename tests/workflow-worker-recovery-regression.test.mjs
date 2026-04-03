@@ -42,7 +42,7 @@ function createAgentBridgePayload(nodeId) {
   return {
     type: "svc-call",
     callId: `call-${nodeId}`,
-    method: "agentPool.execWithRetry",
+    method: "harnessAgent.execWithRetry",
     args: [
       `Execute ${nodeId}`,
       {
@@ -71,6 +71,7 @@ function createAgentBridgePayload(nodeId) {
 
 describe("workflow worker recovery regressions", () => {
   const uiServerSource = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
+  const harnessBridgeSource = readFileSync(resolve(process.cwd(), "server/routes/harness-agent-bridge.mjs"), "utf8");
   const workerSource = readFileSync(resolve(process.cwd(), "server/workflow-engine-worker.mjs"), "utf8");
 
   it("lets worker-backed engines detect and resume interrupted runs", () => {
@@ -110,15 +111,25 @@ describe("workflow worker recovery regressions", () => {
     expect(workerSource).toContain("function sanitizeWorkerMessage(message) {");
     expect(workerSource).toContain("function assertCloneSafeWorkerMessage(message, label = \"workflow worker message\") {");
     expect(workerSource).toContain("function postCloneSafeWorkerMessage(message, label = \"workflow worker message\") {");
-    expect(workerSource).toContain('return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, timeout, opts]);');
+    expect(workerSource).toContain('return callMainService("harnessAgent.launchOrResumeThread", [prompt, cwd, timeout, opts]);');
     expect(workerSource).toContain('async execWithRetry(prompt, opts) {');
-    expect(workerSource).toContain('return callMainService("agentPool.execWithRetry", [prompt, opts]);');
+    expect(workerSource).toContain('return callMainService("harnessAgent.execWithRetry", [prompt, opts]);');
     expect(workerSource).toContain('workflow worker svc-call ${method}');
-    expect(uiServerSource).toContain("_normalizeAgentPoolBridgeArgs(fn, args = [])");
-    expect(uiServerSource).toContain("options.slotMeta?.taskKey ||");
-    expect(uiServerSource).toContain("options.targetTaskKey ||");
-    expect(uiServerSource).toContain("const normalizedArgs = this._normalizeAgentPoolBridgeArgs(fn, args);");
-    expect(uiServerSource).toContain('if (fn === "execWithRetry")         return execWithRetry(normalizedArgs[0], normalizedArgs[1] || {});');
+    expect(uiServerSource).toContain('from "./routes/harness-agent-bridge.mjs"');
+    expect(uiServerSource).toContain("const handledCall = await executeHarnessBridgeServiceCall(method, args, {");
+    expect(harnessBridgeSource).toContain("function normalizeHarnessAgentBridgeArgs(fn, args = [])");
+    expect(harnessBridgeSource).toContain("options.slotMeta?.taskKey ||");
+    expect(harnessBridgeSource).toContain("options.targetTaskKey ||");
+    expect(harnessBridgeSource).toContain("const normalizedArgs = normalizeHarnessAgentBridgeArgs(fn, args);");
+    expect(harnessBridgeSource).toContain('result: await harnessAgentService.execWithRetry(normalizedArgs[0], normalizedArgs[1] || {}),');
+  });
+
+  it("keeps web-surface prompt execution on the canonical harness facade", () => {
+    expect(uiServerSource).toContain("const harnessAgentService = createHarnessAgentService();");
+    expect(uiServerSource).toContain("resolveBackgroundPromptExecutor({ uiDeps, harnessAgentService })");
+    expect(harnessBridgeSource).toContain(": harnessAgentService.runInteractivePrompt.bind(harnessAgentService);");
+    expect(harnessBridgeSource).toContain("return harnessAgentService.runBackgroundPrompt.bind(harnessAgentService);");
+    expect(harnessBridgeSource).toContain('case "harnessAgent":');
   });
 
   it.each([

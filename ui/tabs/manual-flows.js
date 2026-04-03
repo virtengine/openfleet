@@ -16,6 +16,13 @@ import { formatDate, formatDuration, formatRelative } from "../modules/utils.js"
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
+  formatStructuredValuePreview,
+  inferStructuredInputKind,
+  isStructuredValue,
+  safeParseJsonText,
+  toEditableTextValue,
+} from "../modules/structured-values.js";
+import {
   Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip,
   TextField, Select, MenuItem, FormControl, InputLabel, Switch,
   FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
@@ -295,8 +302,21 @@ function getCategoryMeta(cat) {
 function FormField({ field, value, onChange }) {
   const { id, label, type, placeholder, helpText, options, defaultValue } = field;
   const currentValue = value !== undefined ? value : (defaultValue ?? "");
+  const effectiveType = inferStructuredInputKind({
+    type,
+    value: currentValue,
+    defaultValue,
+  });
+  const displayValue = toEditableTextValue(currentValue, {
+    pretty: effectiveType === "json",
+    fallback: "",
+  });
+  const defaultPlaceholder = toEditableTextValue(defaultValue, {
+    pretty: effectiveType === "json",
+    fallback: "",
+  });
 
-  switch (type) {
+  switch (effectiveType) {
     case "text":
       return html`
         <${TextField}
@@ -304,7 +324,7 @@ function FormField({ field, value, onChange }) {
           size="small"
           label=${label}
           placeholder=${placeholder || ""}
-          value=${currentValue}
+          value=${displayValue}
           onChange=${(e) => onChange(id, e.target.value)}
           helperText=${helpText || ""}
           sx=${{ mb: 2 }}
@@ -320,7 +340,7 @@ function FormField({ field, value, onChange }) {
           size="small"
           label=${label}
           placeholder=${placeholder || ""}
-          value=${currentValue}
+          value=${displayValue}
           onChange=${(e) => onChange(id, e.target.value)}
           helperText=${helpText || ""}
           sx=${{ mb: 2, "& .MuiInputBase-input": { fontFamily: "monospace", fontSize: "0.85em" } }}
@@ -335,10 +355,26 @@ function FormField({ field, value, onChange }) {
           type="number"
           label=${label}
           placeholder=${placeholder || ""}
-          value=${currentValue}
+          value=${currentValue ?? ""}
           onChange=${(e) => onChange(id, Number(e.target.value))}
           helperText=${helpText || ""}
           sx=${{ mb: 2 }}
+        />
+      `;
+
+    case "json":
+      return html`
+        <${TextField}
+          fullWidth
+          multiline
+          rows=${6}
+          size="small"
+          label=${label}
+          placeholder=${placeholder || defaultPlaceholder || "{\n  \n}"}
+          value=${displayValue}
+          onChange=${(e) => onChange(id, e.target.value)}
+          helperText=${helpText || "JSON object or array"}
+          sx=${{ mb: 2, "& .MuiInputBase-input": { fontFamily: "monospace", fontSize: "0.82em" } }}
         />
       `;
 
@@ -348,7 +384,7 @@ function FormField({ field, value, onChange }) {
           <${InputLabel}>${label}</${InputLabel}>
           <${Select}
             label=${label}
-            value=${currentValue}
+            value=${displayValue}
             onChange=${(e) => onChange(id, e.target.value)}
           >
             ${(options || []).map(
@@ -380,7 +416,7 @@ function FormField({ field, value, onChange }) {
           fullWidth
           size="small"
           label=${label}
-          value=${currentValue}
+          value=${displayValue}
           onChange=${(e) => onChange(id, e.target.value)}
           helperText=${helpText || ""}
           sx=${{ mb: 2 }}
@@ -490,16 +526,44 @@ function TemplateCard({ template, onClick, onInstall, onEdit, onDelete }) {
  *  Flow Form View
  * ═══════════════════════════════════════════════════════════════ */
 
-function FlowFormView({ template, onBack }) {
-  const [formValues, setFormValues] = useState(() => {
-    const defaults = {};
-    for (const field of template.fields || []) {
-      if (field.defaultValue !== undefined) {
-        defaults[field.id] = field.defaultValue;
-      }
+function buildManualFlowFormDefaults(fields = []) {
+  const defaults = {};
+  for (const field of fields || []) {
+    if (field?.defaultValue === undefined) continue;
+    const effectiveType = inferStructuredInputKind({
+      type: field?.type,
+      defaultValue: field?.defaultValue,
+    });
+    defaults[field.id] = effectiveType === "json"
+      ? toEditableTextValue(field.defaultValue, { pretty: true, fallback: "" })
+      : field.defaultValue;
+  }
+  return defaults;
+}
+
+function buildManualFlowSubmission(fields = [], formValues = {}) {
+  const payload = {};
+  for (const field of fields || []) {
+    const fieldId = String(field?.id || "").trim();
+    if (!fieldId) continue;
+    const currentValue = formValues[fieldId];
+    const effectiveType = inferStructuredInputKind({
+      type: field?.type,
+      value: currentValue,
+      defaultValue: field?.defaultValue,
+    });
+    if (effectiveType === "json") {
+      const raw = typeof currentValue === "string" ? currentValue.trim() : currentValue;
+      payload[fieldId] = raw === "" ? "" : safeParseJsonText(currentValue);
+      continue;
     }
-    return defaults;
-  });
+    payload[fieldId] = currentValue;
+  }
+  return payload;
+}
+
+function FlowFormView({ template, onBack }) {
+  const [formValues, setFormValues] = useState(() => buildManualFlowFormDefaults(template.fields || []));
   const [workspaceRepos, setWorkspaceRepos] = useState([]);
   const [targetRepo, setTargetRepo] = useState("");
 
@@ -518,13 +582,20 @@ function FlowFormView({ template, onBack }) {
 
   const handleExecute = useCallback(async () => {
     haptic();
-    const run = await executeFlow(template.id, formValues, {
+    let submission;
+    try {
+      submission = buildManualFlowSubmission(template.fields || [], formValues);
+    } catch (err) {
+      showToast(`Invalid JSON field: ${err?.message || err}`, "error");
+      return;
+    }
+    const run = await executeFlow(template.id, submission, {
       repository: targetRepo || undefined,
     });
     if (run) {
       activeRun.value = run;
     }
-  }, [template.id, formValues, targetRepo]);
+  }, [template.id, template.fields, formValues, targetRepo]);
 
   const catMeta = getCategoryMeta(template.category);
 
@@ -646,17 +717,30 @@ function RunResultCard({ run }) {
   if (!run) return null;
 
   const statusStyles = getRunStatusBadgeStyles(run.status);
-  const repository = String(run?.metadata?.repository || run?.metadata?.targetRepo || "").trim();
-  const workspaceId = String(run?.metadata?.workspaceId || "").trim();
-  const mode = String(run?.result?.mode || run?.result?.action || "").trim();
-  const taskId = String(run?.result?.taskId || "").trim();
-  const instructions = String(run?.result?.instructions || "").trim();
+  const repository = toEditableTextValue(run?.metadata?.repository || run?.metadata?.targetRepo, { pretty: false, fallback: "" }).trim();
+  const workspaceId = toEditableTextValue(run?.metadata?.workspaceId, { pretty: false, fallback: "" }).trim();
+  const modeValue = run?.result?.mode ?? run?.result?.action ?? "";
+  const mode = toEditableTextValue(modeValue, {
+    pretty: isStructuredValue(modeValue),
+    fallback: "",
+  }).trim();
+  const taskId = toEditableTextValue(run?.result?.taskId, { pretty: false, fallback: "" }).trim();
+  const instructionsValue = run?.result?.instructions ?? "";
+  const instructions = toEditableTextValue(instructionsValue, {
+    pretty: isStructuredValue(instructionsValue),
+    fallback: "",
+  }).trim();
   const observability = run?.observability || {};
   const summary = observability?.summary || {};
   const steps = Array.isArray(observability?.steps) ? observability.steps : [];
   const timeline = Array.isArray(observability?.timeline) ? observability.timeline : [];
   const relatedTaskIds = Array.isArray(observability?.related?.taskIds) ? observability.related.taskIds : [];
   const relatedWorkflowRunIds = Array.isArray(observability?.related?.workflowRunIds) ? observability.related.workflowRunIds : [];
+  const runVariables =
+    run?.result?.variables ??
+    run?.metadata?.variables ??
+    run?.observability?.variables ??
+    null;
 
   return html`
     <${Paper} variant="outlined" sx=${{ p: 2.5, borderColor: statusStyles.color + "40" }}>
@@ -745,8 +829,16 @@ function RunResultCard({ run }) {
           `}
           ${instructions && html`
             <${Alert} severity="info" sx=${{ mt: 1 }}>
-              ${instructions}
+              ${isStructuredValue(instructionsValue)
+                ? html`<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;margin:0">${instructions}</pre>`
+                : instructions}
             </${Alert}>
+          `}
+          ${runVariables && html`
+            <${Paper} variant="outlined" sx=${{ mt: 1.25, p: 1.25, background: "rgba(15,23,42,0.28)" }}>
+              <${Typography} variant="subtitle2" sx=${{ mb: 0.8 }}>Run Variables</${Typography}>
+              <${StructuredValueBlock} value=${runVariables} maxHeight=${220} />
+            </${Paper}>
           `}
           ${steps.length > 0 && html`
             <${Paper} variant="outlined" sx=${{ mt: 1.25, p: 1.25, background: "rgba(15,23,42,0.28)" }}>
@@ -784,7 +876,7 @@ function RunResultCard({ run }) {
           ${timeline.length > 0 && html`
             <${Paper} variant="outlined" sx=${{ mt: 1.25, p: 1.25, background: "rgba(15,23,42,0.28)" }}>
               <${Typography} variant="subtitle2" sx=${{ mb: 0.8 }}>Timeline</${Typography}>
-              <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:220px;overflow:auto;">${safePrettyJson(timeline)}</pre>
+              <${StructuredValueBlock} value=${timeline} maxHeight=${220} />
             </${Paper}>
           `}
           ${relatedTaskIds.length > 0 && html`
@@ -852,7 +944,7 @@ function RunHistoryList({ onBack }) {
  *  Template List View (main view)
  * ═══════════════════════════════════════════════════════════════ */
 
-const TEMPLATE_FIELD_TYPES = ["text", "textarea", "select", "toggle", "number"];
+const TEMPLATE_FIELD_TYPES = ["text", "textarea", "select", "toggle", "number", "json"];
 
 function createTemplateFieldDraft(overrides = {}) {
   return {
@@ -912,6 +1004,16 @@ function normalizeTemplateFieldsForSave(fields = []) {
       let defaultValue = field?.defaultValue;
       if (type === "toggle") {
         defaultValue = !!defaultValue;
+      } else if (type === "json") {
+        if (defaultValue === "" || defaultValue == null) {
+          defaultValue = "";
+        } else {
+          try {
+            defaultValue = safeParseJsonText(defaultValue);
+          } catch {
+            defaultValue = String(defaultValue);
+          }
+        }
       } else if (type === "number") {
         if (defaultValue === "" || defaultValue == null) {
           defaultValue = undefined;
@@ -1396,7 +1498,12 @@ function TemplateListView() {
                         label="Default Value"
                         size="small"
                         type=${field.type === "number" ? "number" : "text"}
-                        value=${field.defaultValue == null ? "" : String(field.defaultValue)}
+                        multiline=${field.type === "json"}
+                        minRows=${field.type === "json" ? 4 : undefined}
+                        value=${field.defaultValue == null ? "" : toEditableTextValue(field.defaultValue, {
+                          pretty: field.type === "json" || isStructuredValue(field.defaultValue),
+                          fallback: "",
+                        })}
                         onChange=${(e) => setForm((prev) => ({
                           ...prev,
                           fields: (prev.fields || []).map((f, idx) => idx === index ? { ...f, defaultValue: e.target.value } : f),
@@ -1680,20 +1787,10 @@ function inferOptionsFromKey(key, defaultValue) {
 }
 
 function formatValuePreview(value) {
-  if (value == null) return "empty";
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return "empty";
-    return trimmed.length > 44 ? `${trimmed.slice(0, 44)}…` : trimmed;
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") return String(value);
-  try {
-    const json = JSON.stringify(value);
-    return json.length > 44 ? `${json.slice(0, 44)}…` : json;
-  } catch {
-    return String(value);
-  }
+  return formatStructuredValuePreview(value, {
+    maxChars: 44,
+    fallbackEmpty: "empty",
+  });
 }
 
 function buildVariableDescriptor(variable) {
@@ -1722,7 +1819,7 @@ function buildVariableDescriptor(variable) {
 
   const defaultFieldValue =
     inputKind === "json" && defaultValue != null
-      ? JSON.stringify(defaultValue, null, 2)
+      ? toEditableTextValue(defaultValue, { pretty: true, fallback: "" })
       : (defaultValue ?? "");
 
   return {
@@ -1796,14 +1893,32 @@ function buildNodeStatusesFromRunDetail(run) {
 
 function safePrettyJson(value) {
   try {
-    const json = JSON.stringify(value, null, 2);
+    const json = toEditableTextValue(value, { pretty: true, fallback: "" });
     const maxChars = 100000;
     if (json.length <= maxChars) return json;
     const omitted = json.length - maxChars;
     return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
-    return String(value ?? "");
+    return toEditableTextValue(value, { pretty: false, fallback: "" });
   }
+}
+
+function StructuredValueBlock({ value, maxHeight = 280, color = "var(--text-primary,#c9d1d9)" }) {
+  return html`
+    <pre style=${{
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      fontSize: "11px",
+      color,
+      background: "var(--bg-secondary,#111827)",
+      border: "1px solid var(--border,#2a3040)",
+      borderRadius: "6px",
+      padding: "8px",
+      maxHeight,
+      overflow: "auto",
+      margin: 0,
+    }}>${safePrettyJson(value)}</pre>
+  `;
 }
 
 async function resolveManualRunForDispatch(result) {
@@ -2583,12 +2698,8 @@ function WfLaunchForm({ template, onBack }) {
                   p: 1.5, borderRadius: 1,
                   background: "var(--bg-secondary, rgba(0,0,0,0.2))",
                   border: "1px solid var(--border, rgba(255,255,255,0.08))",
-                  fontFamily: "monospace", fontSize: "0.8em",
-                  maxHeight: 200, overflow: "auto",
                 }}>
-                  ${Object.entries(wfLaunchResult.value.variables).map(([k, v]) => html`
-                    <div key=${k}><span style="color: var(--accent-success, #10b981)">${k}</span>: ${JSON.stringify(v)}</div>
-                  `)}
+                  <${StructuredValueBlock} value=${wfLaunchResult.value.variables} maxHeight=${200} />
                 </${Box}>
               `}
             ` : html`
@@ -2659,7 +2770,7 @@ function WfParamField({ descriptor, value, onChange }) {
         value=${currentValue}
         onChange=${(e) => onChange(key, e.target.value)}
         helperText=${helpText || "JSON object or array"}
-        placeholder=${defaultValue != null ? JSON.stringify(defaultValue, null, 2) : ""}
+        placeholder=${toEditableTextValue(defaultValue, { pretty: true, fallback: "" })}
         sx=${{ mb: 2, "& .MuiInputBase-input": { fontFamily: "monospace", fontSize: "0.82rem" } }}
       />
     `;
@@ -2949,6 +3060,17 @@ function ManualWorkflowRunHistoryView({ onBack }) {
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
     const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
     const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
+    const runDetailData =
+      selectedRun?.detail?.data &&
+      typeof selectedRun.detail.data === "object" &&
+      !Array.isArray(selectedRun.detail.data)
+        ? selectedRun.detail.data
+        : null;
+    const launchVariables =
+      runDetailData?.variables ??
+      runDetailData?.input ??
+      selectedRun?.variables ??
+      null;
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
       const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
       if (rankDiff !== 0) return rankDiff;
@@ -2990,7 +3112,7 @@ function ManualWorkflowRunHistoryView({ onBack }) {
             <${Typography} variant="body2"><strong>Workflow ID:</strong> <code>${selectedRun.workflowId || "—"}</code></${Typography}>
             <${Typography} variant="body2"><strong>Run ID:</strong> <code>${selectedRun.runId || "—"}</code></${Typography}>
             <${Typography} variant="body2"><strong>Target Repo:</strong> ${selectedRun.targetRepo || "—"}</${Typography}>
-            <${Typography} variant="body2"><strong>Workspace:</strong> ${selectedRun.detail?.data?.workspaceId || selectedRun.detail?.data?.workspace || "—"}</${Typography}>
+            <${Typography} variant="body2"><strong>Workspace:</strong> ${runDetailData?.workspaceId || runDetailData?.workspace || "—"}</${Typography}>
             <${Typography} variant="body2"><strong>Trigger:</strong> ${selectedRun.triggerSource || "manual"}${selectedRun.triggerEvent ? ` · ${selectedRun.triggerEvent}` : ""}</${Typography}>
             <${Typography} variant="body2"><strong>Started:</strong> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</${Typography}>
             <${Typography} variant="body2"><strong>Finished:</strong> ${finishedAt ? formatDate(finishedAt) : "Running"}</${Typography}>
@@ -3021,18 +3143,32 @@ function ManualWorkflowRunHistoryView({ onBack }) {
 
         <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
           <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Run Logs (${logs.length})</${Typography}>
-          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:320px;overflow:auto;">${safePrettyJson(logs)}</pre>
+          <${StructuredValueBlock} value=${logs} maxHeight=${320} />
         </${Paper}>
 
         <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
           <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Errors (${errors.length})</${Typography}>
-          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--destructive,#fca5a5);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:220px;overflow:auto;">${safePrettyJson(errors)}</pre>
+          <${StructuredValueBlock} value=${errors} maxHeight=${220} color=${"var(--destructive,#fca5a5)"} />
         </${Paper}>
 
         <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
           <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Node Outputs</${Typography}>
-          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:280px;overflow:auto;">${safePrettyJson(nodeOutputs)}</pre>
+          <${StructuredValueBlock} value=${nodeOutputs} maxHeight=${280} />
         </${Paper}>
+
+        ${launchVariables && html`
+          <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
+            <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Launch Variables</${Typography}>
+            <${StructuredValueBlock} value=${launchVariables} maxHeight=${280} />
+          </${Paper}>
+        `}
+
+        ${runDetailData && Object.keys(runDetailData).length > 0 && html`
+          <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
+            <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Run Detail Payload</${Typography}>
+            <${StructuredValueBlock} value=${runDetailData} maxHeight=${320} />
+          </${Paper}>
+        `}
       </div>
     `;
   }

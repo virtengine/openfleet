@@ -841,17 +841,20 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 20000);
 
-  it("reports running monitor and server components from /healthz during monitor-mode portal startup", async () => {
+  it("reports a running server component from /healthz during telegram surface runtime startup", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.TELEGRAM_MINIAPP_ENABLED = "1";
     process.env.TELEGRAM_UI_PORT = "0";
     process.env.TELEGRAM_UI_HOST = "127.0.0.1";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
 
-    const bot = await import("../telegram/telegram-bot.mjs");
+    const surfaceRuntime = await import("../telegram/telegram-surface-runtime.mjs");
     const serverMod = await import("../server/ui-server.mjs");
     try {
-      await bot.startTelegramBot({ suppressPortalAutoOpen: true });
+      await surfaceRuntime.startTelegramSurfaceRuntime({
+        suppressPortalAutoOpen: true,
+        skipAutoOpen: true,
+      });
       const baseUrl = String(serverMod.getTelegramUiUrl() || "").trim();
       expect(baseUrl).toBeTruthy();
       const response = await fetch(`${baseUrl}/healthz`);
@@ -859,9 +862,8 @@ describeUiServer("ui-server mini app", () => {
       expect(response.status).toBe(200);
       expect(payload.status).toBe("ok");
       expect(payload.server).toBe("running");
-      expect(payload.monitor).toBe("running");
     } finally {
-      bot.stopTelegramBot();
+      surfaceRuntime.stopTelegramSurfaceRuntime();
     }
   }, 15000);
 

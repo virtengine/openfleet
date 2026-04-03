@@ -90,7 +90,7 @@ describe("manual-flows", () => {
         for (const field of tpl.fields) {
           expect(field.id).toBeTruthy();
           expect(field.label).toBeTruthy();
-          expect(["text", "textarea", "select", "toggle", "number"]).toContain(field.type);
+          expect(["text", "textarea", "select", "toggle", "number", "json"]).toContain(field.type);
           // Select fields must have options
           if (field.type === "select") {
             expect(Array.isArray(field.options)).toBe(true);

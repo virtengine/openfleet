@@ -67,6 +67,17 @@ import {
   writeWorkflowRunDetailToStateLedger,
 } from "../lib/state-ledger-sqlite.mjs";
 import { recordHarnessTelemetryEvent } from "../infra/session-telemetry.mjs";
+import {
+  buildDelegationWatchdogDecision,
+  extractDelegationGuardMap,
+  extractDelegationTrail,
+  getDelegationAuditTrail,
+  getDelegationTransitionGuard,
+  hydrateDelegationReadModel,
+  normalizeDelegationTrail,
+  recordDelegationEvent as recordDelegationRuntimeEvent,
+  setDelegationTransitionGuard as setDelegationRuntimeTransitionGuard,
+} from "./delegation-runtime.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -547,91 +558,6 @@ const DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES = readBoundedEnvInt(
   { min: 0, max: 10 },
 );
 
-function parseWatchdogTimestamp(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) return numeric;
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function buildDelegationWatchdogDecision(detail = {}) {
-  const watchdog = detail?.data?._delegationWatchdog;
-  if (!watchdog || typeof watchdog !== "object") return null;
-
-  const delegationType = String(watchdog.delegationType || "").trim().toLowerCase();
-  const taskScoped = watchdog.taskScoped === true;
-  if (taskScoped || delegationType === "task") return null;
-
-  const state = String(watchdog.state || "").trim().toLowerCase();
-  if (state && state !== "delegated" && state !== "running" && state !== "stalled") {
-    return null;
-  }
-
-  const startedAt = parseWatchdogTimestamp(watchdog.startedAt)
-    ?? parseWatchdogTimestamp(watchdog.updatedAt)
-    ?? parseWatchdogTimestamp(detail?.startedAt);
-  if (!Number.isFinite(startedAt)) return null;
-
-  const timeoutMs = Math.max(
-    NODE_TIMEOUT_MIN_MS,
-    Math.min(
-      NODE_TIMEOUT_MAX_MS,
-      Number(watchdog.timeoutMs ?? watchdog.delegationWatchdogTimeoutMs ?? DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS)
-        || DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS,
-    ),
-  );
-  const elapsedMs = Date.now() - startedAt;
-  if (elapsedMs < timeoutMs) return null;
-
-  const maxRecoveries = Math.max(
-    0,
-    Math.trunc((() => {
-      const raw = watchdog.maxRecoveries
-        ?? watchdog.delegationWatchdogMaxRecoveries
-        ?? detail?.data?.delegationWatchdogMaxRecoveries
-        ?? DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
-      const parsed = Number(raw);
-      return Number.isFinite(parsed) ? parsed : DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES;
-    })()),
-  );
-  const recoveryAttempts = Math.max(
-    0,
-    Math.trunc((() => {
-      const parsed = Number(watchdog.recoveryAttempts);
-      if (Number.isFinite(parsed)) return parsed;
-      return watchdog.recoveryAttempted === true ? 1 : 0;
-    })()),
-  );
-
-  const reasonBase = `delegation_watchdog:${watchdog.nodeId || "unknown"}:${elapsedMs}ms>${timeoutMs}ms`;
-  if (recoveryAttempts >= maxRecoveries) {
-    return {
-      type: "exhausted",
-      reason: `delegation_watchdog_exhausted:${watchdog.nodeId || "unknown"}:${recoveryAttempts}/${maxRecoveries}`,
-      nodeId: watchdog.nodeId || null,
-      elapsedMs,
-      timeoutMs,
-      recoveryAttempts,
-      maxRecoveries,
-    };
-  }
-
-  return {
-    type: "retry",
-    mode: "from_failed",
-    reason: `${reasonBase}:retryable`,
-    nodeId: watchdog.nodeId || null,
-    elapsedMs,
-    timeoutMs,
-    recoveryAttempts,
-    maxRecoveries,
-  };
-}
-
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
     resolvedConfig?.timeout,
@@ -676,39 +602,6 @@ function resolveTraceAgentId(data = {}, fallback = "") {
 }
 
 // ── Node Status ─────────────────────────────────────────────────────────────
-
-function normalizeDelegationTrail(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => ({ ...entry }))
-    .sort((a, b) => {
-      const aRaw = a?.at || a?.timestamp || 0;
-      const bRaw = b?.at || b?.timestamp || 0;
-
-      let aTime = Number(aRaw);
-      if (!Number.isFinite(aTime) && typeof aRaw === "string") {
-        const parsed = Date.parse(aRaw);
-        aTime = Number.isFinite(parsed) ? parsed : 0;
-      }
-
-      let bTime = Number(bRaw);
-      if (!Number.isFinite(bTime) && typeof bRaw === "string") {
-        const parsed = Date.parse(bRaw);
-        bTime = Number.isFinite(parsed) ? parsed : 0;
-      }
-      return aTime - bTime;
-    });
-}
-
-function normalizeDelegationGuardMap(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  return Object.fromEntries(
-    Object.entries(raw)
-      .filter(([key, value]) => String(key || "").trim() && value && typeof value === "object")
-      .map(([key, value]) => [String(key).trim(), { ...value }]),
-  );
-}
 
 const WORKFLOW_TEAM_STATE_VERSION = 1;
 const WORKFLOW_TEAM_TASK_STATUSES = new Set([
@@ -1037,14 +930,6 @@ function buildWorkflowTeamSummary(state) {
     eventCount: normalized.events.length,
     lastUpdatedAt: normalized.updatedAt || normalized.initializedAt || null,
   };
-}
-
-function extractDelegationGuardMap(detail, run = null) {
-  return normalizeDelegationGuardMap(
-    detail?.data?._delegationTransitionGuards ??
-    run?.detail?.data?._delegationTransitionGuards ??
-    run?.delegationTransitionGuards,
-  );
 }
 
 export const NodeStatus = Object.freeze({
@@ -2507,68 +2392,19 @@ export class WorkflowContext {
   }
 
   getDelegationAuditTrail() {
-    return normalizeDelegationTrail(
-      this.data?._delegationAuditTrail ??
-      this.data?._workflowDelegationTrail ??
-      this.data?._delegationTrail,
-    );
+    return getDelegationAuditTrail(this);
   }
 
   recordDelegationEvent(event = {}) {
-    if (!this.data || typeof this.data !== "object") this.data = {};
-    this.data._delegationTransitionGuards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
-    const entry = {
-      ...event,
-      type: String(event?.type || event?.eventType || "").trim() || "unknown",
-      eventType: String(event?.eventType || event?.type || "").trim() || "unknown",
-      at: Number(event?.at) || Date.now(),
-      timestamp: event?.timestamp || new Date().toISOString(),
-    };
-    const key = String(event?.transitionKey || event?.idempotencyKey || "").trim();
-    if (key) {
-      if (!this.data._delegationTransitionGuards || typeof this.data._delegationTransitionGuards !== "object") {
-        this.data._delegationTransitionGuards = {};
-      }
-      if (this.data._delegationTransitionGuards[key]) {
-        return {
-          ...this.data._delegationTransitionGuards[key],
-          recorded: false,
-        };
-      }
-      entry.transitionKey = entry.transitionKey || key;
-      entry.idempotencyKey = entry.idempotencyKey || key;
-      this.data._delegationTransitionGuards[key] = entry;
-    }
-    const nextTrail = normalizeDelegationTrail([...this.getDelegationAuditTrail(), entry]);
-    this.data._delegationAuditTrail = nextTrail;
-    this.data._workflowDelegationTrail = nextTrail;
-    this.data._delegationTrail = nextTrail;
-    if (!this.__workflowRuntimeState || typeof this.__workflowRuntimeState !== "object") {
-      this.__workflowRuntimeState = {};
-    }
-    this.__workflowRuntimeState.delegationAuditTrail = nextTrail;
-    return {
-      ...entry,
-      recorded: true,
-    };
+    return recordDelegationRuntimeEvent(this, event);
   }
 
   getDelegationTransitionGuard(key) {
-    const normalizedKey = String(key || "").trim();
-    if (!normalizedKey) return null;
-    const guards = normalizeDelegationGuardMap(this.data?._delegationTransitionGuards);
-    return guards[normalizedKey] ? { ...guards[normalizedKey] } : null;
+    return getDelegationTransitionGuard(this, key);
   }
 
   setDelegationTransitionGuard(key, value = {}) {
-    const normalizedKey = String(key || "").trim();
-    if (!normalizedKey) return null;
-    if (!this.data || typeof this.data !== "object") this.data = {};
-    const guards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
-    const nextValue = { ...value, transitionKey: value?.transitionKey || normalizedKey };
-    guards[normalizedKey] = nextValue;
-    this.data._delegationTransitionGuards = guards;
-    return { ...nextValue };
+    return setDelegationRuntimeTransitionGuard(this, key, value);
   }
 
   getWorkflowTeamState() {
@@ -4963,6 +4799,7 @@ export class WorkflowEngine extends EventEmitter {
   getRunHistoryPage(workflowId, options = {}) {
     const rawOffset = Number(options?.offset);
     const rawLimit = Number(options?.limit);
+    const shouldHydrate = options?.hydrate !== false;
     const offset = Number.isFinite(rawOffset) && rawOffset > 0
       ? Math.max(0, Math.floor(rawOffset))
       : 0;
@@ -4973,7 +4810,11 @@ export class WorkflowEngine extends EventEmitter {
     if (active.length === 0) {
       const persistedPage = this._listPersistedRunSummariesPage(workflowId || null, { offset, limit });
       const runs = Array.isArray(persistedPage?.runs)
-        ? persistedPage.runs.map((run) => this._hydrateRunHistoryPageSummary(run))
+        ? persistedPage.runs.map((run) => (
+            shouldHydrate
+              ? this._hydrateRunHistoryPageSummary(run)
+              : (this._normalizeRunSummary(run) || run)
+          ))
         : [];
       const total = Number.isFinite(Number(persistedPage?.total))
         ? Number(persistedPage.total)
@@ -5013,7 +4854,11 @@ export class WorkflowEngine extends EventEmitter {
     );
     const runs = allRuns
       .slice(offset, offset + limit)
-      .map((run) => this._hydrateRunHistoryPageSummary(run));
+      .map((run) => (
+        shouldHydrate
+          ? this._hydrateRunHistoryPageSummary(run)
+          : (this._normalizeRunSummary(run) || run)
+      ));
     const nextOffset = offset + runs.length;
     return {
       items: runs,
@@ -5579,21 +5424,7 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _extractDelegationTrail(detail, run = null) {
-    const candidates = [
-      detail?.delegationAuditTrail,
-      detail?.delegationTrail,
-      detail?.data?._delegationAuditTrail,
-      detail?.data?._workflowDelegationTrail,
-      detail?.data?._delegationTrail,
-      run?.detail?.delegationAuditTrail,
-      run?.detail?.delegationTrail,
-      run?.detail?.data?._delegationAuditTrail,
-      run?.detail?.data?._workflowDelegationTrail,
-      run?.detail?.data?._delegationTrail,
-      run?.delegationTrail,
-      run?.delegationAuditTrail,
-    ];
-    return normalizeDelegationTrail(candidates.find((value) => Array.isArray(value)) || []);
+    return extractDelegationTrail(detail, run);
   }
 
   _decorateRunDetail(run) {
@@ -5625,26 +5456,11 @@ export class WorkflowEngine extends EventEmitter {
                 : run.detail.data,
           }
         : run?.detail;
-    if (delegationTrail.length > 0 && detail && typeof detail === "object") {
-      if (!detail.data || typeof detail.data !== "object") {
-        detail.data = {};
-      }
-      if (!Array.isArray(detail.data._delegationAuditTrail)) {
-        detail.data._delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.data._workflowDelegationTrail)) {
-        detail.data._workflowDelegationTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.data._delegationTrail)) {
-        detail.data._delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.delegationAuditTrail)) {
-        detail.delegationAuditTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-      if (!Array.isArray(detail.delegationTrail)) {
-        detail.delegationTrail = delegationTrail.map((entry) => ({ ...entry }));
-      }
-    }
+    hydrateDelegationReadModel(detail, {
+      run,
+      trail: delegationTrail,
+      guards: delegationTransitionGuards,
+    });
     if (workflowTeamState && detail && typeof detail === "object") {
       if (!detail.data || typeof detail.data !== "object") {
         detail.data = {};
@@ -7268,13 +7084,10 @@ export class WorkflowEngine extends EventEmitter {
           ctx?.data?._workflowDelegationTrail ??
           ctx?.data?._delegationTrail,
         );
-    if (persistedDelegationTrail.length > 0) {
-      detail.data._delegationAuditTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.data._workflowDelegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.data._delegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.delegationAuditTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-      detail.delegationTrail = persistedDelegationTrail.map((entry) => ({ ...entry }));
-    }
+    hydrateDelegationReadModel(detail, {
+      trail: persistedDelegationTrail,
+      guards: extractDelegationGuardMap({ data: ctx?.data || {} }),
+    });
     const runtimeTeamState = hasWorkflowTeamStateData(ctx?.__workflowRuntimeState?.workflowTeamState)
       ? cloneWorkflowTeamState(ctx.__workflowRuntimeState.workflowTeamState)
       : null;
@@ -7334,13 +7147,7 @@ export class WorkflowEngine extends EventEmitter {
     const triggeredBy = detail?.data?._triggeredBy || null;
     const targetRepo = detail?.data?._targetRepo || null;
     const triggerVars = detail?.data?._triggerVars || null;
-    const delegationTrail = normalizeDelegationTrail(
-      detail?.delegationAuditTrail ??
-      detail?.delegationTrail ??
-      detail?.data?._delegationAuditTrail ??
-      detail?.data?._workflowDelegationTrail ??
-      detail?.data?._delegationTrail,
-    );
+    const delegationTrail = extractDelegationTrail(detail);
     const delegationTransitionGuards = extractDelegationGuardMap(detail);
     const rootRunId =
       detail?.dagState?.rootRunId ||
@@ -7367,6 +7174,17 @@ export class WorkflowEngine extends EventEmitter {
       detail?.identityValidation ||
       detail?.data?._workflowIdentityValidation ||
       null;
+    const resumeResult = normalizeWorkflowRunText(
+      detail?.resumeResult ??
+      detail?.data?._resumeResult ??
+      (identityValidation?.code === "invalid_task_identity" ? "invalid_task_identity" : null),
+    );
+    const resumable =
+      typeof detail?.resumable === "boolean"
+        ? detail.resumable
+        : identityValidation?.code === "invalid_task_identity"
+          ? false
+          : null;
     const taskIds = collectRunTaskIds(detail);
     const sessionIds = collectRunSessionIds(detail);
     const taskTitle = normalizeWorkflowRunText(resolveRunTaskTitle(detail));
@@ -7430,6 +7248,8 @@ export class WorkflowEngine extends EventEmitter {
       taskTitle,
       invalidTaskIdentity: identityValidation?.code === "invalid_task_identity",
       ...(identityValidation ? { identityValidation } : {}),
+      ...(resumable == null ? {} : { resumable }),
+      ...(resumeResult ? { resumeResult } : {}),
       sessionId: sessionIds[0] || null,
       sessionIds,
       primarySessionId: sessionIds[0] || null,
@@ -7916,7 +7736,12 @@ export class WorkflowEngine extends EventEmitter {
 
           // Reuse cached detail if available (already parsed above)
           const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
-          const watchdogDecision = buildDelegationWatchdogDecision(detail);
+          const watchdogDecision = buildDelegationWatchdogDecision(detail, {
+            defaultTimeoutMs: DEFAULT_DELEGATION_WATCHDOG_TIMEOUT_MS,
+            defaultMaxRecoveries: DEFAULT_DELEGATION_WATCHDOG_MAX_RECOVERIES,
+            minTimeoutMs: NODE_TIMEOUT_MIN_MS,
+            maxTimeoutMs: NODE_TIMEOUT_MAX_MS,
+          });
           if (watchdogDecision?.type === "exhausted") {
             console.warn(`${TAG} Skipping run ${run.runId}: ${watchdogDecision.reason}`);
             this._markRunUnresumable(run.runId, watchdogDecision.reason);

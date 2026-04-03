@@ -27,6 +27,12 @@ import {
 import { executeHarnessSubagentNode } from "../harness-subagent-node.mjs";
 import { executeHarnessToolNode } from "../harness-tool-node.mjs";
 import {
+  getExistingDelegationTransition,
+  persistDelegationTransitionGuard,
+  recordDelegationAuditEvent,
+  setDelegationTransitionResult,
+} from "../delegation-runtime.mjs";
+import {
   buildPlannerSkipReasonHistogram,
   CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
   CALIBRATED_MIN_IMPACT_SCORE,
@@ -1215,6 +1221,25 @@ registerNodeType("action.run_agent", {
       delegationWatchdogMaxRecoveries: { type: "number", default: 1, description: "Maximum watchdog recovery retries for delegated workflows" },
     },
     required: ["prompt"],
+  },
+  inputs: [
+    {
+      name: "default",
+      label: "Task",
+      type: "TaskDef",
+      description: "Optional task payload forwarded into the agent execution context.",
+    },
+  ],
+  outputs: [
+    {
+      name: "default",
+      label: "Agent Result",
+      type: "AgentResult",
+      description: "Normalized result envelope returned by the Bosun agent runtime.",
+    },
+  ],
+  ui: {
+    primaryFields: ["prompt", "model", "sdk", "mode", "agentProfile"],
   },
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
@@ -3242,6 +3267,116 @@ registerNodeType("action.delay", {
     ctx.log(node.id, `Waiting ${totalMs}ms${reason ? ` (${reason})` : ""}`);
     await new Promise((r) => setTimeout(r, totalMs));
     return { waited: totalMs, reason };
+  },
+});
+
+registerNodeType("action.emit_event", {
+  describe: () =>
+    "Emit an internal workflow event and optionally dispatch matching trigger.event workflows",
+  schema: {
+    type: "object",
+    properties: {
+      eventType: { type: "string", description: "Event type to emit (for example session-stuck)" },
+      payload: {
+        type: "object",
+        description: "Event payload object forwarded to matching workflows",
+        additionalProperties: true,
+      },
+      dispatch: {
+        type: "boolean",
+        default: true,
+        description: "When true, evaluate and execute matching event-trigger workflows",
+      },
+      includeCurrentWorkflow: {
+        type: "boolean",
+        default: false,
+        description: "Allow dispatching the currently running workflow if it matches",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Optional context key where event output will be stored",
+      },
+    },
+    required: ["eventType"],
+  },
+  async execute(node, ctx, engine) {
+    const eventType = String(ctx.resolve(node.config?.eventType || "") || "").trim();
+    if (!eventType) throw new Error("action.emit_event: 'eventType' is required");
+
+    const payload = resolveWorkflowNodeValue(node.config?.payload ?? {}, ctx);
+    const shouldDispatch = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.dispatch ?? true, ctx),
+      true,
+    );
+    const includeCurrentWorkflow = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.includeCurrentWorkflow ?? false, ctx),
+      false,
+    );
+    const currentWorkflowId = String(ctx.data?._workflowId || "").trim();
+
+    const output = {
+      success: true,
+      eventType,
+      payload,
+      dispatched: false,
+      dispatchCount: 0,
+      matched: [],
+      runs: [],
+    };
+
+    if (shouldDispatch && engine?.evaluateTriggers && engine?.execute) {
+      const matched = await engine.evaluateTriggers(eventType, payload || {});
+      output.matched = Array.isArray(matched) ? matched : [];
+      for (const trigger of output.matched) {
+        const workflowId = String(trigger?.workflowId || "").trim();
+        if (!workflowId) continue;
+        if (!includeCurrentWorkflow && currentWorkflowId && workflowId === currentWorkflowId) continue;
+        try {
+          const childCtx = await engine.execute(
+            workflowId,
+            {
+              ...(payload && typeof payload === "object" ? payload : {}),
+              eventType,
+              _triggerSource: "workflow.emit_event",
+              _triggeredByWorkflowId: currentWorkflowId || null,
+              _triggeredByRunId: ctx.id,
+            },
+            { force: true },
+          );
+          const childErrors = Array.isArray(childCtx?.errors) ? childCtx.errors : [];
+          output.runs.push({
+            workflowId,
+            runId: childCtx?.id || null,
+            status: childErrors.length > 0 ? "failed" : "completed",
+          });
+        } catch (err) {
+          output.runs.push({
+            workflowId,
+            runId: null,
+            status: "failed",
+            error: err?.message || String(err),
+          });
+        }
+      }
+      output.dispatchCount = output.runs.length;
+      output.dispatched = output.dispatchCount > 0;
+    }
+
+    if (ctx?.data && typeof ctx.data === "object") {
+      ctx.data.eventType = eventType;
+      ctx.data.eventPayload = payload;
+    }
+
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+
+    ctx.log(
+      node.id,
+      `Emitted event ${eventType} (dispatch=${output.dispatched}, runs=${output.dispatchCount})`,
+    );
+    return output;
   },
 });
 
@@ -5918,57 +6053,6 @@ registerNodeType("action.release_slot", {
     return { success: true, taskId, releasedAt: Date.now() };
   },
 });
-
-function recordDelegationAuditEvent(ctx, event) {
-  if (!ctx || !event || typeof event !== "object") return null;
-  if (typeof ctx.recordDelegationEvent === "function") return ctx.recordDelegationEvent(event);
-  const data = ctx.data || (ctx.data = {});
-  const trail = Array.isArray(data._delegationAuditTrail) ? data._delegationAuditTrail : [];
-  data._delegationAuditTrail = trail;
-  data._workflowDelegationTrail = trail;
-  const key = String(event.transitionKey || event.idempotencyKey || event.key || "").trim();
-  if (key) {
-    const existing = trail.find((entry) => String(entry?.transitionKey || entry?.idempotencyKey || entry?.key || "").trim() === key);
-    if (existing) return existing;
-  }
-  const entry = { ...event };
-  trail.push(entry);
-  return {
-    ...entry,
-    recorded: true,
-  };
-}
-
-function getDelegationTransitionStore(ctx) {
-  const runtimeState = getWorkflowRuntimeState(ctx);
-  if (!runtimeState.delegationTransitionResults || typeof runtimeState.delegationTransitionResults !== "object") {
-    runtimeState.delegationTransitionResults = {};
-  }
-  return runtimeState.delegationTransitionResults;
-}
-
-function getExistingDelegationTransition(ctx, transitionKey) {
-  const key = String(transitionKey || "").trim();
-  if (!key) return null;
-  return getDelegationTransitionStore(ctx)[key] || null;
-}
-
-function setDelegationTransitionResult(ctx, transitionKey, value) {
-  const key = String(transitionKey || "").trim();
-  if (!key) return null;
-  getDelegationTransitionStore(ctx)[key] = value;
-  return value;
-}
-
-function persistDelegationTransitionGuard(ctx, transitionKey, value = {}) {
-  const key = String(transitionKey || "").trim();
-  if (!key || typeof ctx?.setDelegationTransitionGuard !== "function") return null;
-  return ctx.setDelegationTransitionGuard(key, {
-    ...value,
-    transitionKey: value?.transitionKey || key,
-    idempotencyKey: value?.idempotencyKey || key,
-  });
-}
 
 // ── action.claim_task ───────────────────────────────────────────────────────
 

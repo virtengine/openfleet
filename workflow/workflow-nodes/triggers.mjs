@@ -104,6 +104,17 @@ registerNodeType("trigger.manual", {
     type: "object",
     properties: {},
   },
+  outputs: [
+    {
+      name: "default",
+      label: "Task",
+      type: "TaskDef",
+      description: "Default task payload emitted when a manual workflow run starts.",
+    },
+  ],
+  ui: {
+    primaryFields: [],
+  },
   async execute(node, ctx) {
     ctx.log(node.id, "Manual trigger fired");
     return { triggered: true, reason: "manual" };
@@ -646,6 +657,23 @@ registerNodeType("trigger.task_available", {
       return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
     }
 
+    const explicitTaskId = String(
+      ctx.data?.taskId
+      || ctx.data?.task?.id
+      || ctx.data?.taskDetail?.id
+      || "",
+    ).trim();
+    if (explicitTaskId) {
+      ctx.data.taskId = explicitTaskId;
+      ctx.log(node.id, `Using provided task context for ${explicitTaskId}`);
+      return {
+        triggered: true,
+        reason: "direct_task",
+        taskId: explicitTaskId,
+        tasks: [{ id: explicitTaskId }],
+      };
+    }
+
     // Query kanban for each status with retry + backoff, merge results
     let tasks = [];
     let lastErr = null;
@@ -999,10 +1027,6 @@ registerNodeType("trigger.task_available", {
   },
 });
 // ── condition.slot_available ────────────────────────────────────────────────
-
-
-
-
 
 
 

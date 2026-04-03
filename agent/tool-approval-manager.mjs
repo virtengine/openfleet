@@ -236,10 +236,13 @@ export function createToolApprovalManager(defaultOptions = {}) {
         return { approval, request: null, persisted: false };
       }
       const repoRoot = normalizeText(mergedOptions.repoRoot || context.repoRoot || context.cwd || process.cwd());
-      const persisted = upsertApprovalRequest(
-        buildApprovalRequest(tool, context, approval, mergedOptions),
-        { repoRoot },
-      );
+      const request = buildApprovalRequest(tool, context, approval, mergedOptions);
+      let persisted = null;
+      try {
+        persisted = upsertApprovalRequest(request, { repoRoot });
+      } catch {
+        persisted = { ok: false, request };
+      }
       return {
         approval: {
           ...approval,

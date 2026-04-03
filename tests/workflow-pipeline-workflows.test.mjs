@@ -101,15 +101,17 @@ describe("pipeline workflow definitions", () => {
 
   it("passes managed harness session metadata into the default stage runner", async () => {
     vi.resetModules();
-    const launchOrResumeThread = vi.fn().mockResolvedValue({
+    const runTask = vi.fn().mockResolvedValue({
       success: true,
       output: "stage ok",
       items: [],
       sdk: "codex",
       threadId: "pipeline-stage-thread",
     });
-    vi.doMock("../agent/agent-pool.mjs", () => ({
-      launchOrResumeThread,
+    vi.doMock("../agent/harness-agent-service.mjs", () => ({
+      createHarnessAgentService: () => ({
+        runTask,
+      }),
     }));
 
     const mod = await import("../workflow/pipeline-workflows.mjs");
@@ -130,8 +132,8 @@ describe("pipeline workflow definitions", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(launchOrResumeThread).toHaveBeenCalledOnce();
-    expect(launchOrResumeThread.mock.calls[0][3]).toEqual(
+    expect(runTask).toHaveBeenCalledOnce();
+    expect(runTask.mock.calls[0][1]).toEqual(
       expect.objectContaining({
         sessionType: "pipeline-stage",
         sessionId: expect.stringContaining("TASK-STAGE-1:pipeline-stage:implement"),

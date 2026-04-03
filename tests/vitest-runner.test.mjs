@@ -122,7 +122,7 @@ describe("vitest-runner", () => {
     expect(groupedSuites).not.toContain("tests/workflow-templates-e2e.test.mjs");
     if (process.platform === "win32") {
       expect(heavySuites).not.toContain("tests/workflow-guaranteed.test.mjs");
-      expect(groupedSuites).toContain("tests/workflow-guaranteed.test.mjs");
+      expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
     } else {
       expect(heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
       expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");

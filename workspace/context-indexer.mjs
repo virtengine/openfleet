@@ -257,7 +257,7 @@ function computeWorkspaceSourceFreshness(rootDir, opts = {}) {
     ? Math.max(1024, Number(opts.maxFileBytes))
     : 800000;
   const paths = resolvePaths(rootDir);
-  const scannedFiles = collectSourceFiles(paths.rootDir, { includeTests, maxFileBytes }, paths.docsPath);
+  const scannedFiles = collectSourceFiles(paths.rootDir, { includeTests, maxFileBytes }, paths);
   let latestSourceMtimeMs = 0;
   let latestSourcePath = "";
   for (const file of scannedFiles) {
@@ -359,13 +359,21 @@ function shouldSkipTestPath(relPath) {
   return /(^|\/)(test|tests|__tests__|__mocks__)(\/|$)|\.(test|spec)\./i.test(relPath);
 }
 
-function shouldSkipDir(absPath, relPath, docsPath) {
+function shouldSkipDir(absPath, relPath, generatedPaths = {}) {
   const name = absPath.split(/[\\/]/).pop() || "";
   if (EXCLUDED_DIR_NAMES.has(name)) return true;
   const normalizedAbs = absPath.replaceAll("\\", "/");
-  const normalizedDocs = docsPath.replaceAll("\\", "/");
-  if (normalizedAbs === normalizedDocs) return true;
-  if (normalizedAbs.startsWith(`${normalizedDocs}/`)) return true;
+  const normalizedGeneratedRoots = [
+    generatedPaths?.indexDir,
+    generatedPaths?.docsPath,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .map((value) => value.replaceAll("\\", "/"));
+  for (const generatedRoot of normalizedGeneratedRoots) {
+    if (normalizedAbs === generatedRoot) return true;
+    if (normalizedAbs.startsWith(`${generatedRoot}/`)) return true;
+  }
   if (!relPath) return false;
   return false;
 }
@@ -887,7 +895,7 @@ function rebuildContextRelations(db, rootDir, files = []) {
   };
 }
 
-function collectSourceFiles(rootDir, options, docsPath) {
+function collectSourceFiles(rootDir, options, generatedPaths = {}) {
   const includeTests = options.includeTests !== false;
   const maxFileBytes = Number(options.maxFileBytes || 800000);
 
@@ -906,7 +914,7 @@ function collectSourceFiles(rootDir, options, docsPath) {
       const relPath = relative(rootDir, absPath).replaceAll("\\", "/");
 
       if (entry.isDirectory()) {
-        if (shouldSkipDir(absPath, relPath, docsPath)) continue;
+        if (shouldSkipDir(absPath, relPath, generatedPaths)) continue;
         walk(absPath);
         continue;
       }
@@ -1173,7 +1181,7 @@ export async function runContextIndex(opts = {}) {
   const { db, paths } = await openDb(rootDir);
 
   try {
-    const scannedFiles = collectSourceFiles(paths.rootDir, { includeTests, maxFileBytes }, paths.docsPath);
+    const scannedFiles = collectSourceFiles(paths.rootDir, { includeTests, maxFileBytes }, paths);
 
     const existingRows = db
       .prepare("SELECT path, hash FROM files")
@@ -1704,6 +1712,9 @@ export async function getContextIndexStatus(opts = {}) {
   try {
     const fileCount = db.prepare("SELECT COUNT(*) AS c FROM files").get()?.c || 0;
     const symbolCount = db.prepare("SELECT COUNT(*) AS c FROM symbols").get()?.c || 0;
+    const latestIndexedSourceMtimeMs = Number(
+      db.prepare("SELECT MAX(mtime_ms) AS m FROM files").get()?.m ?? NaN,
+    );
     const lastIndexedAt = getMeta(db, "last_indexed_at");
     const lastIndexedMs = Date.parse(String(lastIndexedAt || ""));
     const maxAgeMs = resolveContextIndexMaxAgeMs(
@@ -1711,10 +1722,13 @@ export async function getContextIndexStatus(opts = {}) {
       ?? process.env.BOSUN_CONTEXT_INDEX_MAX_AGE_MS,
     );
     const workspaceFreshness = computeWorkspaceSourceFreshness(paths.rootDir, opts);
+    const staleSourceBaselineMs = Number.isFinite(latestIndexedSourceMtimeMs)
+      ? latestIndexedSourceMtimeMs
+      : lastIndexedMs;
     const staleBecauseWorkspaceChanged =
       workspaceFreshness.latestSourceMtimeMs != null
-      && Number.isFinite(lastIndexedMs)
-      && workspaceFreshness.latestSourceMtimeMs > lastIndexedMs + 1000;
+      && Number.isFinite(staleSourceBaselineMs)
+      && workspaceFreshness.latestSourceMtimeMs > staleSourceBaselineMs + 1000;
     const staleBecauseAge =
       fileCount > 0
       && maxAgeMs >= 0
@@ -1744,6 +1758,9 @@ export async function getContextIndexStatus(opts = {}) {
       ageMs: Number.isFinite(lastIndexedMs) ? Math.max(0, Date.now() - lastIndexedMs) : null,
       maxAgeMs,
       sourceFileCount: workspaceFreshness.sourceFileCount,
+      latestIndexedSourceMtimeMs: Number.isFinite(latestIndexedSourceMtimeMs)
+        ? latestIndexedSourceMtimeMs
+        : null,
       latestSourceMtimeMs: workspaceFreshness.latestSourceMtimeMs,
       latestSourcePath: workspaceFreshness.latestSourcePath,
       staleBecauseWorkspaceChanged,

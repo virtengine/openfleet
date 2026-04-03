@@ -73,10 +73,30 @@ function compactSessionListItem(session = {}) {
   }
   if (Array.isArray(compact.topTools)) compact.topTools = compact.topTools.slice(0, 5);
   if (Array.isArray(compact.recentActions)) compact.recentActions = compact.recentActions.slice(0, 6);
+  compact.turns = Array.isArray(compact.turns)
+    ? compact.turns.slice(-6).map((turn) => ({ ...turn }))
+    : [];
   delete compact.messages;
-  delete compact.turns;
   delete compact.trajectory;
   return compact;
+}
+
+function mergeSessionListItems(primarySessions = [], fallbackSessions = [], mergeSessionRecords) {
+  const byId = new Map();
+  for (const session of Array.isArray(primarySessions) ? primarySessions : []) {
+    const sessionId = toTrimmedString(session?.id || session?.taskId);
+    if (!sessionId) continue;
+    byId.set(sessionId, session);
+  }
+  for (const session of Array.isArray(fallbackSessions) ? fallbackSessions : []) {
+    const sessionId = toTrimmedString(session?.id || session?.taskId);
+    if (!sessionId) continue;
+    const existing = byId.get(sessionId) || null;
+    byId.set(sessionId, existing ? mergeSessionRecords(existing, session) : session);
+  }
+  return [...byId.values()].sort((a, b) =>
+    String(b?.lastActiveAt || "").localeCompare(String(a?.lastActiveAt || "")),
+  );
 }
 
 function resolveRequestWorkspace(url, deps, allowAll = true) {
@@ -178,6 +198,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     getSessionActivityFromStateLedger,
     normalizeLedgerSessionDocument,
     mergeSessionRecords,
+    listDurableSessionsFromLedger,
     resolveUiStateLedgerOptions,
     upsertSessionRecordToStateLedger,
     invalidateDurableSessionListCache,
@@ -290,9 +311,27 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         !typeFilter
         && !statusFilter
         && (!requestedWorkspace || requestedWorkspace === "active");
-      let sessions = mergeTrackerAndLedgerSessions(tracker.listAllSessions(), workspaceContext, {
-        allowLegacyWithoutWorkspace,
+      const lightweightList = !wantsFull;
+      const liveSessions = tracker.listAllSessions({
+        includePersisted: false,
+        includeRuntimeProgress: wantsFull,
+        lightweight: lightweightList,
       });
+      const durableSessions = typeof listDurableSessionsFromLedger === "function"
+        ? listDurableSessionsFromLedger(workspaceContext, {
+            allowLegacyWithoutWorkspace,
+            summaryOnly: lightweightList,
+          })
+        : [];
+      let sessions = durableSessions.length > 0 || liveSessions.length > 0
+        ? mergeSessionListItems(liveSessions, durableSessions, mergeSessionRecords)
+        : mergeTrackerAndLedgerSessions(tracker.listAllSessions({
+            includePersisted: false,
+            includeRuntimeProgress: wantsFull,
+            lightweight: lightweightList,
+          }), workspaceContext, {
+            allowLegacyWithoutWorkspace,
+          });
       if (!includeHidden) {
         sessions = sessions.filter((session) => !shouldHideSessionFromDefaultList(session));
       }
@@ -576,7 +615,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       };
 
       const exec = session.type === "primary"
-        ? await resolveInteractiveSessionExecutor()
+        ? await resolveInteractiveSessionExecutor(deps)
         : null;
       if (exec) {
         const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
@@ -610,6 +649,8 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           sessionType: "primary",
           mode: messageMode,
           model: messageModel,
+          agent: session?.metadata?.agent || undefined,
+          providerSelection: session?.metadata?.agent || undefined,
           agentProfileId: messageAgentProfileId,
           cwd: sessionWorkspaceDir,
           persistent: true,

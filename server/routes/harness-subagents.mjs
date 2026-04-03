@@ -94,11 +94,13 @@ export async function tryHandleHarnessSubagentRoutes(context = {}) {
     return true;
   }
 
-  if (path === "/api/harness/threads" && req.method === "GET") {
+  if ((path === "/api/harness/threads" || path === "/api/threads") && req.method === "GET") {
     try {
+      const items = deps.getActiveThreads?.() || [];
       jsonResponse(res, 200, {
         ok: true,
-        items: deps.getActiveThreads?.() || [],
+        items,
+        data: items,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });

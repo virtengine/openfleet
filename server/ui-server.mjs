@@ -122,6 +122,13 @@ async function getOrComputeCachedApiResponse(key, ttlMs, producer) {
   return pending;
 }
 
+function parseApiIncludeFlag(rawValue, defaultValue = false) {
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  if (["1", "true", "yes"].includes(normalized)) return true;
+  if (["0", "false", "no"].includes(normalized)) return false;
+  return defaultValue === true;
+}
+
 // Static file ETag + cache header helper
 function cacheControlForPath(pathname) {
   if (pathname.endsWith(".html")) return "no-cache";
@@ -160,22 +167,7 @@ import {
   unmarkTaskIgnored,
 } from "../kanban/kanban-adapter.mjs";
 
-import {
-  addActiveSessionListener,
-  clearThreadRegistry,
-  continueSession,
-  createCompiledInternalHarnessSession,
-  execPooledPrompt,
-  getAvailableSdks,
-  getActiveThreads,
-  getPoolSdkName,
-  launchEphemeralThread,
-  launchOrResumeThread,
-  execWithRetry,
-  invalidateThread,
-  resetPoolSdkCache,
-  setPoolSdk,
-} from "../agent/agent-pool.mjs";
+import { createHarnessAgentService } from "../agent/harness-agent-service.mjs";
 import { getBosunSessionManager } from "../agent/session-manager.mjs";
 import { normalizeProviderAuthState } from "../agent/provider-auth-manager.mjs";
 import { getProviderCapabilities } from "../agent/provider-capabilities.mjs";
@@ -384,16 +376,19 @@ import {
 } from "../config/config-editor.mjs";
 import {
   getAvailableAgents,
-  getAgentMode,
   setAgentMode,
   execSdkCommand,
   getSdkCommands,
-  getPrimaryAgentName,
   getPrimaryAgentSelection,
-  switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "../agent/primary-agent.mjs";
 import { tryHandleHarnessApprovalRoutes } from "./routes/harness-approvals.mjs";
+import {
+  createWorkflowAgentPoolService,
+  executeHarnessBridgeServiceCall,
+  resolveBackgroundPromptExecutor,
+  resolveInteractiveSessionExecutor,
+} from "./routes/harness-agent-bridge.mjs";
 import { tryHandleHarnessEventRoutes } from "./routes/harness-events.mjs";
 import { tryHandleHarnessProviderRoutes } from "./routes/harness-providers.mjs";
 import { tryHandleHarnessSessionRoutes } from "./routes/harness-sessions.mjs";
@@ -458,6 +453,26 @@ const TASK_STORE_SPRINT_EXPORTS = Object.freeze({
   update: ["updateSprint", "upsertSprint", "saveSprint", "setSprint"],
   remove: ["deleteSprint", "removeSprint"],
 });
+
+const harnessAgentService = createHarnessAgentService();
+const addActiveSessionListener = (...args) => harnessAgentService.addActiveSessionListener(...args);
+const clearThreadRegistry = (...args) => harnessAgentService.clearThreadRegistry(...args);
+const continueSession = (...args) => harnessAgentService.continueSession(...args);
+const createCompiledInternalHarnessSession = (...args) =>
+  harnessAgentService.createCompiledInternalHarnessSession(...args);
+const execPooledPrompt = (...args) => harnessAgentService.execPooledPrompt(...args);
+const getAvailableSdks = (...args) => harnessAgentService.getAvailableSdks(...args);
+const getActiveThreads = (...args) => harnessAgentService.getActiveThreads(...args);
+const getPoolSdkName = (...args) => harnessAgentService.getPoolSdkName(...args);
+const launchEphemeralThread = (...args) => harnessAgentService.launchEphemeralThread(...args);
+const launchOrResumeThread = (...args) => harnessAgentService.launchOrResumeThread(...args);
+const execWithRetry = (...args) => harnessAgentService.execWithRetry(...args);
+const invalidateThread = (...args) => harnessAgentService.invalidateThread(...args);
+const resetPoolSdkCache = (...args) => harnessAgentService.resetPoolSdkCache(...args);
+const setPoolSdk = (...args) => harnessAgentService.setPoolSdk(...args);
+const getPrimaryAgentName = (...args) => harnessAgentService.getPrimaryAgentName(...args);
+const getAgentMode = (...args) => harnessAgentService.getAgentMode(...args);
+const switchPrimaryAgent = (...args) => harnessAgentService.switchPrimaryAgent(...args);
 const TASK_STORE_DAG_EXPORTS = Object.freeze({
   sprint: ["getSprintDag", "getTaskDagForSprint", "buildSprintDag", "buildTaskDag"],
   global: ["getGlobalDagOfDags", "getDagOfDags", "buildGlobalDagOfDags"],
@@ -1587,63 +1602,16 @@ class WorkflowEngineProxy {
     }
   }
 
-  _normalizeAgentPoolBridgeArgs(fn, args = []) {
-    if (!Array.isArray(args)) return args;
-    if (fn !== "execWithRetry" && fn !== "launchOrResumeThread") {
-      return args;
-    }
-    const index = fn === "execWithRetry" ? 1 : 3;
-    const options = args[index] && typeof args[index] === "object"
-      ? { ...args[index] }
-      : {};
-    if (!String(options.taskKey || "").trim()) {
-      options.taskKey =
-        String(
-          options.slotMeta?.taskKey ||
-          options.taskId ||
-          options.linkedTaskId ||
-          options.targetTaskKey ||
-          options.workflowRunId ||
-          options.workflowId ||
-          "",
-        ).trim() || null;
-    }
-    const normalizedArgs = [...args];
-    normalizedArgs[index] = options;
-    return normalizedArgs;
-  }
-
   async _executeService(method, args) {
     /* Dispatch to in-process service functions */
     const [svc, fn] = method.split(".");
+    const handledCall = await executeHarnessBridgeServiceCall(method, args, {
+      harnessAgentService,
+      sendWorkflowTelegramMessage,
+      getKanbanAdapter,
+    });
+    if (handledCall.handled) return handledCall.result;
     switch (svc) {
-      case "agentPool": {
-        const normalizedArgs = this._normalizeAgentPoolBridgeArgs(fn, args);
-        if (fn === "launchEphemeralThread") return launchEphemeralThread(...normalizedArgs);
-        if (fn === "launchOrResumeThread")  return launchOrResumeThread(...normalizedArgs);
-        if (fn === "execWithRetry")         return execWithRetry(normalizedArgs[0], normalizedArgs[1] || {});
-        if (fn === "continueSession") {
-          const [sessionId, prompt, opts = {}] = normalizedArgs;
-          return launchEphemeralThread(prompt, opts.cwd || process.cwd(), opts.timeout || 3600000, { resumeThreadId: sessionId, sdk: opts.sdk });
-        }
-        if (fn === "killSession") {
-          try { invalidateThread(args[0]); return true; } catch { return false; }
-        }
-        break;
-      }
-      case "telegram": {
-        if (fn === "sendMessage") return sendWorkflowTelegramMessage(args[0], args[1], args[2] || {});
-        break;
-      }
-      case "kanban": {
-        const adapter = getKanbanAdapter();
-        if (!adapter) throw new Error("Kanban adapter not available");
-        if (fn === "createTask")       return adapter.createTask?.(...args);
-        if (fn === "updateTaskStatus") return adapter.updateTaskStatus?.(...args);
-        if (fn === "listTasks")        return adapter.listTasks?.(...args);
-        if (fn === "getTask")          return adapter.getTask?.(...args);
-        break;
-      }
       case "meeting": {
         const meetMod = await import("../workflow/meeting-workflow-service.mjs").catch(() => null);
         const svc_ = meetMod?.createMeetingWorkflowService?.();
@@ -1997,21 +1965,7 @@ async function getWorkflowEngineModule() {
           console.warn("[workflows] kanban adapter unavailable:", err.message);
         }
 
-        const agentPoolService = {
-          launchEphemeralThread,
-          launchOrResumeThread,
-          continueSession,
-          execWithRetry,
-          async killSession(sessionId) {
-            if (!sessionId) return false;
-            try {
-              invalidateThread(sessionId);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-        };
+        const agentPoolService = createWorkflowAgentPoolService({ harnessAgentService });
 
         let promptBundle = null;
         try {
@@ -3357,7 +3311,7 @@ async function generateTaskPlanningProposal({ taskId, url, mode }) {
   if (!task) {
     return { status: 404, body: { ok: false, error: "task not found" } };
   }
-  const exec = await resolveBackgroundPromptExecutor();
+  const exec = await resolveBackgroundPromptExecutor({ uiDeps, harnessAgentService });
   if (typeof exec !== "function") {
     return { status: 503, body: { ok: false, error: "Background prompt executor not available. Start bosun first." } };
   }
@@ -6232,7 +6186,7 @@ function getAgentSurfaceSnapshot(limit = 25) {
   const bus = _resolveEventBus();
   if (!bus) {
     return {
-      status: { ok: false, started: false, source: "unavailable" },
+      status: { ok: true, started: false, source: "unavailable" },
       liveness: [],
       patterns: {},
       events: [],
@@ -6285,83 +6239,6 @@ function getRetryQueueSurfaceSnapshot() {
       exhaustedTaskIds: [],
     },
   };
-}
-
-async function buildHarnessSurfacePayload(options = {}) {
-  const view = String(options?.view || "all").trim().toLowerCase() || "all";
-  const limit = Math.max(1, Math.min(Number(options?.limit) || 25, 100));
-  const logLines = Math.max(10, Math.min(Number(options?.logLines) || 30, 200));
-  const includeAgents = view === "all" || view === "agents";
-  const includeWorkflows = view === "all" || view === "workflows";
-  const includeTelemetry = view === "all" || view === "telemetry" || view === "agents";
-  const includeLogs = view === "all" || view === "logs";
-
-  const harnessSummary = getHarnessTelemetrySummary({ configDir: process.cwd() });
-  const harnessLive = getHarnessLiveTelemetrySnapshot({ configDir: process.cwd() });
-  const harnessProviders = getHarnessProviderUsageSummary({ configDir: process.cwd() });
-  const harnessRuns = mergeHarnessRunSummaries(
-    hydrateHarnessRunListItems(listHarnessRuns(resolveUiConfigDir(), { limit: Math.max(limit, 8) })),
-    listActiveHarnessRunSnapshots(),
-    Math.max(limit, 8),
-  );
-  const {
-    listApprovalRequests,
-  } = await import("../workflow/approval-queue.mjs");
-  const harnessApprovals = (() => {
-    try {
-      const listed = listApprovalRequests({
-        repoRoot: resolveHarnessApprovalRepoRoot(),
-        scopeType: "harness-run",
-        status: "pending",
-        includeResolved: false,
-        limit,
-      });
-      return Array.isArray(listed?.requests) ? listed.requests : [];
-    } catch {
-      return [];
-    }
-  })();
-
-  const payload = {
-    view,
-    harness: {
-      summary: harnessSummary,
-      live: harnessLive,
-      providers: harnessProviders,
-      runs: harnessRuns,
-      approvals: harnessApprovals,
-    },
-  };
-
-  if (includeAgents) {
-    payload.sessions = getCurrentSessionSnapshot();
-    payload.retryQueue = getRetryQueueSurfaceSnapshot();
-    payload.agent = getAgentSurfaceSnapshot(limit);
-  }
-
-  if (includeTelemetry) {
-    payload.telemetry = {
-      monitor: buildCurrentTuiMonitorStats(),
-      harnessSummary,
-      harnessLive,
-      harnessProviders,
-    };
-  }
-
-  if (includeWorkflows) {
-    payload.workflows = {
-      approvals: await listWorkflowSurfaceApprovals(limit),
-      runs: await listWorkflowSurfaceRuns(Math.min(limit, 8)),
-    };
-  }
-
-  if (includeLogs) {
-    payload.logs = {
-      tail: await getLatestLogTail(logLines),
-    };
-  }
-
-  return payload;
 }
 
 function resolveHarnessApprovalRepoRoot() {
@@ -6827,6 +6704,10 @@ async function enrichTaskListRuntimeContext(tasks, options = {}) {
   const reqUrl = options.reqUrl || null;
   const workflowEngine = options.workflowEngine || null;
   const workspaceDir = normalizeCandidatePath(options.workspaceDir) || repoRoot;
+  const includeStartGuards = options.includeStartGuards === true;
+  const includeBlockedDiagnostics = options.includeBlockedDiagnostics === true;
+  const includeWorkflowRuns = options.includeWorkflowRuns === true;
+  const includeSupervisorDiagnostics = options.includeSupervisorDiagnostics === true;
   const supervisor = typeof uiDeps.getAgentSupervisor === "function"
     ? uiDeps.getAgentSupervisor()
     : null;
@@ -6835,17 +6716,26 @@ async function enrichTaskListRuntimeContext(tasks, options = {}) {
       return withTaskRuntimeSnapshot(task);
     }
     const nextTask = withTaskRuntimeSnapshot(task);
-    const canStart = await evaluateTaskCanStart({
-      taskId: nextTask.id,
-      task: nextTask,
-      reqUrl,
-      adapter,
-    });
+    const canStart = includeStartGuards
+      ? await evaluateTaskCanStart({
+        taskId: nextTask.id,
+        task: nextTask,
+        reqUrl,
+        adapter,
+      })
+      : (nextTask?.canStart && typeof nextTask.canStart === "object"
+        ? nextTask.canStart
+        : (nextTask?.meta?.canStart && typeof nextTask.meta.canStart === "object"
+          ? nextTask.meta.canStart
+          : null));
     const shouldAttachBlockedContext =
-      normalizeTaskStatusKey(nextTask.status) === "blocked"
-      || canStart?.canStart === false;
+      includeBlockedDiagnostics
+      && (
+        normalizeTaskStatusKey(nextTask.status) === "blocked"
+        || canStart?.canStart === false
+      );
     let workflowRuns = Array.isArray(nextTask.workflowRuns) ? nextTask.workflowRuns : [];
-    if (shouldAttachBlockedContext && reqUrl) {
+    if (includeWorkflowRuns && shouldAttachBlockedContext && reqUrl) {
       const linkedRuns = await collectWorkflowRunsForTask(nextTask.id, reqUrl, 12, {
         engine: workflowEngine,
         shallow: true,
@@ -6856,21 +6746,21 @@ async function enrichTaskListRuntimeContext(tasks, options = {}) {
     if (workflowRuns.length > 0) {
       nextTask.workflowRuns = workflowRuns;
     }
-    const blockedContext = shouldAttachBlockedContext
+    const blockedContext = includeBlockedDiagnostics && shouldAttachBlockedContext
       ? await buildTaskBlockedContext(nextTask, {
         canStart,
         workflowRuns,
         workspaceDir,
       })
       : null;
-    const supervisorDiagnostics = typeof supervisor?.getTaskDiagnostics === "function"
+    const supervisorDiagnostics = includeSupervisorDiagnostics && typeof supervisor?.getTaskDiagnostics === "function"
       ? supervisor.getTaskDiagnostics(nextTask.id)
       : null;
     const diagnostics = buildTaskDiagnostics(nextTask, supervisorDiagnostics);
     const nextMeta = {
       ...(nextTask.meta || {}),
       canStart,
-      ...(workflowRuns.length > 0 ? { workflowRuns } : {}),
+      ...(includeWorkflowRuns && workflowRuns.length > 0 ? { workflowRuns } : {}),
     };
     if (blockedContext) nextMeta.blockedContext = blockedContext;
     if (diagnostics) nextMeta.diagnostics = diagnostics;
@@ -9238,20 +9128,30 @@ function buildDurableSessionListCacheKey(workspaceContext = null) {
   }
 }
 
-function cloneSessionSummaryRecords(sessions = []) {
-  return (Array.isArray(sessions) ? sessions : []).map((session) => ({
-    ...session,
-    metadata:
-      session?.metadata && typeof session.metadata === "object"
-        ? { ...session.metadata }
-        : {},
-    turns: Array.isArray(session?.turns)
+function cloneSessionSummaryRecords(sessions = [], options = {}) {
+  const summaryOnly = options.summaryOnly === true;
+  return (Array.isArray(sessions) ? sessions : []).map((session) => {
+    const clone = {
+      ...session,
+      metadata:
+        session?.metadata && typeof session.metadata === "object"
+          ? { ...session.metadata }
+          : {},
+    };
+    if (summaryOnly) {
+      delete clone.turns;
+      delete clone.messages;
+      delete clone.trajectory;
+      return clone;
+    }
+    clone.turns = Array.isArray(session?.turns)
       ? session.turns.map((turn) => ({ ...turn }))
-      : [],
-    messages: Array.isArray(session?.messages)
+      : [];
+    clone.messages = Array.isArray(session?.messages)
       ? session.messages.map((message) => ({ ...message }))
-      : [],
-  }));
+      : [];
+    return clone;
+  });
 }
 
 function listDurableSessionsFromLedger(workspaceContext = null, options = {}) {
@@ -9265,6 +9165,7 @@ function listDurableSessionsFromLedger(workspaceContext = null, options = {}) {
   ) {
     return cloneSessionSummaryRecords(
       cached.sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options)),
+      options,
     );
   }
 
@@ -9282,6 +9183,7 @@ function listDurableSessionsFromLedger(workspaceContext = null, options = {}) {
     });
     return cloneSessionSummaryRecords(
       sessions.filter((session) => sessionMatchesWorkspaceContext(session, workspaceContext, options)),
+      options,
     );
   } catch {
     durableSessionListCache.delete(cacheKey);
@@ -9352,18 +9254,6 @@ function updateActiveSessions(sessions) {
       broadcastCanonicalEvent(["sessions", "tui"], "session:event", sessionEvent);
     }
   }
-}
-
-async function resolveInteractiveSessionExecutor() {
-  return typeof uiDeps.execPrimaryPrompt === "function"
-    ? uiDeps.execPrimaryPrompt
-    : null;
-}
-
-async function resolveBackgroundPromptExecutor() {
-  if (typeof uiDeps.execBackgroundPrompt === "function") return uiDeps.execBackgroundPrompt;
-  if (typeof uiDeps.execPooledPrompt === "function") return uiDeps.execPooledPrompt;
-  return execPooledPrompt;
 }
 
 /**
@@ -11141,7 +11031,7 @@ function shouldHideSessionFromDefaultList(session) {
     return true;
   }
   const syntheticListLeakIdentifier = identifiers.some((value) =>
-    /^(?:manual-visible-session|primary-stale-empty-hidden|primary-stale-empty-[a-z0-9-]+|meeting-(?:1|vision|msg|transcript|archived|stop))$/i.test(
+    /^(?:primary-stale-empty-hidden|primary-stale-empty-[a-z0-9-]+|meeting-(?:1|vision|msg|transcript|archived|stop))$/i.test(
       String(value || "").trim(),
     ),
   );
@@ -14896,12 +14786,21 @@ function compactTaskListEntry(task = {}) {
     .slice(-3)
     .map((run) => compactWorkflowRunForTaskList(run))
     .filter(Boolean);
+  compact.turns = Array.isArray(compact.turns)
+    ? compact.turns.slice(-6).map((turn) => ({ ...turn }))
+    : [];
   if (compact.meta && typeof compact.meta === "object") {
+    if (compact.canStart == null && compact.meta.canStart !== undefined) {
+      compact.canStart = compact.meta.canStart;
+    }
     if (compact.runtimeSnapshot == null && compact.meta.runtimeSnapshot !== undefined) {
       compact.runtimeSnapshot = compact.meta.runtimeSnapshot;
     }
     if (compact.blockedContext == null && compact.meta.blockedContext !== undefined) {
       compact.blockedContext = compact.meta.blockedContext;
+    }
+    if (compact.diagnostics == null && compact.meta.diagnostics !== undefined) {
+      compact.diagnostics = compact.meta.diagnostics;
     }
     if (compact.lifetimeTotals == null && compact.meta.lifetimeTotals !== undefined) {
       compact.lifetimeTotals = compact.meta.lifetimeTotals;
@@ -19233,6 +19132,14 @@ async function handleApi(req, res, url) {
       200,
       Math.max(5, Number(url.searchParams.get("pageSize") || url.searchParams.get("limit") || "15")),
     );
+    const includeStartGuards =
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeStartGuards"), true);
+    const includeBlockedDiagnostics =
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeBlockedDiagnostics"), true);
+    const includeWorkflowRuns =
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeWorkflowRuns"), true);
+    const includeSupervisorDiagnostics =
+      wantsFullPayload || parseApiIncludeFlag(url.searchParams.get("includeSupervisorDiagnostics"), true);
     try {
       const workflowContext = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
       const adapter = getKanbanAdapter();
@@ -19318,6 +19225,10 @@ async function handleApi(req, res, url) {
         reqUrl: url,
         workflowEngine: workflowContext?.ok ? workflowContext.engine : null,
         workspaceDir: workspaceContext?.workspaceDir || repoRoot,
+        includeStartGuards,
+        includeBlockedDiagnostics,
+        includeWorkflowRuns,
+        includeSupervisorDiagnostics,
       });
       const responseTasks = wantsFullPayload
         ? withRuntime
@@ -21659,7 +21570,7 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "title is required" });
         return;
       }
-      const exec = await resolveBackgroundPromptExecutor();
+      const exec = await resolveBackgroundPromptExecutor({ uiDeps, harnessAgentService });
       if (typeof exec !== "function") {
         jsonResponse(res, 503, { ok: false, error: "Background prompt executor not available. Start bosun first." });
         return;
@@ -22663,16 +22574,6 @@ async function handleApi(req, res, url) {
     try {
       const tail = await getLatestLogTail(lines);
       jsonResponse(res, 200, { ok: true, data: tail });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/threads") {
-    try {
-      const threads = getActiveThreads();
-      jsonResponse(res, 200, { ok: true, data: threads });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -23693,11 +23594,14 @@ async function handleApi(req, res, url) {
       resolveActiveWorkspaceExecutionContext,
       normalizeCandidatePath,
       mergeTrackerAndLedgerSessions,
+      listDurableSessionsFromLedger,
       shouldHideSessionFromDefaultList,
       sessionMatchesWorkspaceContext,
       broadcastUiEvent,
       broadcastSessionsSnapshot,
       sessionRunAbortControllers,
+      uiDeps,
+      harnessAgentService,
       resolveSessionWorkspaceDir,
       resolveInteractiveSessionExecutor,
       sanitizePathSegment,
@@ -23724,7 +23628,6 @@ async function handleApi(req, res, url) {
       readActiveHarnessState,
       readHarnessArtifact,
       resolveUiConfigDir,
-      buildHarnessSurfacePayload,
       listActiveHarnessRunSnapshots,
       hydrateHarnessRunListItems,
       mergeHarnessRunSummaries,
@@ -23746,6 +23649,13 @@ async function handleApi(req, res, url) {
       recordActiveHarnessRunControlEvent,
       buildHarnessApprovalWakePrompt,
       buildHarnessActiveRunSnapshot,
+      getCurrentSessionSnapshot,
+      getRetryQueueSurfaceSnapshot,
+      getAgentSurfaceSnapshot,
+      buildCurrentTuiMonitorStats,
+      listWorkflowSurfaceApprovals,
+      listWorkflowSurfaceRuns,
+      getLatestLogTail,
       getActiveThreads,
       clearThreadRegistry,
       invalidateThread,
@@ -24969,6 +24879,8 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace. Set a valid workspace query value." });
         return;
       }
+      const workflowContext = await getWorkflowRequestContext(url, { bootstrapTemplates: false }).catch(() => null);
+      const workflowEngine = workflowContext?.ok ? workflowContext.engine : null;
       const workspacePaths = getWorkflowStoragePaths(workspaceContext.workspaceDir);
       const workspaceCacheKey = String(
         workspacePaths.workspaceRoot
@@ -24976,31 +24888,49 @@ if (path === "/api/agent-logs/context") {
         || "default",
       ).trim().toLowerCase();
       const payload = await getOrComputeCachedApiResponse(`workflows:runs:all:${workspaceCacheKey}:${url.search}`, 8000, async () => {
-        const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
-        if (!wfCtx.ok) {
-          return { __error: true, status: wfCtx.status, body: { ok: false, error: wfCtx.error } };
-        }
-        const engine = wfCtx.engine;
         const rawOffset = Number(url.searchParams.get("offset"));
         const rawLimit = Number(url.searchParams.get("limit"));
         const offset = Number.isFinite(rawOffset) && rawOffset > 0
           ? Math.max(0, Math.floor(rawOffset))
           : 0;
         const limit = Number.isFinite(rawLimit) && rawLimit > 0
-          ? Math.min(rawLimit, 5000)
+          ? Math.min(rawLimit, 500)
           : 20;
-        const page = typeof engine.getRunHistoryPage === "function"
-          ? await engine.getRunHistoryPage(null, { offset, limit })
-          : {
-              runs: engine.getRunHistory ? await engine.getRunHistory(null, limit) : [],
-              total: engine.getRunHistory ? (await engine.getRunHistory(null)).length : 0,
-              offset,
-              limit,
-            };
-        const runs = Array.isArray(page?.runs) ? page.runs : [];
-        const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
-        const nextOffset = Number.isFinite(Number(page?.nextOffset))
-          ? Number(page.nextOffset)
+        const activeRuns = readActiveWorkflowRunIndexEntries(workspacePaths.runsDir).map((entry) => ({
+          runId: entry.runId,
+          workflowId: entry.workflowId || null,
+          workflowName: entry.workflowName || null,
+          startedAt: entry.startedAt || null,
+          updatedAt: entry.startedAt || null,
+          status: "running",
+          activeNodeCount: Number(entry.activeNodeCount || 0) || 0,
+        }));
+        const activeRunIds = new Set(activeRuns.map((entry) => String(entry.runId || "").trim()).filter(Boolean));
+        const persistedPage = typeof workflowEngine?.getRunHistoryPage === "function"
+          ? await workflowEngine.getRunHistoryPage(null, {
+              offset: 0,
+              limit: Math.max(limit + offset + activeRuns.length, 100),
+            })
+          : listWorkflowRunSummariesPageFromStateLedger({
+              anchorPath: workspacePaths.runsDir,
+              offset: 0,
+              limit: Math.max(limit + offset + activeRuns.length, 100),
+            });
+        const persistedRuns = Array.isArray(persistedPage?.runs)
+          ? persistedPage.runs.filter((run) => !activeRunIds.has(String(run?.runId || "").trim()))
+          : [];
+        const getRunSortTs = (run) => Date.parse(String(run?.startedAt || run?.updatedAt || "")) || 0;
+        const mergedRuns = [...activeRuns, ...persistedRuns].sort(
+          (left, right) => getRunSortTs(right) - getRunSortTs(left),
+        );
+        const runs = mergedRuns.slice(offset, offset + limit);
+        const total = Math.max(
+          mergedRuns.length,
+          (Number.isFinite(Number(persistedPage?.total)) ? Number(persistedPage.total) : persistedRuns.length)
+            + activeRuns.filter((run) => !persistedRuns.some((persisted) => persisted?.runId === run?.runId)).length,
+        );
+        const nextOffset = Number.isFinite(Number(persistedPage?.nextOffset))
+          ? Number(persistedPage.nextOffset)
           : (offset + runs.length < total ? offset + runs.length : null);
         return {
           ok: true,
@@ -25010,7 +24940,7 @@ if (path === "/api/agent-logs/context") {
             offset,
             limit,
             count: runs.length,
-            hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
+            hasMore: persistedPage?.hasMore === true || (nextOffset != null && nextOffset < total),
             nextOffset,
           },
         };

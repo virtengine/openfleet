@@ -79,3 +79,4 @@ _docs/2026-03-31-sibling-project-adoption-analysis.md
 output/playwright
 _docs/internal-harness-v2/*
 output/playwright
+native/**/target/

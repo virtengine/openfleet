@@ -9,11 +9,16 @@ vi.mock("../config/config.mjs", () => ({
   })),
 }));
 
-vi.mock("../agent/primary-agent.mjs", () => ({
-  execPrimaryPrompt: vi.fn(async () => "mock response"),
-  getPrimaryAgentName: vi.fn(() => "codex-sdk"),
-  setPrimaryAgent: vi.fn(),
-}));
+vi.mock("../agent/primary-agent.mjs", () => {
+  let mode = "agent";
+  return {
+    execPrimaryPrompt: vi.fn(async (msg) => `Agent response to: ${msg}`),
+    getPrimaryAgentName: vi.fn(() => "codex-sdk"),
+    setPrimaryAgent: vi.fn(),
+    getAgentMode: vi.fn(() => mode),
+    setAgentMode: vi.fn((next) => { mode = next; }),
+  };
+});
 
 vi.mock("../voice/voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name) => ({ result: `mock result for ${name}` })),

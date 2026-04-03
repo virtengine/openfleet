@@ -19,10 +19,12 @@
 import { isAbsolute, resolve, dirname } from "node:path";
 import {
   existsSync,
+  openSync,
   readFileSync,
   writeFileSync,
   unlinkSync,
   mkdirSync,
+  closeSync,
 } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
@@ -759,6 +761,94 @@ function normalizeDetachedDaemonArgs(rawArgs = []) {
   return normalized;
 }
 
+function resolveDetachedDaemonEnvOverrides() {
+  return {
+    BOSUN_DAEMON: "1",
+    BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),
+    ...(process.env.REPO_ROOT
+      ? {}
+      : (() => {
+          try {
+            const gitRoot = execSync("git rev-parse --show-toplevel", {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+            }).trim();
+            return gitRoot ? { REPO_ROOT: gitRoot } : {};
+          } catch {
+            return {};
+          }
+        })()),
+  };
+}
+
+function buildDetachedDaemonLaunchSpec() {
+  const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
+  return {
+    filePath: process.execPath,
+    args: [
+      ...runAsNode,
+      "--max-old-space-size=4096",
+      fileURLToPath(new URL("./cli.mjs", import.meta.url)),
+      ...normalizeDetachedDaemonArgs(
+        process.argv.slice(2).filter((a) => a !== "--daemon" && a !== "-d"),
+      ),
+      "--daemon-child",
+    ],
+    env: {
+      ...process.env,
+      ...resolveDetachedDaemonEnvOverrides(),
+    },
+    cwd: os.homedir(),
+  };
+}
+
+function escapePowerShellSingleQuoted(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
+}
+
+function waitForTrackedDaemonPid(timeoutMs = 4000) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (Date.now() <= deadline) {
+    const pid = getDaemonPid();
+    if (pid) return pid;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  return null;
+}
+
+function startDaemonViaWindowsStartProcess(launchSpec) {
+  const envAssignments = Object.entries(launchSpec.env || {})
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `$env:${key} = ${escapePowerShellSingleQuoted(String(value))};`)
+    .join(" ");
+  const argumentList = launchSpec.args
+    .map((arg) => escapePowerShellSingleQuoted(String(arg)))
+    .join(", ");
+  const command = [
+    envAssignments,
+    `$process = Start-Process -FilePath ${escapePowerShellSingleQuoted(launchSpec.filePath)}`,
+    `-ArgumentList @(${argumentList})`,
+    `-WorkingDirectory ${escapePowerShellSingleQuoted(launchSpec.cwd)}`,
+    "-WindowStyle Hidden -PassThru;",
+    "[Console]::Out.Write($process.Id)",
+  ].join(" ");
+  const output = execFileSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30000,
+      windowsHide: true,
+    },
+  ).trim();
+  const pid = Number.parseInt(output, 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    throw new Error(`Start-Process did not return a daemon PID (output: ${output || "empty"})`);
+  }
+  return pid;
+}
+
 function startDaemon() {
   const existing = getDaemonPid();
   if (existing) {
@@ -796,54 +886,60 @@ function startDaemon() {
     /* ok */
   }
 
-  const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
-  const child = spawn(
-    process.execPath,
-    [
-      ...runAsNode,
-      "--max-old-space-size=4096",
-      fileURLToPath(new URL("./cli.mjs", import.meta.url)),
-      ...normalizeDetachedDaemonArgs(
-        process.argv.slice(2).filter((a) => a !== "--daemon" && a !== "-d"),
-      ),
-      "--daemon-child",
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: process.platform === "win32",
-      env: {
-        ...process.env,
-        BOSUN_DAEMON: "1",
-        // Propagate the bosun config directory so repo-root detection works
-        // even when the daemon child's cwd is not inside a git repo.
-        // Use the proper config dir (APPDATA/bosun or ~/bosun), NOT __dirname.
-        BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),
-        // Propagate REPO_ROOT if available; otherwise resolve from cwd before detaching
-        ...(process.env.REPO_ROOT
-          ? {}
-          : (() => {
-              try {
-                const gitRoot = execSync("git rev-parse --show-toplevel", {
-                  encoding: "utf8",
-                  stdio: ["ignore", "pipe", "ignore"],
-                }).trim();
-                return gitRoot ? { REPO_ROOT: gitRoot } : {};
-              } catch {
-                return {};
-              }
-            })()),
+  const launchSpec = buildDetachedDaemonLaunchSpec();
+  let daemonPid = null;
+  let child = null;
+  let daemonLogFd = null;
+  const closeDaemonLogFd = () => {
+    if (daemonLogFd == null) return;
+    try {
+      closeSync(daemonLogFd);
+    } catch {
+      /* best effort */
+    }
+    daemonLogFd = null;
+  };
+  try {
+    daemonLogFd = openSync(DAEMON_LOG, "a");
+  } catch {
+    daemonLogFd = null;
+  }
+  try {
+    child = spawn(
+      launchSpec.filePath,
+      launchSpec.args,
+      {
+        detached: true,
+        stdio: daemonLogFd == null ? "ignore" : ["ignore", daemonLogFd, daemonLogFd],
+        windowsHide: process.platform === "win32",
+        env: launchSpec.env,
+        // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
+        cwd: launchSpec.cwd,
       },
-      // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
-      cwd: os.homedir(),
-    },
-  );
-
-  child.unref();
-  writePidFile(child.pid);
+    );
+    child.unref();
+    daemonPid = child.pid;
+  } catch (error) {
+    closeDaemonLogFd();
+    const canUseWindowsStartProcess =
+      process.platform === "win32" && error?.code === "EPERM";
+    if (!canUseWindowsStartProcess) throw error;
+    console.warn(
+      "\n  [cli] detached daemon spawn hit EPERM; launching daemon via PowerShell Start-Process for stable Windows detachment",
+    );
+    daemonPid = startDaemonViaWindowsStartProcess(launchSpec);
+  }
+  const trackedPid = waitForTrackedDaemonPid();
+  if (trackedPid) {
+    daemonPid = trackedPid;
+  } else if (!isProcessAlive(daemonPid)) {
+    closeDaemonLogFd();
+    throw new Error("Detached daemon exited before writing its PID file");
+  }
+  closeDaemonLogFd();
 
   console.log(`
-${safeBanner([`bosun daemon started (PID ${child.pid})`])}
+${safeBanner([`bosun daemon started (PID ${daemonPid})`])}
 
   Logs: ${DAEMON_LOG}
   PID:  ${DAEMON_PID_FILE}

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { continueSession, execWithRetry, getPoolSdkName } from "../agent/agent-pool.mjs";
+import { createHarnessAgentService } from "../agent/harness-agent-service.mjs";
 import { loadConfig } from "../config/config.mjs";
 import {
   BUILTIN_WORKFLOWS,
@@ -88,7 +88,15 @@ function createWorkflowAgentPool(options = {}) {
       },
     };
   }
-  return { continueSession, execWithRetry, getPoolSdkName };
+  const harnessAgentService = createHarnessAgentService({
+    agentPool: options.agentPool || options.services?.agentPool || {},
+  });
+  return {
+    continueSession: harnessAgentService.continueSession,
+    execWithRetry: harnessAgentService.execWithRetry,
+    getPoolSdkName: harnessAgentService.getPoolSdkName,
+    killSession: harnessAgentService.killSession,
+  };
 }
 
 async function runConfiguredWorkflow(name, input, options = {}) {

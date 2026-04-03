@@ -790,11 +790,18 @@ describe("Web workflows operator surfaces", () => {
 });
 
 describe("Telegram harness surface routing", () => {
-  it("routes fleet, telemetry, and logs through the shared UI control plane when available", () => {
+  it("routes fleet, telemetry, and logs through the shared UI control plane client when available", () => {
     const telegramSource = readFileSync(resolve(process.cwd(), "telegram/telegram-bot.mjs"), "utf8");
-    expect(telegramSource).toContain("async function localUiRequest(");
-    expect(telegramSource).toContain('localUiRequest("/api/harness/surface?view=agents&limit=12")');
-    expect(telegramSource).toContain('localUiRequest("/api/harness/surface?view=telemetry&limit=12")');
-    expect(telegramSource).toContain('localUiRequest(`/api/logs?lines=${Math.max(10, Math.min(numLines, 100))}`)');
+    const harnessClientSource = readFileSync(
+      resolve(process.cwd(), "telegram/harness-api-client.mjs"),
+      "utf8",
+    );
+    expect(harnessClientSource).toContain("async getSurface(view = \"all\", limit = 25)");
+    expect(harnessClientSource).toContain('return request(`/api/harness/surface?${query.toString()}`);');
+    expect(harnessClientSource).toContain("async getLogs(lines = 30)");
+    expect(harnessClientSource).toContain('return request(`/api/logs?lines=${count}`);');
+    expect(telegramSource).toContain('harnessApi.getSurface("agents", 12)');
+    expect(telegramSource).toContain('harnessApi.getSurface("telemetry", 12)');
+    expect(telegramSource).toContain("harnessApi.getLogs(numLines)");
   });
 });

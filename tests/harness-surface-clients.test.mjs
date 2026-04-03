@@ -10,7 +10,10 @@ import {
   buildCanonicalSessionApiPath,
   buildCanonicalSessionsApiPath,
 } from "../ui/modules/session-api.js";
-import { createTelegramHarnessApiClient } from "../telegram/harness-api-client.mjs";
+import {
+  createTelegramHarnessApiClient,
+  createTelegramWorkspaceApiClient,
+} from "../telegram/harness-api-client.mjs";
 
 describe("harness surface clients", () => {
   it("keeps canonical identifiers stable across UI/TUI route helpers", () => {
@@ -45,6 +48,8 @@ describe("harness surface clients", () => {
     await client.listThreads();
     await client.clearThreads();
     await client.invalidateThread("task-key-1");
+    await client.getSurface("agents", 12);
+    await client.getLogs(45);
 
     expect(request.mock.calls.map(([path]) => path)).toEqual([
       "/api/sessions/create",
@@ -57,6 +62,27 @@ describe("harness surface clients", () => {
       "/api/harness/threads",
       "/api/harness/threads/reset",
       "/api/harness/threads/task-key-1/invalidate",
+      "/api/harness/surface?view=agents&limit=12",
+      "/api/logs?lines=45",
+    ]);
+  });
+
+  it("routes Telegram workspace orchestration through explicit client helpers", async () => {
+    const request = vi.fn(async (host, path, options = {}) => ({ ok: true, host, path, options }));
+    const client = createTelegramWorkspaceApiClient(request);
+
+    await client.listTaskAttemptSummaries("http://workspace-a");
+    await client.listSessions("http://workspace-a", "ws-1");
+    await client.createSession("http://workspace-a", "ws-1");
+    await client.queueSessionMessage("http://workspace-a", "session-123", { message: "hi" });
+    await client.sendFollowUp("http://workspace-a", "session-123", { prompt: "follow up" });
+
+    expect(request.mock.calls).toEqual([
+      ["http://workspace-a", "/api/task-attempts/summary", { method: "POST", body: { archived: false } }],
+      ["http://workspace-a", "/api/sessions?workspace_id=ws-1"],
+      ["http://workspace-a", "/api/sessions", { method: "POST", body: { workspace_id: "ws-1" } }],
+      ["http://workspace-a", "/api/sessions/session-123/queue", { method: "POST", body: { message: "hi" } }],
+      ["http://workspace-a", "/api/sessions/session-123/follow-up", { method: "POST", body: { prompt: "follow up" } }],
     ]);
   });
 });

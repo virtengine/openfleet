@@ -16,7 +16,8 @@
  * Telegram remains a surface controller and poll-owner runtime, but provider
  * switching, session inspection, approvals, and thread control must route
  * through `telegram/harness-api-client.mjs` and the canonical server harness
- * routes instead of direct transitional runtime seams.
+ * routes. UI-server lifecycle is owned by monitor/runtime composition and
+ * injected here as bounded URL/token/tunnel helper callbacks only.
  */
 
 import { execSync, spawn, spawnSync } from "node:child_process";
@@ -56,19 +57,11 @@ import { generateWeeklyAgentWorkReport } from "../agent/agent-work-report.mjs";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
 import { createExecutorHealthRegionCache } from "./executor-health-region-cache.mjs";
 import { createStickyMenuStateManager } from "./sticky-menu-state.mjs";
-import { createTelegramHarnessApiClient } from "./harness-api-client.mjs";
 import {
-  getTelegramUiUrl,
-  startTelegramUiServer,
-  stopTelegramUiServer,
-  getLocalLanIp,
-  getFirewallState,
-  openFirewallPort,
-  getSessionToken,
-  getTunnelUrl,
-  onTunnelUrlChange,
-  disableUnsafeMode,
-} from "../server/ui-server.mjs";
+  createTelegramHarnessApiClient,
+  createTelegramWorkspaceApiClient,
+  requestTelegramJsonApi,
+} from "./harness-api-client.mjs";
 import {
   loadWorkspaceRegistry,
   formatRegistryDiagnostics,
@@ -1103,7 +1096,7 @@ function getMeetingBrowserUrlOptions(callType = "voice", extra = {}) {
 }
 
 function syncUiUrlsFromServer() {
-  const currentUiUrl = getTunnelUrl() || getTelegramUiUrl?.() || null;
+  const currentUiUrl = getTunnelUrl() || getTelegramUiUrl() || null;
   telegramUiUrl = currentUiUrl;
   telegramWebAppUrl = getTelegramWebAppUrl(currentUiUrl);
   return {
@@ -1265,6 +1258,53 @@ let _getTuiMonitorStats = null;
 let _getTaskStoreStats = null;
 let _getTasksPendingReview = null;
 let _triggerTaskPlanner = null;
+let _telegramUiRuntime = null;
+
+function setTelegramUiRuntime(runtime = null) {
+  if (!runtime || typeof runtime !== "object") {
+    _telegramUiRuntime = null;
+    return;
+  }
+  _telegramUiRuntime = { ...runtime };
+}
+
+function getTelegramUiRuntime() {
+  return _telegramUiRuntime && typeof _telegramUiRuntime === "object"
+    ? _telegramUiRuntime
+    : {};
+}
+
+function getTelegramUiUrl() {
+  return getTelegramUiRuntime().getUiUrl?.() || null;
+}
+
+function getLocalLanIp() {
+  return getTelegramUiRuntime().getLocalLanIp?.() || null;
+}
+
+function getFirewallState() {
+  return getTelegramUiRuntime().getFirewallState?.() || null;
+}
+
+async function openFirewallPort(...args) {
+  return await getTelegramUiRuntime().openFirewallPort?.(...args);
+}
+
+function getSessionToken() {
+  return getTelegramUiRuntime().getSessionToken?.() || "";
+}
+
+function getTunnelUrl() {
+  return getTelegramUiRuntime().getTunnelUrl?.() || null;
+}
+
+function onTunnelUrlChange(cb) {
+  return getTelegramUiRuntime().onTunnelUrlChange?.(cb) || null;
+}
+
+function disableUnsafeMode() {
+  return getTelegramUiRuntime().disableUnsafeMode?.() === true;
+}
 
 /**
  * Inject monitor.mjs functions so the bot can send messages and read status.
@@ -1300,6 +1340,7 @@ export function injectMonitorFunctions({
   getTaskStoreStats,
   getTasksPendingReview,
   triggerTaskPlanner,
+  telegramUiRuntime,
 }) {
   refreshTelegramConfigFromEnv();
   _sendTelegramMessage = sendTelegramMessage;
@@ -1331,6 +1372,7 @@ export function injectMonitorFunctions({
   _getTaskStoreStats = getTaskStoreStats || null;
   _getTasksPendingReview = getTasksPendingReview || null;
   _triggerTaskPlanner = triggerTaskPlanner || null;
+  setTelegramUiRuntime(telegramUiRuntime);
 }
 
 /**
@@ -3993,7 +4035,7 @@ async function handleCommand(text, chatId) {
  * /tasks, etc.), captures the formatted output and returns it as `content`
  * so the MiniApp chat can render it inline without needing the agent.
  */
-async function handleUiCommand(text) {
+export async function handleUiCommand(text) {
   const parts = text.split(/\s+/);
   const cmd = parts[0].toLowerCase().replace(/@\w+/, "");
   const cmdArgs = parts.slice(1).join(" ");
@@ -7157,7 +7199,7 @@ async function cmdTelemetry(chatId, args = "") {
   }
 
   if (!mode) {
-    const surface = await localUiRequest("/api/harness/surface?view=telemetry&limit=12").catch(() => null);
+    const surface = await harnessApi.getSurface("telemetry", 12).catch(() => null);
     if (surface?.ok) {
       const monitor = surface?.telemetry?.monitor || {};
       const harnessSummary = surface?.telemetry?.harnessSummary || {};
@@ -7722,7 +7764,7 @@ async function cmdStartTask(chatId, args) {
 
 async function cmdAgents(chatId) {
   try {
-    const surface = await localUiRequest("/api/harness/surface?view=agents&limit=12").catch(() => null);
+    const surface = await harnessApi.getSurface("agents", 12).catch(() => null);
     if (surface?.ok) {
       const lines = [":bot: Agent Fleet", ""];
       const monitor = surface?.telemetry?.monitor || {};
@@ -8042,7 +8084,7 @@ async function cmdAgentLogs(chatId, args) {
 async function cmdLogs(chatId, _args) {
   const numLines = parseInt(_args, 10) || 30;
   try {
-    const surfaceLogs = await localUiRequest(`/api/logs?lines=${Math.max(10, Math.min(numLines, 100))}`).catch(() => null);
+    const surfaceLogs = await harnessApi.getLogs(numLines).catch(() => null);
     if (surfaceLogs?.ok && surfaceLogs?.data) {
       const tailLines = Array.isArray(surfaceLogs.data.lines) ? surfaceLogs.data.lines : [];
       const files = Array.isArray(surfaceLogs.data.files) ? surfaceLogs.data.files.join(", ") : String(surfaceLogs.data.file || "logs");
@@ -9669,110 +9711,23 @@ function resolveModelSelection(workspace, preferredModel) {
   return { model: null, profile: null };
 }
 
-async function workspaceRequest(host, path, options = {}) {
-  const { method = "GET", body, timeoutMs = 15000 } = options;
-  const base = normalizeHost(host);
-  if (!base) {
-    throw new Error("Workspace host missing");
-  }
-  const url = new URL(path, base);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
-
-  let res;
-  try {
-    res = await fetch(url.toString(), {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    throw new Error(`Workspace fetch error: ${err.message}`);
-  }
-  clearTimeout(timer);
-
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `Workspace API ${res.status}: ${text.slice(0, 200) || res.statusText}`,
-    );
-  }
-
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch (err) {
-      throw new Error(`Workspace response parse error: ${err.message}`);
-    }
-  }
-  if (data && data.success === false) {
-    throw new Error(data.message || "Workspace API error");
-  }
-  return data?.data ?? data;
-}
-
-function resolveLocalUiApiBaseUrl() {
-  const raw = String(getTelegramUiUrl?.() || telegramUiUrl || "").trim();
-  if (!raw) {
+const harnessApi = createTelegramHarnessApiClient((path, options = {}) => {
+  const request = getTelegramUiRuntime().request;
+  if (typeof request !== "function") {
     throw new Error("Bosun UI server is not available.");
   }
-  return raw;
-}
-
-const harnessApi = createTelegramHarnessApiClient((path, options = {}) => localUiRequest(path, options));
-
-async function localUiRequest(path, options = {}) {
-  const {
-    method = "GET",
-    body,
-    timeoutMs = 15000,
-  } = options;
-  const base = resolveLocalUiApiBaseUrl();
-  const token = String(getSessionToken?.() || "").trim();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
-  let response;
-  try {
-    response = await fetch(new URL(path, base).toString(), {
-      method,
-      headers: {
-        Accept: "application/json",
-        ...(body ? { "Content-Type": "application/json" } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    throw new Error(`Bosun UI request failed: ${err.message}`);
-  }
-  clearTimeout(timer);
-
-  const text = await response.text();
-  let data = {};
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch (err) {
-      throw new Error(`Bosun UI response parse error: ${err.message}`);
-    }
-  }
-  if (!response.ok || data?.ok === false) {
-    throw new Error(
-      String(data?.error || data?.message || response.statusText || `HTTP ${response.status}`).trim() || `HTTP ${response.status}`,
-    );
-  }
-  return data;
-}
+  return request(path, options);
+});
+const workspaceApi = createTelegramWorkspaceApiClient((host, path, options = {}) =>
+  requestTelegramJsonApi(normalizeHost(host), path, {
+    ...options,
+    unwrapData: true,
+    errorPrefix: "Workspace API",
+  }));
 
 async function getWorkspaceSummaries(host) {
-  const data = await workspaceRequest(host, "/api/task-attempts/summary", {
-    method: "POST",
-    body: { archived: false },
+  const data = await workspaceApi.listTaskAttemptSummaries(host, {
+    archived: false,
   });
   if (!data) return [];
   if (Array.isArray(data.summaries)) return data.summaries;
@@ -9928,18 +9883,12 @@ function pickLatestSession(sessions) {
 async function dispatchAgentMessage(workspace, message, options = {}) {
   const host = normalizeHost(workspace.host);
   const executorProfile = options.executorProfile || null;
-  const sessions = await workspaceRequest(
-    host,
-    `/api/sessions?workspace_id=${encodeURIComponent(workspace.id)}`,
-  );
+  const sessions = await workspaceApi.listSessions(host, workspace.id);
   let session = pickLatestSession(sessions);
   let created = false;
 
   if (!session || options.newSession) {
-    session = await workspaceRequest(host, "/api/sessions", {
-      method: "POST",
-      body: { workspace_id: workspace.id },
-    });
+    session = await workspaceApi.createSession(host, workspace.id);
     created = true;
   }
   if (!session?.id) {
@@ -9947,22 +9896,16 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
   }
 
   if (options.queue) {
-    await workspaceRequest(host, `/api/sessions/${session.id}/queue`, {
-      method: "POST",
-      body: {
-        message,
-        executor_profile_id: executorProfile || undefined,
-      },
+    await workspaceApi.queueSessionMessage(host, session.id, {
+      message,
+      executor_profile_id: executorProfile || undefined,
     });
     return { sessionId: session.id, created, action: "queued" };
   }
 
-  await workspaceRequest(host, `/api/sessions/${session.id}/follow-up`, {
-    method: "POST",
-    body: {
-      prompt: message,
-      executor_profile_id: executorProfile || undefined,
-    },
+  await workspaceApi.sendFollowUp(host, session.id, {
+    prompt: message,
+    executor_profile_id: executorProfile || undefined,
   });
   return { sessionId: session.id, created, action: "follow-up" };
 }
@@ -11370,59 +11313,17 @@ function stopBatchFlushLoop() {
 
 /**
  * Start the two-way Telegram bot.
- * Call injectMonitorFunctions() first if you want full integration.
+ * Call injectMonitorFunctions() first for canonical UI-runtime and monitor integration.
  */
 export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   setComponentStatus("monitor", "running");
-
-  // Start the local harness API shell for Telegram and the Mini App.
-  // Telegram now routes session/provider/thread actions through the same
-  // canonical server surface APIs, so the UI server must be available for
-  // bot-driven sessions even when the Mini App is disabled.
   const miniAppEnabled = ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase(),
   );
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
   const hasTelegram = !!(telegramToken && telegramChatId);
-
-  if (hasTelegram || miniAppEnabled || miniAppPort > 0) {
-    const restartReason = String(
-      options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
-    )
-      .trim()
-      .toLowerCase();
-    const suppressPortalAutoOpen =
-      options.suppressPortalAutoOpen === true || restartReason.length > 0;
-    const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
-      String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
-    );
-    try {
-      await startTelegramUiServer({
-        // Background monitor/bot runtime should not keep opening browser tabs.
-        // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
-        skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
-        restartReason,
-        dependencies: {
-          getInternalExecutor: _getInternalExecutor,
-          getTuiMonitorStats: _getTuiMonitorStats,
-          getExecutorMode: _getExecutorMode,
-          getAgentEventBus: _getAgentEventBus,
-          handleUiCommand: handleUiCommand,
-          getSyncEngine: _getSyncEngine,
-          configDir: resolveTelegramConfigDir(),
-          onProjectSyncAlert: async (alert) => {
-            if (!_sendTelegramMessage) return;
-            const text = String(alert?.message || "Project sync alert");
-            await _sendTelegramMessage(`:alert: ${text}`);
-          },
-        },
-      });
-      syncUiUrlsFromServer();
-    } catch (err) {
-      console.warn(`[telegram-bot] UI server start failed: ${err.message}`);
-    }
-  }
+  syncUiUrlsFromServer();
 
   if (!hasTelegram) {
     console.warn(
@@ -11733,7 +11634,6 @@ export function stopTelegramBot(options = {}) {
   }
   safeDetach("poll-lock-release", releaseTelegramPollLock);
   safeDetach("poll-owner-release", () => releaseTelegramPollOwner("telegram-bot"));
-  stopTelegramUiServer();
   setComponentStatus("monitor", "stopped");
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);

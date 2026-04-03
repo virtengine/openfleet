@@ -207,21 +207,21 @@ async function initEngine(cfg = {}) {
     },
   };
 
-  const agentPool = {
+  const harnessAgent = {
     async launchEphemeralThread(prompt, cwd, timeout, opts) {
-      return callMainService("agentPool.launchEphemeralThread", [prompt, cwd, timeout, opts]);
+      return callMainService("harnessAgent.launchEphemeralThread", [prompt, cwd, timeout, opts]);
     },
     async launchOrResumeThread(prompt, cwd, timeout, opts) {
-      return callMainService("agentPool.launchOrResumeThread", [prompt, cwd, timeout, opts]);
+      return callMainService("harnessAgent.launchOrResumeThread", [prompt, cwd, timeout, opts]);
     },
     async execWithRetry(prompt, opts) {
-      return callMainService("agentPool.execWithRetry", [prompt, opts]);
+      return callMainService("harnessAgent.execWithRetry", [prompt, opts]);
     },
     async continueSession(sessionId, prompt, opts) {
-      return callMainService("agentPool.continueSession", [sessionId, prompt, opts]);
+      return callMainService("harnessAgent.continueSession", [sessionId, prompt, opts]);
     },
     async killSession(sessionId) {
-      return callMainService("agentPool.killSession", [sessionId]);
+      return callMainService("harnessAgent.killSession", [sessionId]);
     },
   };
 
@@ -246,7 +246,13 @@ async function initEngine(cfg = {}) {
     async get(...args)      { return callMainService("meeting.get",      args); },
   };
 
-  const services = { telegram, agentPool, kanban, meeting };
+  const services = {
+    telegram,
+    harnessAgent,
+    agentPool: harnessAgent,
+    kanban,
+    meeting,
+  };
 
   // ── Create engine ─────────────────────────────────────────────────────────
   engine = wfEngineMod.getWorkflowEngine({

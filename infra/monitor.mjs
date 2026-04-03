@@ -93,7 +93,13 @@ import {
   stopStatusFileWriter,
   initStatusBoard,
   pushStatusBoardUpdate,
+  handleUiCommand,
 } from "../telegram/telegram-bot.mjs";
+import {
+  createTelegramUiRuntime,
+  startTelegramSurfaceRuntime,
+  stopTelegramSurfaceRuntime,
+} from "../telegram/telegram-surface-runtime.mjs";
 import { startAnalyzer, stopAnalyzer } from "../agent/agent-work-analyzer.mjs";
 import {
   generateWeeklyAgentWorkReport,
@@ -3445,6 +3451,70 @@ function getTelegramBotStartOptions() {
   };
 }
 
+function _getTuiMonitorStatsForPortal() {
+  try {
+    const executorStats = typeof internalTaskExecutor?.getTuiStats === "function"
+      ? (internalTaskExecutor.getTuiStats() || {})
+      : {};
+    const runtimeStats = getRuntimeStats();
+    const activeSessions = getSessionTracker().listAllSessions({ includePersisted: false })
+      .filter((session) => session?.runtimeIsLive === true);
+    return buildMonitorStatsPayload({
+      agentPool: {
+        ...executorStats,
+        activeSessions,
+      },
+      runtimeStats: {
+        ...runtimeStats,
+        activeSessions,
+      },
+      uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
+    });
+  } catch {
+    return {};
+  }
+}
+
+async function ensureTelegramSurfaceRuntimeStarted(options = {}) {
+  const restartReason = String(
+    options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+  )
+    .trim()
+    .toLowerCase();
+  const suppressPortalAutoOpen =
+    options.suppressPortalAutoOpen === true || restartReason.length > 0;
+  const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+  );
+  await startTelegramSurfaceRuntime({
+    skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+    restartReason,
+    dependencies: {
+      getInternalExecutor: () => internalTaskExecutor,
+      getTuiMonitorStats: () => _getTuiMonitorStatsForPortal(),
+      getExecutorMode: () => executorMode,
+      getAgentEventBus: () => agentEventBus,
+      handleUiCommand,
+      getSyncEngine: () => syncEngine,
+      onProjectSyncAlert: async (alert) => {
+        if (!sendTelegramMessage) return;
+        const text = String(alert?.message || "Project sync alert");
+        await sendTelegramMessage(`:alert: ${text}`);
+      },
+    },
+  });
+}
+
+async function startTelegramSurfaceAndBot(options = {}) {
+  await ensureTelegramSurfaceRuntimeStarted(options);
+  await startTelegramBot(options);
+}
+
+function stopTelegramSurfaceAndBot(options = {}) {
+  stopTelegramBot(options);
+  stopTelegramSurfaceRuntime();
+}
+
 // ── Anomaly detector — plaintext pattern matching for death loops, stalls, etc. ──
 let anomalyDetector = null;
 const smartPrAllowRecreateClosed = isTruthyFlag(
@@ -3783,7 +3853,7 @@ function restartSelf(reason) {
   runDetachedDuringShutdown("poll-lock-release:restart-self", () =>
     releaseTelegramPollLock(),
   );
-  stopTelegramBot({ preserveDigest: true });
+  stopTelegramSurfaceAndBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
     runDetachedDuringShutdown("containers-stop:restart-self", () =>
@@ -13073,7 +13143,7 @@ function requestManualFullRestart(reason = "manual-telegram-restart") {
   // the caller (cmdRestart) can send the final confirmation message first.
   // The 1.5 s delay below gives the bot time to flush the outbound message.
   setTimeout(() => {
-    stopTelegramBot({ preserveDigest: true });
+    stopTelegramSurfaceAndBot({ preserveDigest: true });
     stopWhatsAppChannel();
     if (isContainerEnabled()) {
       void stopAllContainers().catch(() => {});
@@ -13304,7 +13374,7 @@ function selfRestartForSourceChange(
   runDetachedDuringShutdown("poll-lock-release:self-restart-source-change", () =>
     releaseTelegramPollLock(),
   );
-  stopTelegramBot({ preserveDigest: true });
+  stopTelegramSurfaceAndBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
     runDetachedDuringShutdown("containers-stop:self-restart-source-change", () =>
@@ -13828,9 +13898,9 @@ function applyConfig(nextConfig, options = {}) {
   if (prevTelegramBotEnabled !== telegramBotEnabled) {
     if (telegramBotEnabled) {
       runDetached("telegram-bot:start-config-reload", () =>
-        startTelegramBot(getTelegramBotStartOptions()));
+        startTelegramSurfaceAndBot(getTelegramBotStartOptions()));
     } else {
-      stopTelegramBot();
+      stopTelegramSurfaceAndBot();
     }
   }
   if (prevCodexEnabled && !codexEnabled) {
@@ -14025,7 +14095,7 @@ process.on("SIGTERM", async () => {
   runDetachedDuringShutdown("poll-lock-release:sigterm", () =>
     releaseTelegramPollLock(),
   );
-  stopTelegramBot();
+  stopTelegramSurfaceAndBot();
   stopWhatsAppChannel();
   if (agentSupervisor) {
     agentSupervisor.stop();
@@ -15680,29 +15750,7 @@ injectMonitorFunctions({
   getReviewAgentEnabled: () => isReviewAgentEnabled(),
   getSyncEngine: () => syncEngine,
   getErrorDetector: () => errorDetector,
-  getTuiMonitorStats: () => {
-    try {
-      const executorStats = typeof internalTaskExecutor?.getTuiStats === "function"
-        ? (internalTaskExecutor.getTuiStats() || {})
-        : {};
-      const runtimeStats = getRuntimeStats();
-      const activeSessions = getSessionTracker().listAllSessions({ includePersisted: false })
-        .filter((session) => session?.runtimeIsLive === true);
-      return buildMonitorStatsPayload({
-        agentPool: {
-          ...executorStats,
-          activeSessions,
-        },
-        runtimeStats: {
-          ...runtimeStats,
-          activeSessions,
-        },
-        uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
-      });
-    } catch {
-      return {};
-    }
-  },
+  getTuiMonitorStats: () => _getTuiMonitorStatsForPortal(),
   getWorkspaceMonitor: () => workspaceMonitor,
   getTaskStoreStats: () => {
     try {
@@ -15719,13 +15767,14 @@ injectMonitorFunctions({
     }
   },
   triggerTaskPlanner,
+  telegramUiRuntime: createTelegramUiRuntime(),
 });
 const portalWantsStart =
   ["1", "true", "yes"].includes(String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase()) ||
   Number(process.env.TELEGRAM_UI_PORT || "0") > 0;
 if (telegramBotEnabled || portalWantsStart) {
   runDetached("telegram-bot:start-startup", () =>
-    startTelegramBot(getTelegramBotStartOptions()));
+    startTelegramSurfaceAndBot(getTelegramBotStartOptions()));
 
   // Process any commands queued by telegram-sentinel while monitor was down
   try {

@@ -4,7 +4,9 @@
  * Transitional architecture note:
  * Canonical harness lifecycle, session ownership, and per-turn orchestration
  * live in `session-manager.mjs`, `internal-harness-runtime.mjs`, and
- * `agent/harness/*`. Do not add new long-term lifecycle ownership here.
+ * `agent/harness/*`. Shell transport parity lives in
+ * `shell/shell-adapter-registry.mjs`. Do not add new long-term lifecycle
+ * ownership here.
  *
  * Supports Codex SDK, Copilot SDK, and Claude SDK.
  * Includes timeout detection and automatic failover between adapters.
@@ -30,58 +32,7 @@ import { getBosunSessionManager } from "./session-manager.mjs";
 import { buildToolCapabilityContract } from "./tool-orchestrator.mjs";
 import { normalizeProviderDefinitionId } from "./providers/index.mjs";
 import { createShellSessionCompat } from "../shell/shell-session-compat.mjs";
-import {
-  execCodexPrompt,
-  steerCodexPrompt,
-  isCodexBusy,
-  getThreadInfo,
-  resetThread,
-  initCodexShell,
-  getActiveSessionId as getCodexSessionId,
-  listSessions as listCodexSessions,
-  switchSession as switchCodexSession,
-  createSession as createCodexSession,
-} from "../shell/codex-shell.mjs";
-import {
-  execCopilotPrompt,
-  steerCopilotPrompt,
-  isCopilotBusy,
-  getSessionInfo as getCopilotSessionInfo,
-  resetSession as resetCopilotSession,
-  initCopilotShell,
-} from "../shell/copilot-shell.mjs";
-import {
-  execClaudePrompt,
-  steerClaudePrompt,
-  isClaudeBusy,
-  getSessionInfo as getClaudeSessionInfo,
-  resetClaudeSession,
-  initClaudeShell,
-} from "../shell/claude-shell.mjs";
-import {
-  execOpencodePrompt,
-  steerOpencodePrompt,
-  isOpencodeBusy,
-  getSessionInfo as getOpencodeSessionInfo,
-  resetSession as resetOpencodeSession,
-  initOpencodeShell,
-  getActiveSessionId as getOpencodeSessionId,
-  listSessions as listOpencodeSessions,
-  switchSession as switchOpencodeSession,
-  createSession as createOpencodeSession,
-} from "../shell/opencode-shell.mjs";
-import {
-  execGeminiPrompt,
-  steerGeminiPrompt,
-  isGeminiBusy,
-  getSessionInfo as getGeminiSessionInfo,
-  resetSession as resetGeminiSession,
-  initGeminiShell,
-  getActiveSessionId as getGeminiSessionId,
-  listSessions as listGeminiSessions,
-  switchSession as switchGeminiSession,
-  createSession as createGeminiSession,
-} from "../shell/gemini-shell.mjs";
+import { createShellAdapterRegistry } from "../shell/shell-adapter-registry.mjs";
 
 /** Valid agent interaction modes */
 const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
@@ -178,10 +129,14 @@ function normalizePrimaryControllerPrompt(runRequest = {}) {
 
 function bindPrimarySessionController(sessionId, defaults = {}) {
   const normalizedSessionId = String(sessionId || "").trim();
-  if (!normalizedSessionId || typeof primarySessionManager.bindExternalController !== "function") {
+  const primarySessionCompat = getPrimarySessionCompat(
+    defaults.sessionType || "primary",
+    defaults.scope || "",
+  );
+  if (!normalizedSessionId || typeof primarySessionCompat?.bindController !== "function") {
     return null;
   }
-  return primarySessionManager.bindExternalController(normalizedSessionId, {
+  return primarySessionCompat.bindController(normalizedSessionId, {
     abort(reason = "aborted") {
       const abortController = getPrimarySessionAbortController(normalizedSessionId);
       if (abortController && !abortController.signal.aborted) {
@@ -455,165 +410,13 @@ function buildPrimaryAgentProfileContract(options = {}) {
   };
 }
 
-const ADAPTERS = {
-  "codex-sdk": {
-    name: "codex-sdk",
-    provider: "CODEX",
-    displayName: "Codex",
-    exec: (msg, opts) => execCodexPrompt(msg, { persistent: true, ...opts }),
-    steer: steerCodexPrompt,
-    isBusy: isCodexBusy,
-    getInfo: () => {
-      const info = getThreadInfo();
-      return { ...info, sessionId: info.sessionId || info.threadId };
-    },
-    reset: resetThread,
-    init: async () => {
-      await initCodexShell();
-      return true;
-    },
-    getSessionId: getCodexSessionId,
-    listSessions: listCodexSessions,
-    switchSession: switchCodexSession,
-    createSession: createCodexSession,
-    sdkCommands: ["/compact", "/status", "/context", "/mcp", "/model", "/clear"],
-    /**
-     * Forward an SDK-native command to the Codex shell.
-     * /clear is handled specially as a reset; others are sent as user input.
-     */
-    execSdkCommand: async (command, args, options = {}) => {
-      const cmd = command.startsWith("/") ? command : `/${command}`;
-      if (cmd === "/clear") {
-        await resetThread();
-        return "Session cleared.";
-      }
-      const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execCodexPrompt(fullCmd, {
-        persistent: true,
-        cwd: options.cwd,
-        sessionId: options.sessionId || null,
-      });
-    },
+const ADAPTERS = createShellAdapterRegistry({
+  withRuntimeOptions(adapterName, options = {}) {
+    return normalizeProviderAdapterName(adapterName) === "opencode-sdk"
+      ? withProviderRuntimeOptions(options)
+      : options;
   },
-  "copilot-sdk": {
-    name: "copilot-sdk",
-    provider: "COPILOT",
-    displayName: "Copilot",
-    exec: (msg, opts) => execCopilotPrompt(msg, { persistent: true, ...opts }),
-    steer: steerCopilotPrompt,
-    isBusy: isCopilotBusy,
-    getInfo: () => getCopilotSessionInfo(),
-    reset: resetCopilotSession,
-    init: async () => initCopilotShell(),
-    sdkCommands: ["/status", "/model", "/clear"],
-    execSdkCommand: async (command, args, options = {}) => {
-      const cmd = command.startsWith("/") ? command : `/${command}`;
-      if (cmd === "/clear") {
-        await resetCopilotSession();
-        return "Session cleared.";
-      }
-      const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execCopilotPrompt(fullCmd, {
-        persistent: true,
-        cwd: options.cwd,
-        sessionId: options.sessionId || null,
-      });
-    },
-  },
-  "claude-sdk": {
-    name: "claude-sdk",
-    provider: "CLAUDE",
-    displayName: "Claude",
-    exec: execClaudePrompt,
-    steer: steerClaudePrompt,
-    isBusy: isClaudeBusy,
-    getInfo: () => getClaudeSessionInfo(),
-    reset: resetClaudeSession,
-    init: async () => {
-      await initClaudeShell();
-      return true;
-    },
-    sdkCommands: ["/compact", "/status", "/model", "/clear"],
-    execSdkCommand: async (command, args, options = {}) => {
-      const cmd = command.startsWith("/") ? command : `/${command}`;
-      if (cmd === "/clear") {
-        await resetClaudeSession();
-        return "Session cleared.";
-      }
-      const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execClaudePrompt(fullCmd, {
-        cwd: options.cwd,
-        sessionId: options.sessionId || null,
-      });
-    },
-  },
-  "gemini-sdk": {
-    name: "gemini-sdk",
-    provider: "GEMINI",
-    displayName: "Gemini",
-    exec: (msg, opts) => execGeminiPrompt(msg, { persistent: true, ...opts }),
-    steer: steerGeminiPrompt,
-    isBusy: isGeminiBusy,
-    getInfo: () => getGeminiSessionInfo(),
-    reset: resetGeminiSession,
-    init: async () => initGeminiShell(),
-    getSessionId: getGeminiSessionId,
-    listSessions: listGeminiSessions,
-    switchSession: switchGeminiSession,
-    createSession: createGeminiSession,
-    sdkCommands: ["/status", "/model", "/clear"],
-    execSdkCommand: async (command, args, options = {}) => {
-      const cmd = command.startsWith("/") ? command : `/${command}`;
-      if (cmd === "/clear") {
-        await resetGeminiSession();
-        return "Session cleared.";
-      }
-      const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execGeminiPrompt(fullCmd, {
-        persistent: true,
-        cwd: options.cwd,
-        sessionId: options.sessionId || null,
-      });
-    },
-  },
-  "opencode-sdk": {
-    name: "opencode-sdk",
-    provider: "OPENCODE",
-    displayName: "OpenCode",
-    exec: (msg, opts) => execOpencodePrompt(msg, withProviderRuntimeOptions({
-      persistent: true,
-      expectedPrimary: "opencode",
-      ...opts,
-    })),
-    steer: (message) => steerOpencodePrompt(message, { expectedPrimary: "opencode" }),
-    isBusy: isOpencodeBusy,
-    getInfo: () => getOpencodeSessionInfo(),
-    reset: resetOpencodeSession,
-    init: async () => {
-      await initOpencodeShell();
-      return true;
-    },
-    getSessionId: getOpencodeSessionId,
-    listSessions: listOpencodeSessions,
-    switchSession: switchOpencodeSession,
-    createSession: createOpencodeSession,
-    sdkCommands: ["/status", "/model", "/sessions", "/clear"],
-    execSdkCommand: async (command, args, options = {}) => {
-      const cmd = command.startsWith("/") ? command : `/${command}`;
-      if (cmd === "/clear") {
-        await resetOpencodeSession();
-        return "Session cleared.";
-      }
-      const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execOpencodePrompt(fullCmd, withProviderRuntimeOptions({
-        persistent: true,
-        expectedPrimary: "opencode",
-        cwd: options.cwd,
-        sessionId: options.sessionId || null,
-      }));
-    },
-  },
-};
+});
 
 function envFlagEnabled(value) {
   const raw = String(value ?? "")

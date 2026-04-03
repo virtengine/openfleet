@@ -103,6 +103,13 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("function normalizeDetachedDaemonArgs(rawArgs = []) {");
     expect(cliSource).toContain("...normalizeDetachedDaemonArgs(");
   });
+
+  it("uses PowerShell Start-Process for stable Windows daemon detachment", () => {
+    expect(cliSource).toContain("function startDaemonViaWindowsStartProcess(launchSpec) {");
+    expect(cliSource).toContain("Start-Process -FilePath");
+    expect(cliSource).toContain("launching daemon via PowerShell Start-Process for stable Windows detachment");
+  });
+
   it("supports windows ghost daemon discovery for --daemon-status/--stop-daemon", () => {
     expect(cliSource).toContain("if (process.platform === \"win32\")");
     expect(cliSource).toContain("Get-CimInstance Win32_Process");

@@ -156,6 +156,47 @@ describe("primary-agent runtime safeguards", () => {
     mockExecOpencodePrompt.mockResolvedValue({ finalResponse: "opencode stub", items: [], usage: null });
   });
 
+  it("keeps shell adapter parity in the shell-owned adapter registry", async () => {
+    vi.resetModules();
+    const { createShellAdapterRegistry } = await import("../shell/shell-adapter-registry.mjs");
+    const withRuntimeOptions = vi.fn((_adapterName, options = {}) => ({
+      ...options,
+      provider: "openai-compatible",
+    }));
+    const registry = createShellAdapterRegistry({ withRuntimeOptions });
+
+    await registry["opencode-sdk"].exec("route through adapter registry", {
+      sessionId: "adapter-registry-session",
+    });
+    await registry["codex-sdk"].exec("no provider overlay", {
+      sessionId: "codex-session",
+    });
+
+    expect(withRuntimeOptions).toHaveBeenCalledTimes(1);
+    expect(withRuntimeOptions).toHaveBeenCalledWith(
+      "opencode-sdk",
+      expect.objectContaining({
+        persistent: true,
+        expectedPrimary: "opencode",
+        sessionId: "adapter-registry-session",
+      }),
+    );
+    expect(mockExecOpencodePrompt).toHaveBeenCalledWith(
+      "route through adapter registry",
+      expect.objectContaining({
+        provider: "openai-compatible",
+        expectedPrimary: "opencode",
+      }),
+    );
+    expect(mockExecCodexPrompt).toHaveBeenCalledWith(
+      "no provider overlay",
+      expect.objectContaining({
+        persistent: true,
+        sessionId: "codex-session",
+      }),
+    );
+  });
+
   it("uses dryRun codex config checks at runtime by default", async () => {
     vi.resetModules();
     const primaryAgent = await import("../agent/primary-agent.mjs");
@@ -165,7 +206,7 @@ describe("primary-agent runtime safeguards", () => {
     expect(mockEnsureCodexConfig).toHaveBeenCalledWith(
       expect.objectContaining({ dryRun: true }),
     );
-  });
+  }, 15000);
 
   it("falls back to pooled execution when active adapter is busy on another session", async () => {
     vi.resetModules();

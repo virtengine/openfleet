@@ -6,11 +6,16 @@ vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({ primaryAgent: "codex-sdk", voice: {} })),
 }));
 
-vi.mock("../agent/primary-agent.mjs", () => ({
-  execPrimaryPrompt: vi.fn(async () => "agent response"),
-  getPrimaryAgentName: vi.fn(() => "codex-sdk"),
-  setPrimaryAgent: vi.fn(),
-}));
+vi.mock("../agent/primary-agent.mjs", () => {
+  let mode = "agent";
+  return {
+    execPrimaryPrompt: vi.fn(async (msg) => `Agent response to: ${msg}`),
+    getPrimaryAgentName: vi.fn(() => "codex-sdk"),
+    setPrimaryAgent: vi.fn(),
+    getAgentMode: vi.fn(() => mode),
+    setAgentMode: vi.fn((next) => { mode = next; }),
+  };
+});
 
 vi.mock("../kanban/kanban-adapter.mjs", () => ({
   getKanbanAdapter: vi.fn(() => ({
@@ -242,6 +247,18 @@ const promptDefaults = await import("../agent/agent-prompts.mjs");
 const sessionTracker = await import("../infra/session-tracker.mjs");
 const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
 
+function withApprovedToolContext(context = {}) {
+  return {
+    ...context,
+    approval: {
+      mode: "manual",
+      decision: "approved",
+      state: "approved",
+      ...(context?.approval && typeof context.approval === "object" ? context.approval : {}),
+    },
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("voice-tools", () => {
@@ -326,7 +343,11 @@ describe("voice-tools", () => {
     });
 
     it("create_task returns success message", async () => {
-      const result = await executeToolCall("create_task", { title: "Test" });
+      const result = await executeToolCall(
+        "create_task",
+        { title: "Test" },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/created/i);
     });
@@ -347,9 +368,13 @@ describe("voice-tools", () => {
     });
 
     it("delegate_to_agent returns immediately with delegation confirmation", async () => {
-      const result = await executeToolCall("delegate_to_agent", {
-        message: "test instruction",
-      });
+      const result = await executeToolCall(
+        "delegate_to_agent",
+        {
+          message: "test instruction",
+        },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/\{RESPONSE\}/i);
       expect(vi.mocked(execPooledPrompt)).toHaveBeenCalled();
@@ -361,12 +386,12 @@ describe("voice-tools", () => {
       const result = await executeToolCall(
         "delegate_to_agent",
         { message: "ship it" },
-        {
+        withApprovedToolContext({
           sessionId: "primary-abc123",
           executor: "claude-sdk",
           mode: "plan",
           model: "claude-opus-4.6",
-        },
+        }),
       );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/\{RESPONSE\}/i);
@@ -383,12 +408,12 @@ describe("voice-tools", () => {
       const result = await executeToolCall(
         "delegate_to_agent",
         { message: "summarize the task" },
-        {
+        withApprovedToolContext({
           sessionId: "primary-gemini-1",
           executor: "gemini-sdk",
           mode: "ask",
           model: "gemini-2.5-pro",
-        },
+        }),
       );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/\{RESPONSE\}/i);
@@ -413,7 +438,7 @@ describe("voice-tools", () => {
       const result = await executeToolCall(
         "delegate_to_agent",
         { message: "Please fix the failing test and explain why." },
-        { sessionId: "primary-vision-1" },
+        withApprovedToolContext({ sessionId: "primary-vision-1" }),
       );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/\{RESPONSE\}/i);
@@ -450,7 +475,11 @@ describe("voice-tools", () => {
     });
 
     it("run_command returns system status for 'status'", async () => {
-      const result = await executeToolCall("run_command", { command: "status" });
+      const result = await executeToolCall(
+        "run_command",
+        { command: "status" },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       // Now actually dispatches to get_system_status — expect a structured result
       const parsed = JSON.parse(result.result);
@@ -460,7 +489,7 @@ describe("voice-tools", () => {
     it("run_command returns informative error for unknown command", async () => {
       const result = await executeToolCall("run_command", {
         command: "rm -rf /",
-      });
+      }, withApprovedToolContext());
       expect(result.error).toBeUndefined();
       // The new handler returns a help message pointing to run_workspace_command
       expect(result.result).toMatch(/unknown command|not recognized|supported|run_workspace_command/i);
@@ -468,7 +497,11 @@ describe("voice-tools", () => {
 
     it("unknown slash command returns help text and does not delegate", async () => {
       vi.mocked(execPooledPrompt).mockClear();
-      const result = await executeToolCall("bosun_slash_command", { command: "/unknowncmd test" });
+      const result = await executeToolCall(
+        "bosun_slash_command",
+        { command: "/unknowncmd test" },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/unknown slash command|supported commands/i);
       expect(vi.mocked(execPooledPrompt)).not.toHaveBeenCalled();
@@ -477,7 +510,11 @@ describe("voice-tools", () => {
     it("invoke_mcp_tool failure path returns error without delegate fallback", async () => {
       vi.mocked(execPooledPrompt).mockClear();
       vi.mocked(execPooledPrompt).mockRejectedValueOnce(new Error("mcp timeout"));
-      const result = await executeToolCall("invoke_mcp_tool", { tool: "create_issue" });
+      const result = await executeToolCall(
+        "invoke_mcp_tool",
+        { tool: "create_issue" },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/invocation failed|verify the tool\/server name/i);
       expect(result.result).not.toMatch(/continuing in background/i);
@@ -489,7 +526,7 @@ describe("voice-tools", () => {
       const result = await executeToolCall(
         "run_workspace_command",
         { command: "npm publish" },
-        { role: "user", isOwner: false },
+        withApprovedToolContext({ role: "user", isOwner: false }),
       );
       expect(result.error).toBeUndefined();
       expect(result.result).toMatch(/blocked non-read-only workspace command|owner\/admin/i);
@@ -516,7 +553,11 @@ describe("voice-tools", () => {
     });
 
     it("sync_prompt_defaults returns review summary when apply=false", async () => {
-      const result = await executeToolCall("sync_prompt_defaults", { apply: false });
+      const result = await executeToolCall(
+        "sync_prompt_defaults",
+        { apply: false },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(true);
@@ -528,9 +569,13 @@ describe("voice-tools", () => {
     });
 
     it("slash /promptsync apply parses keys and applies selected updates", async () => {
-      const result = await executeToolCall("bosun_slash_command", {
-        command: "/promptsync apply orchestrator, voiceAgent",
-      });
+      const result = await executeToolCall(
+        "bosun_slash_command",
+        {
+          command: "/promptsync apply orchestrator, voiceAgent",
+        },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(true);
@@ -571,7 +616,7 @@ describe("voice-tools", () => {
     it("create_workflow creates a blank workflow when definition is omitted", async () => {
       const result = await executeToolCall("create_workflow", {
         name: "Voice-created Workflow",
-      });
+      }, withApprovedToolContext());
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(true);
@@ -582,7 +627,7 @@ describe("voice-tools", () => {
       const result = await executeToolCall("update_workflow_definition", {
         workflowId: "wf-1",
         patch: { description: "updated by test" },
-      });
+      }, withApprovedToolContext());
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(true);
@@ -593,7 +638,7 @@ describe("voice-tools", () => {
       const result = await executeToolCall("execute_workflow", {
         workflowId: "wf-1",
         input: { source: "voice-test" },
-      });
+      }, withApprovedToolContext());
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(true);
@@ -611,7 +656,11 @@ describe("voice-tools", () => {
     });
 
     it("retry_workflow_run retries failed run by id", async () => {
-      const result = await executeToolCall("retry_workflow_run", { runId: "run-1", mode: "from_failed" });
+      const result = await executeToolCall(
+        "retry_workflow_run",
+        { runId: "run-1", mode: "from_failed" },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(true);
@@ -620,7 +669,11 @@ describe("voice-tools", () => {
     });
 
     it("retry_workflow_run rejects from_failed for non-failed runs", async () => {
-      const result = await executeToolCall("retry_workflow_run", { runId: "run-ok", mode: "from_failed" });
+      const result = await executeToolCall(
+        "retry_workflow_run",
+        { runId: "run-ok", mode: "from_failed" },
+        withApprovedToolContext(),
+      );
       expect(result.error).toBeUndefined();
       const parsed = JSON.parse(result.result);
       expect(parsed.ok).toBe(false);

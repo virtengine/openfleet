@@ -1,3 +1,5 @@
+import { buildHarnessSurfacePayload } from "./harness-surface-payload.mjs";
+
 function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
@@ -24,7 +26,6 @@ export async function tryHandleHarnessEventRoutes(context = {}) {
     listHarnessTelemetryEvents,
     getHarnessProviderUsageSummary,
     exportHarnessTelemetryTrace,
-    buildHarnessSurfacePayload,
     getHarnessRuntimeConfig,
     readActiveHarnessState,
     readHarnessArtifact,
@@ -145,7 +146,7 @@ export async function tryHandleHarnessEventRoutes(context = {}) {
         view,
         limit,
         logLines,
-      });
+      }, deps);
       jsonResponse(res, 200, { ok: true, ...payload });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });

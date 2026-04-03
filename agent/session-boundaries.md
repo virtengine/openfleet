@@ -26,9 +26,12 @@
 - `agent/primary-agent.mjs`
   - May route primary-session requests into session-manager and shell/session compat layers.
   - Must not own lifecycle state machines, replay rules, or lineage rules.
+- `agent/agent-launcher.mjs`
+  - May own bounded executor launch transport, SDK fallback, and slot scheduling.
+  - Must not own the long-term session model, lineage graph, or replay semantics.
 - `agent/agent-pool.mjs`
-  - May launch executor work and delegate canonical lifecycle updates into session-manager and thread-registry.
-  - Must not own the long-term session model or direct thread persistence semantics.
+  - Thin compatibility facade over `agent-launcher.mjs` and canonical session/thread helpers.
+  - Must not reintroduce hidden lifecycle rules or direct launcher policy.
 - `shell/shell-session-compat.mjs`
   - Transitional shell facade that forwards session activation and execution metadata into `session-manager.mjs`.
   - Must not define alternate replay, lineage, or lifecycle behavior.

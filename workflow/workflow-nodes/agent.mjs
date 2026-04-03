@@ -24,6 +24,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
+import { createHarnessAgentService } from "../../agent/harness-agent-service.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 import { buildRepoTopologyContext, hasRepoMapContext } from "../../lib/repo-map.mjs";
@@ -1247,6 +1248,7 @@ registerNodeType("agent.run_planner", {
       : "";
 
     if (agentPool?.launchEphemeralThread && promptText) {
+      const harnessAgentService = createHarnessAgentService({ agentPool });
       let streamEventCount = 0;
       let lastStreamLog = "";
       const streamLines = [];
@@ -1282,7 +1284,7 @@ registerNodeType("agent.run_planner", {
 
       let result;
       try {
-        result = await agentPool.launchEphemeralThread(
+        result = await harnessAgentService.launchEphemeralThread(
           promptText,
           process.cwd(),
           agentTimeoutMs,

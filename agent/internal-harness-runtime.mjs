@@ -182,7 +182,13 @@ export function normalizeHarnessTurnResult(result, context = {}) {
 
 export function buildInternalHarnessTurnExecutor(options = {}) {
   if (typeof options.turnExecutor === "function") {
-    return options.turnExecutor;
+    return async function executeCustomHarnessTurn(context = {}) {
+      return await options.turnExecutor({
+        ...context,
+        abortController: options.abortController || context.abortController || null,
+        signal: options.abortController?.signal || context.signal || null,
+      });
+    };
   }
 
   const execInitialTurn = typeof options.execInitialTurn === "function"

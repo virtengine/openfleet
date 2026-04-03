@@ -9,7 +9,7 @@
  * @property {string} label        - Human-readable label
  * @property {string} description  - Tooltip help text explaining the setting
  * @property {string} category     - Category ID for grouping
- * @property {string} type         - 'string' | 'number' | 'boolean' | 'select' | 'secret' | 'text'
+ * @property {string} type         - 'string' | 'number' | 'boolean' | 'select' | 'secret' | 'text' | 'json'
  * @property {*}      [defaultVal] - Default value
  * @property {string[]} [options]  - Valid choices for 'select' type
  * @property {boolean} [sensitive] - If true, value is masked in UI and excluded from GET responses
@@ -331,7 +331,7 @@ export const SETTINGS_SCHEMA = [
   { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS", label: "Live Compaction Min Runtime", category: "context-shredding", type: "number", defaultVal: 2000, min: 0, max: 3600000, unit: "ms", description: "When command duration metadata is present, require at least this runtime before compacting in auto mode.", advanced: true },
   { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT", label: "Skip Structured Output", category: "context-shredding", type: "boolean", defaultVal: true, description: "Avoid live compaction for likely JSON or other structured outputs where exact bytes matter more than size.", advanced: true },
   { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS", label: "Live Compaction Allowlist", category: "context-shredding", type: "text", defaultVal: "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle", description: "Comma-separated command or tool families eligible for live compaction. Commands outside the allowlist pass through untouched.", advanced: true },
-  { key: "CONTEXT_SHREDDING_PROFILES",               label: "Per-Type Profiles (JSON)",           category: "context-shredding", type: "text",    defaultVal: "",    description: 'JSON object with per-interaction-type or per-agent-type overrides. Example: { "perType": { "voice": { "fullContextTurns": 6 } }, "perAgent": { "claude-sdk": { "tier1MaxAge": 8 } } }', advanced: true },
+  { key: "CONTEXT_SHREDDING_PROFILES",               label: "Per-Type Profiles (JSON)",           category: "context-shredding", type: "json",    defaultVal: "",    description: 'JSON object with per-interaction-type or per-agent-type overrides. Example: { "perType": { "voice": { "fullContextTurns": 6 } }, "perAgent": { "claude-sdk": { "tier1MaxAge": 8 } } }', advanced: true },
 ];
 
 /**
@@ -392,6 +392,16 @@ export function validateSetting(def, value) {
         return { valid: false, error: `Must be one of: ${def.options.join(", ")}` };
       }
       return { valid: true };
+    case "json":
+      try {
+        const parsed = JSON.parse(String(value));
+        if (parsed == null || typeof parsed !== "object") {
+          return { valid: false, error: "Must be a JSON object or array" };
+        }
+        return { valid: true };
+      } catch {
+        return { valid: false, error: "Invalid JSON" };
+      }
     default:
       if (def.validate) {
         try {

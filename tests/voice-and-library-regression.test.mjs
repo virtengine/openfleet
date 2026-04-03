@@ -18,11 +18,16 @@ vi.mock("../config/config.mjs", () => ({
   })),
 }));
 
-vi.mock("../agent/primary-agent.mjs", () => ({
-  execPrimaryPrompt: vi.fn(async () => "mock response"),
-  getPrimaryAgentName: vi.fn(() => "codex-sdk"),
-  setPrimaryAgent: vi.fn(),
-}));
+vi.mock("../agent/primary-agent.mjs", () => {
+  let mode = "agent";
+  return {
+    execPrimaryPrompt: vi.fn(async (msg) => `Agent response to: ${msg}`),
+    getPrimaryAgentName: vi.fn(() => "codex-sdk"),
+    setPrimaryAgent: vi.fn(),
+    getAgentMode: vi.fn(() => mode),
+    setAgentMode: vi.fn((next) => { mode = next; }),
+  };
+});
 
 vi.mock("../voice/voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name) => ({ result: `mock result for ${name}` })),
@@ -511,21 +516,16 @@ describe("validation.lint empty command handling", () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const src = readFileSync(
-      resolve(process.cwd(), "workflow/workflow-nodes.mjs"),
+      resolve(process.cwd(), "workflow/workflow-nodes/validation.mjs"),
       "utf8",
     );
 
-    // Find validation.lint registration
-    const lintStart = src.indexOf('"validation.lint"');
-    expect(lintStart).toBeGreaterThan(-1);
-
-    const lintChunk = src.slice(lintStart, lintStart + 600);
-
     // Must check for empty command
-    expect(lintChunk).toMatch(/!command|command\.trim\(\)/);
+    expect(src).toMatch(/String\(command \|\| ""\)\.trim\(\)/);
 
     // Must return passed: true when command is empty (skip, not fail)
-    expect(lintChunk).toContain("passed: true");
-    expect(lintChunk).toContain("skipped");
+    expect(src).toContain("passed: true");
+    expect(src).toContain('reason: "skipped"');
+    expect(src).toContain("Validation skipped: no command configured.");
   });
 });

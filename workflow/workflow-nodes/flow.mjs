@@ -77,6 +77,173 @@ import {
   trimLogText,
 } from "./definitions.mjs";
 
+function createManagedTimeout(callback, ms) {
+  let timer = null;
+  return {
+    promise: new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        try {
+          resolve(callback());
+        } catch (error) {
+          reject(error);
+        }
+      }, ms);
+      if (timer?.unref) timer.unref();
+    }),
+    clear() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
+function buildFlowChildInput(ctx, workflowId, data = {}) {
+  const sourceData = ctx?.data && typeof ctx.data === "object" ? ctx.data : {};
+  const parentWorkflowId = String(sourceData._workflowId || "").trim();
+  const workflowStack = normalizeWorkflowStack(sourceData._workflowStack);
+  if (parentWorkflowId && workflowStack[workflowStack.length - 1] !== parentWorkflowId) {
+    workflowStack.push(parentWorkflowId);
+  }
+  const rootRunId = String(sourceData._workflowRootRunId || sourceData._rootRunId || ctx?.id || "").trim() || ctx?.id || null;
+  return {
+    ...data,
+    _parentWorkflowId: parentWorkflowId || null,
+    _workflowParentRunId: ctx?.id || null,
+    _workflowRootRunId: rootRunId,
+    _workflowStack: [...workflowStack, workflowId],
+  };
+}
+
+function buildFlowChildRunOptions(ctx) {
+  const sourceData = ctx?.data && typeof ctx.data === "object" ? ctx.data : {};
+  return {
+    _parentRunId: ctx?.id || null,
+    _rootRunId: String(sourceData._workflowRootRunId || sourceData._rootRunId || ctx?.id || "").trim() || ctx?.id || null,
+  };
+}
+
+registerNodeType("flow.try_catch", {
+  describe: () => "Error boundary — execute a sub-workflow and catch failures gracefully",
+  schema: {
+    type: "object",
+    properties: {
+      tryWorkflowId: { type: "string", description: "Workflow ID to execute in the 'try' block" },
+      catchWorkflowId: { type: "string", description: "Optional workflow ID to execute on error" },
+      finallyWorkflowId: { type: "string", description: "Optional workflow ID to always execute after try/catch" },
+      tryNodes: { type: "array", items: { type: "string" }, description: "Reserved alternate try-block node IDs" },
+      errorVariable: { type: "string", default: "$error", description: "Variable name to store the caught error object" },
+      propagateError: { type: "boolean", default: false, description: "Re-throw after catch/finally when true" },
+      maxRetries: { type: "number", default: 0, description: "Retry the try block up to N additional times" },
+      retryDelayMs: { type: "number", default: 1000, description: "Delay between retries in ms" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const tryWorkflowId = String(ctx.resolve(node.config?.tryWorkflowId || "") || "").trim();
+    const catchWorkflowId = String(ctx.resolve(node.config?.catchWorkflowId || "") || "").trim();
+    const finallyWorkflowId = String(ctx.resolve(node.config?.finallyWorkflowId || "") || "").trim();
+    const errorVariable = node.config?.errorVariable || "$error";
+    const propagateError = node.config?.propagateError === true;
+    const maxRetries = Math.max(0, Math.min(10, Number(node.config?.maxRetries || 0) || 0));
+    const retryDelayMs = Math.max(0, Number(node.config?.retryDelayMs || 1000) || 1000);
+
+    let tryResult = null;
+    let caughtError = null;
+    let catchResult = null;
+    let finallyResult = null;
+    let attempts = 0;
+
+    if (tryWorkflowId && engine?.execute) {
+      const attemptLimit = 1 + maxRetries;
+      while (attempts < attemptLimit) {
+        attempts += 1;
+        try {
+          ctx.log(node.id, `try: executing workflow "${tryWorkflowId}" (attempt ${attempts}/${attemptLimit})`);
+          const runCtx = await engine.execute(
+            tryWorkflowId,
+            buildFlowChildInput(ctx, tryWorkflowId, { ...ctx.data }),
+            buildFlowChildRunOptions(ctx),
+          );
+          const hasErrors = Array.isArray(runCtx?.errors) && runCtx.errors.length > 0;
+          if (hasErrors) {
+            const message = runCtx.errors.map((entry) => entry?.error || entry?.message || String(entry)).join("; ");
+            throw new Error(message);
+          }
+          tryResult = { success: true, runId: runCtx?.id || null, attempt: attempts };
+          caughtError = null;
+          break;
+        } catch (error) {
+          caughtError = error;
+          if (attempts < attemptLimit) {
+            ctx.log(node.id, `try: attempt ${attempts} failed, retrying in ${retryDelayMs}ms…`);
+            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+          }
+        }
+      }
+    } else if (!tryWorkflowId) {
+      tryResult = { success: true, passthrough: true };
+    } else {
+      tryResult = { success: true, noEngine: true };
+    }
+
+    if (caughtError) {
+      ctx.log(node.id, `catch: error from try block — ${caughtError.message}`);
+      const errorObject = {
+        message: caughtError.message,
+        name: caughtError.name || "Error",
+        stack: caughtError.stack || null,
+        attempt: attempts,
+      };
+      ctx.data[errorVariable] = errorObject;
+      tryResult = { success: false, error: errorObject.message, attempt: attempts };
+
+      if (catchWorkflowId && engine?.execute) {
+        try {
+          ctx.log(node.id, `catch: executing workflow "${catchWorkflowId}"`);
+          const catchCtx = await engine.execute(
+            catchWorkflowId,
+            buildFlowChildInput(ctx, catchWorkflowId, { ...ctx.data, [errorVariable]: errorObject }),
+            buildFlowChildRunOptions(ctx),
+          );
+          catchResult = { executed: true, runId: catchCtx?.id || null };
+        } catch (error) {
+          catchResult = { executed: true, error: error?.message || String(error) };
+          ctx.log(node.id, `catch workflow also failed: ${catchResult.error}`, "warn");
+        }
+      }
+    }
+
+    if (finallyWorkflowId && engine?.execute) {
+      try {
+        ctx.log(node.id, `finally: executing workflow "${finallyWorkflowId}"`);
+        const finallyCtx = await engine.execute(
+          finallyWorkflowId,
+          buildFlowChildInput(ctx, finallyWorkflowId, { ...ctx.data }),
+          buildFlowChildRunOptions(ctx),
+        );
+        finallyResult = { executed: true, runId: finallyCtx?.id || null };
+      } catch (error) {
+        finallyResult = { executed: true, error: error?.message || String(error) };
+        ctx.log(node.id, `finally workflow failed: ${finallyResult.error}`, "warn");
+      }
+    }
+
+    if (caughtError && propagateError) {
+      throw caughtError;
+    }
+
+    return {
+      tryResult,
+      catchResult,
+      finallyResult,
+      hadError: Boolean(caughtError),
+      errorMessage: caughtError?.message || null,
+      attempts,
+    };
+  },
+});
+
 registerNodeType("flow.gate", {
   describe: () => "Pause workflow execution until a condition is met or manual approval is given",
   schema: {
@@ -358,6 +525,142 @@ const UNIVERSAL_FLOW_NODE = {
 registerNodeType("flow.universal", UNIVERSAL_FLOW_NODE);
 
 registerNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
+
+registerNodeType("flow.parallel", {
+  describe: () => "Execute multiple named branches (sub-workflows) simultaneously and collect all results",
+  schema: {
+    type: "object",
+    properties: {
+      branches: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Branch label (used as key in results)" },
+            workflowId: { type: "string", description: "Workflow ID to execute for this branch" },
+            data: { type: "object", description: "Optional data overrides for this branch" },
+          },
+          required: ["name", "workflowId"],
+        },
+        description: "List of branches to execute in parallel",
+      },
+      failStrategy: {
+        type: "string",
+        enum: ["all-settled", "fail-fast"],
+        default: "all-settled",
+        description: "'all-settled' waits for every branch; 'fail-fast' aborts remaining on first failure",
+      },
+      timeoutMs: {
+        type: "number",
+        default: 300000,
+        description: "Maximum time to wait for all branches (ms)",
+      },
+    },
+    required: ["branches"],
+  },
+  async execute(node, ctx, engine) {
+    const branches = Array.isArray(node.config?.branches) ? node.config.branches : [];
+    const strategy = node.config?.failStrategy || "all-settled";
+    const timeoutMs = node.config?.timeoutMs || 300000;
+
+    if (branches.length === 0) {
+      return { branches: [], results: {}, successCount: 0, failCount: 0 };
+    }
+    if (!engine?.execute) {
+      throw new Error("flow.parallel requires an engine with sub-workflow execution support");
+    }
+
+    ctx.log(node.id, `parallel: launching ${branches.length} branches (${strategy})`);
+
+    const makeBranchPromise = (branch) => {
+      const workflowId = ctx.resolve(branch.workflowId || "");
+      if (!workflowId) {
+        return Promise.resolve({ name: branch.name, success: false, error: "Missing workflowId" });
+      }
+      const branchData = buildFlowChildInput(ctx, workflowId, {
+        ...ctx.data,
+        ...(branch.data || {}),
+        _parallelBranch: branch.name,
+      });
+      return engine.execute(
+        workflowId,
+        branchData,
+        buildFlowChildRunOptions(ctx),
+      ).then(
+        (runCtx) => {
+          const hasErrors = Array.isArray(runCtx?.errors) && runCtx.errors.length > 0;
+          return {
+            name: branch.name,
+            success: !hasErrors,
+            runId: runCtx?.id || null,
+            error: hasErrors ? runCtx.errors[0]?.error : null,
+          };
+        },
+        (error) => ({
+          name: branch.name,
+          success: false,
+          runId: null,
+          error: error?.message || String(error),
+        }),
+      );
+    };
+
+    let branchResults;
+    if (strategy === "fail-fast") {
+      const timeoutControl = createManagedTimeout(() => {
+        throw new Error(`Parallel branches timed out after ${timeoutMs}ms`);
+      }, timeoutMs);
+      try {
+        branchResults = await Promise.race([
+          Promise.all(branches.map((branch) => makeBranchPromise(branch).then((result) => {
+            if (!result.success) throw Object.assign(new Error(result.error || "Branch failed"), { branchName: result.name });
+            return result;
+          }))),
+          timeoutControl.promise,
+        ]);
+      } catch (error) {
+        branchResults = [{ name: error.branchName || "unknown", success: false, error: error.message }];
+      } finally {
+        timeoutControl.clear();
+      }
+    } else {
+      const timeoutControl = createManagedTimeout(() => "__timeout__", timeoutMs);
+      const allSettledPromise = Promise.allSettled(branches.map(makeBranchPromise)).then((settled) =>
+        settled.map((entry, index) =>
+          entry.status === "fulfilled"
+            ? entry.value
+            : { name: branches[index]?.name || `branch-${index}`, success: false, error: entry.reason?.message || String(entry.reason) },
+        ),
+      );
+      try {
+        const winner = await Promise.race([allSettledPromise, timeoutControl.promise]);
+        if (winner === "__timeout__") {
+          branchResults = branches.map((branch) => ({ name: branch.name, success: false, error: "Timed out" }));
+        } else {
+          branchResults = winner;
+        }
+      } finally {
+        timeoutControl.clear();
+      }
+    }
+
+    const results = {};
+    for (const result of branchResults) {
+      results[result.name] = result;
+    }
+    const successCount = branchResults.filter((result) => result.success).length;
+    const failCount = branchResults.length - successCount;
+    ctx.log(node.id, `parallel: ${successCount}/${branchResults.length} branches succeeded`);
+
+    return {
+      branches: branchResults.map((result) => result.name),
+      results,
+      successCount,
+      failCount,
+      totalBranches: branches.length,
+    };
+  },
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LOOP / ITERATION

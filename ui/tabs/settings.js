@@ -63,6 +63,11 @@ import {
   validateSetting,
   SENSITIVE_KEYS,
 } from "../modules/settings-schema.js";
+import {
+  inferStructuredInputKind,
+  isStructuredValue,
+  toEditableTextValue,
+} from "../modules/structured-values.js";
 
 const SETTINGS_EXTERNAL_EDITORS = new Map();
 
@@ -952,11 +957,33 @@ function AgentArchitectureGuide({ architecture }) {
 }
 
 function parseExecutorRoutingPool(rawValue = "") {
-  const source = String(rawValue || "").trim();
-  if (!source) return [];
-  return source
-    .split(",")
+  const chunks = Array.isArray(rawValue)
+    ? rawValue
+    : isStructuredValue(rawValue)
+      ? (String(rawValue.executor || rawValue.type || "").trim()
+        ? [rawValue]
+        : Array.isArray(rawValue.entries)
+          ? rawValue.entries
+          : Object.values(rawValue))
+      : String(rawValue || "").trim().split(",");
+  if (!Array.isArray(chunks) || chunks.length === 0) return [];
+  return chunks
     .map((chunk, index) => {
+      if (chunk && typeof chunk === "object" && !Array.isArray(chunk)) {
+        const models = Array.isArray(chunk.models)
+          ? chunk.models.map((entry) => String(entry || "").trim()).filter(Boolean)
+          : String(chunk.modelsText || chunk.model || "")
+            .split(/[|,]/)
+            .map((entry) => String(entry || "").trim())
+            .filter(Boolean);
+        return {
+          id: `executor-pool-${index}-${chunk.executor || chunk.type || "runtime"}`,
+          executor: String(chunk.executor || chunk.type || "").trim().toUpperCase() || "CODEX",
+          variant: String(chunk.variant || chunk.family || "").trim().toUpperCase() || "DEFAULT",
+          weight: Math.max(0, Number.parseInt(String(chunk.weight || "0"), 10) || 0),
+          modelsText: models.join(", "),
+        };
+      }
       const [executor = "", variant = "", weight = "", ...modelParts] = String(chunk || "").split(":");
       const models = modelParts.join(":").split("|").map((entry) => String(entry || "").trim()).filter(Boolean);
       return {
@@ -1096,6 +1123,10 @@ function ServerConfigMode() {
 
   const tooltipTimer = useRef(null);
   const restartCountdownTimer = useRef(null);
+  const settingsSchemaByKey = useMemo(
+    () => new Map(SETTINGS_SCHEMA.map((def) => [def.key, def])),
+    [],
+  );
 
   /* ─── Load server settings on mount ─── */
   const fetchSettings = useCallback(async (opts = {}) => {
@@ -1178,13 +1209,31 @@ function ServerConfigMode() {
   }, [searchQuery, showAdvanced, isContextShreddingSetting]);
 
   /* ─── Value resolution: edited value → server value → empty ─── */
-  const getValue = useCallback(
-    (key) => {
-      if (key in edits) return edits[key];
-      if (serverData && key in serverData) return String(serverData[key] ?? "");
-      return "";
+  const normalizeSettingTextValue = useCallback(
+    (key, rawValue, options = {}) => {
+      const def = settingsSchemaByKey.get(key) || null;
+      const inputKind = inferStructuredInputKind({
+        type: def?.type,
+        value: rawValue,
+        defaultValue: def?.defaultVal,
+      });
+      return toEditableTextValue(rawValue, {
+        pretty: options.pretty ?? inputKind === "json",
+        fallback: options.fallback ?? "",
+      });
     },
-    [edits, serverData],
+    [settingsSchemaByKey],
+  );
+
+  const getValue = useCallback(
+    (key) => normalizeSettingTextValue(
+      key,
+      key in edits
+        ? edits[key]
+        : (serverData && key in serverData ? serverData[key] : ""),
+      { fallback: "" },
+    ),
+    [edits, normalizeSettingTextValue, serverData],
   );
 
   const getReloadDelayMs = useCallback(
@@ -1204,7 +1253,13 @@ function ServerConfigMode() {
       if (source && source !== "unset") return false;
       if (def.defaultVal == null) return false;
       const current = getValue(def.key);
-      return current === "" || current === String(def.defaultVal);
+      return current === "" || current === toEditableTextValue(def.defaultVal, {
+        pretty: inferStructuredInputKind({
+          type: def.type,
+          defaultValue: def.defaultVal,
+        }) === "json",
+        fallback: "",
+      });
     },
     [getValue, serverSources],
   );
@@ -1270,7 +1325,7 @@ function ServerConfigMode() {
     (key, value) => {
       haptic("light");
       setEdits((prev) => {
-        const original = serverData?.[key] != null ? String(serverData[key]) : "";
+        const original = normalizeSettingTextValue(key, serverData?.[key], { fallback: "" });
         // If the new value matches the original, remove the edit
         if (value === original) {
           const next = { ...prev };
@@ -1293,7 +1348,7 @@ function ServerConfigMode() {
         });
       }
     },
-    [serverData],
+    [normalizeSettingTextValue, serverData],
   );
 
   const handleDiscard = useCallback(async () => {
@@ -1469,9 +1524,10 @@ function ServerConfigMode() {
   const diffEntries = useMemo(() => {
     const serverDiffs = Object.entries(edits).map(([key, newVal]) => {
       const def = SETTINGS_SCHEMA.find((s) => s.key === key);
-      const oldVal = serverData?.[key] != null ? String(serverData[key]) : "(unset)";
+      const oldVal = normalizeSettingTextValue(key, serverData?.[key], { fallback: "" });
+      const normalizedNewVal = normalizeSettingTextValue(key, newVal, { fallback: "" });
       const displayOld = def?.sensitive ? maskValue(oldVal) : oldVal || "(unset)";
-      const displayNew = def?.sensitive ? maskValue(newVal) : newVal || "(unset)";
+      const displayNew = def?.sensitive ? maskValue(normalizedNewVal) : normalizedNewVal || "(unset)";
       return { key, label: def?.label || key, oldVal: displayOld, newVal: displayNew };
     });
     const externalDiffs = externalPendingKeys.map((key) => ({
@@ -1488,7 +1544,7 @@ function ServerConfigMode() {
       newVal: "Will be saved",
     }));
     return [...serverDiffs, ...externalDiffs];
-  }, [edits, serverData, externalPendingKeys]);
+  }, [edits, serverData, externalPendingKeys, normalizeSettingTextValue]);
 
   /* ═══════════════════════════════════════════════
    *  Render a single setting control
@@ -1501,11 +1557,20 @@ function ServerConfigMode() {
       const error = errors[def.key];
       const isSensitive = def.sensitive;
       const secretVisible = visibleSecrets[def.key];
+      const rawValue =
+        def.key in edits
+          ? edits[def.key]
+          : (serverData && def.key in serverData ? serverData[def.key] : "");
+      const effectiveType = inferStructuredInputKind({
+        type: def.type,
+        value: rawValue,
+        defaultValue: def.defaultVal,
+      });
 
       /* Choose input control based on type */
       let control = null;
 
-      switch (def.type) {
+      switch (effectiveType) {
         case "boolean": {
           const checked =
             value === "true" || value === "1" || value === true;
@@ -1649,10 +1714,32 @@ function ServerConfigMode() {
           break;
         }
 
+        case "json": {
+          control = html`
+            <div class="setting-input-wrap">
+              <${TextField}
+                multiline
+                minRows=${6}
+                size="small"
+                variant="outlined"
+                fullWidth
+                value=${value}
+                placeholder=${def.defaultVal != null ? toEditableTextValue(def.defaultVal, { pretty: true }) : "{\n  \n}"}
+                onInput=${(e) => handleChange(def.key, e.target.value)}
+                helperText="JSON object or array"
+                InputProps=${{
+                  sx: { fontFamily: "'Fira Code', monospace", fontSize: "0.82rem" },
+                }}
+              />
+            </div>
+          `;
+          break;
+        }
+
         default: {
           // string type
           control = def.key === "EXECUTORS"
-            ? html`<${ExecutorRoutingPoolEditor} value=${value} onChange=${(nextValue) => handleChange(def.key, nextValue)} />`
+            ? html`<${ExecutorRoutingPoolEditor} value=${rawValue || value} onChange=${(nextValue) => handleChange(def.key, nextValue)} />`
             : html`
                 <div class="setting-input-wrap">
                   <${TextField}
@@ -1696,7 +1783,7 @@ function ServerConfigMode() {
         </div>
       `;
     },
-    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor, customSelectMode],
+    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor, customSelectMode, edits, serverData],
   );
 
   /* ═══════════════════════════════════════════════
@@ -1998,8 +2085,8 @@ function ServerConfigMode() {
               (d) => html`
                 <div class="settings-diff-row" key=${d.key}>
                   <div class="settings-diff-key">${d.label}</div>
-                  <div class="settings-diff-old">− ${d.oldVal}</div>
-                  <div class="settings-diff-new">+ ${d.newVal}</div>
+                  <div class="settings-diff-old" style=${{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>− ${d.oldVal}</div>
+                  <div class="settings-diff-new" style=${{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>+ ${d.newVal}</div>
                 </div>
               `,
             )}

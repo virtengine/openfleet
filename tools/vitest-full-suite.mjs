@@ -15,6 +15,13 @@ const DEFAULT_HEAVY_SUITES = [
   "tests/workflow-templates-e2e.test.mjs",
 ];
 
+function shouldIncludeWorkflowGuaranteedSuite() {
+  const explicit = String(process.env.BOSUN_VITEST_INCLUDE_GUARANTEED || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(explicit)) return true;
+  if (["0", "false", "no", "off"].includes(explicit)) return false;
+  return process.platform !== "win32";
+}
+
 function parseCsvEnv(value) {
   return String(value || "")
     .split(",")
@@ -37,12 +44,7 @@ function resolveHeavySuites(allSuites) {
   const configured = parseCsvEnv(process.env.BOSUN_VITEST_HEAVY_SUITES);
   const heavyCandidates = configured.length > 0 ? configured : DEFAULT_HEAVY_SUITES;
   const available = new Set(allSuites);
-  const includeGuaranteed = (() => {
-    const explicit = String(process.env.BOSUN_VITEST_INCLUDE_GUARANTEED || "").trim().toLowerCase();
-    if (["1", "true", "yes", "on"].includes(explicit)) return true;
-    if (["0", "false", "no", "off"].includes(explicit)) return false;
-    return process.platform !== "win32";
-  })();
+  const includeGuaranteed = shouldIncludeWorkflowGuaranteedSuite();
   return heavyCandidates.filter((suite) => {
     if (!available.has(suite)) return false;
     if (suite === "tests/workflow-guaranteed.test.mjs" && !includeGuaranteed) return false;
@@ -52,11 +54,15 @@ function resolveHeavySuites(allSuites) {
 
 export function buildVitestFullSuitePlan({ startDir = process.cwd() } = {}) {
   const allSuites = listVitestSuiteFiles({ startDir });
-  const heavySuites = resolveHeavySuites(allSuites);
+  const includeGuaranteed = shouldIncludeWorkflowGuaranteedSuite();
+  const runnableSuites = allSuites.filter((suite) => (
+    suite !== "tests/workflow-guaranteed.test.mjs" || includeGuaranteed
+  ));
+  const heavySuites = resolveHeavySuites(runnableSuites);
   const heavySet = new Set(heavySuites);
-  const groupedSuites = allSuites.filter((suite) => !heavySet.has(suite));
+  const groupedSuites = runnableSuites.filter((suite) => !heavySet.has(suite));
   return {
-    allSuites,
+    allSuites: runnableSuites,
     groupedSuites,
     heavySuites,
   };

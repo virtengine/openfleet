@@ -1287,6 +1287,180 @@ describe("harness agent service foundation", () => {
     );
     expect(result).toEqual({ success: true, output: "resume-path" });
   });
+
+  it("exposes a canonical facade for surface and worker bridges", async () => {
+    const listener = vi.fn();
+    const addActiveSessionListener = vi.fn(() => "listener-1");
+    const getAvailableSdks = vi.fn(() => ["codex", "claude"]);
+    const getActiveThreads = vi.fn(() => [{ id: "thread-1" }]);
+    const createCompiledInternalHarnessSession = vi.fn(() => ({ id: "compiled-1" }));
+    const setPoolSdk = vi.fn();
+    const resetPoolSdkCache = vi.fn();
+    const invalidateThread = vi.fn();
+    const execPooledPrompt = vi.fn(async () => ({ success: true, output: "pooled" }));
+    const service = createHarnessAgentService({
+      agentPool: {
+        addActiveSessionListener,
+        getAvailableSdks,
+        getActiveThreads,
+        createCompiledInternalHarnessSession,
+        setPoolSdk,
+        resetPoolSdkCache,
+        invalidateThread,
+        execPooledPrompt,
+        killSession: vi.fn(async () => true),
+      },
+    });
+
+    expect(service.addActiveSessionListener(listener)).toBe("listener-1");
+    expect(service.getAvailableSdks()).toEqual(["codex", "claude"]);
+    expect(service.getActiveThreads()).toEqual([{ id: "thread-1" }]);
+    expect(service.createCompiledInternalHarnessSession({ profile: "test" })).toEqual({ id: "compiled-1" });
+    expect(await service.execPooledPrompt("background prompt", { scope: "test" })).toEqual({
+      success: true,
+      output: "pooled",
+    });
+
+    service.setPoolSdk("claude");
+    service.resetPoolSdkCache();
+    service.invalidateThread("thread-1");
+
+    expect(addActiveSessionListener).toHaveBeenCalledWith(listener);
+    expect(createCompiledInternalHarnessSession).toHaveBeenCalledWith({ profile: "test" });
+    expect(execPooledPrompt).toHaveBeenCalledWith("background prompt", { scope: "test" });
+    expect(setPoolSdk).toHaveBeenCalledWith("claude");
+    expect(resetPoolSdkCache).toHaveBeenCalledTimes(1);
+    expect(invalidateThread).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("routes default interactive turns through canonical provider-session ownership", async () => {
+    const sessionManager = createBosunSessionManager();
+    const runTurn = vi.fn(async () => ({
+      success: true,
+      status: "completed",
+      finalResponse: "interactive-ok",
+      threadId: "provider-thread-1",
+      providerId: "openai-responses",
+    }));
+    const createExecutionSession = vi.fn(() => ({
+      runTurn,
+      getState: () => ({
+        sessionId: "chat-session",
+        threadId: "provider-thread-1",
+        model: "gpt-5.4",
+      }),
+      adapter: null,
+    }));
+    const service = createHarnessAgentService({
+      sessionManager,
+      providerKernel: {
+        createExecutionSession,
+      },
+      getPrimaryAgentName: () => "openai-responses",
+      getAgentMode: () => "agent",
+    });
+
+    const result = await service.runInteractivePrompt("hello from chat", {
+      sessionId: "chat-session",
+      sessionType: "primary",
+      cwd: "C:/repo",
+      mode: "agent",
+    });
+
+    expect(createExecutionSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "chat-session",
+      selectionId: "openai-responses",
+      provider: "openai-responses",
+      cwd: "C:/repo",
+      sessionManager,
+    }));
+    expect(runTurn).toHaveBeenCalledWith(
+      expect.stringContaining("hello from chat"),
+      expect.objectContaining({
+        sessionId: "chat-session",
+        cwd: "C:/repo",
+        sessionManager,
+      }),
+    );
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      finalResponse: "interactive-ok",
+      threadId: "provider-thread-1",
+      adapter: "openai-responses",
+    }));
+    expect(sessionManager.getSession("chat-session")).toEqual(expect.objectContaining({
+      sessionId: "chat-session",
+      status: "completed",
+      activeThreadId: "provider-thread-1",
+    }));
+  });
+
+  it("continues canonical interactive sessions through the bound session-manager controller", async () => {
+    const sessionManager = createBosunSessionManager();
+    const runTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        success: true,
+        status: "completed",
+        finalResponse: "first-turn",
+        threadId: "provider-thread-2",
+        providerId: "openai-responses",
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        status: "completed",
+        finalResponse: "second-turn",
+        threadId: "provider-thread-2",
+        providerId: "openai-responses",
+      });
+    const createExecutionSession = vi.fn(() => ({
+      runTurn,
+      getState: () => ({
+        sessionId: "chat-session-2",
+        threadId: "provider-thread-2",
+        model: "gpt-5.4",
+      }),
+      adapter: null,
+    }));
+    const service = createHarnessAgentService({
+      sessionManager,
+      providerKernel: {
+        createExecutionSession,
+      },
+      getPrimaryAgentName: () => "openai-responses",
+      getAgentMode: () => "agent",
+    });
+
+    await service.runInteractivePrompt("first turn", {
+      sessionId: "chat-session-2",
+      sessionType: "primary",
+      cwd: "C:/repo",
+    });
+    const resumed = await service.continueSession("chat-session-2", "continue the thread", {
+      cwd: "C:/repo",
+    });
+
+    expect(runTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("continue the thread"),
+      expect.objectContaining({
+        sessionId: "chat-session-2",
+        cwd: "C:/repo",
+        sessionManager,
+      }),
+    );
+    expect(resumed).toEqual(expect.objectContaining({
+      success: true,
+      finalResponse: "second-turn",
+      threadId: "provider-thread-2",
+    }));
+    expect(sessionManager.getReplayState("chat-session-2")).toEqual(expect.objectContaining({
+      sessionId: "chat-session-2",
+      resumeFrom: expect.objectContaining({
+        threadId: "provider-thread-2",
+      }),
+    }));
+  });
 });
 
 describe("query engine foundation", () => {

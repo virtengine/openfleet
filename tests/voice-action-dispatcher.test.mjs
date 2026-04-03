@@ -103,6 +103,8 @@ vi.mock("../voice/voice-tools.mjs", () => ({
 
 // ── Import module under test ────────────────────────────────────────────────
 
+vi.resetModules();
+
 const {
   dispatchVoiceAction,
   dispatchVoiceActions,

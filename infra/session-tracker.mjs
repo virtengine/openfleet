@@ -659,6 +659,115 @@ function buildSessionSummaryRecord(session, { progress = null, preview = null, r
   };
 }
 
+function buildLightweightSessionSummaryRecord(
+  session,
+  { progress = null, preview = null, runtimeUpdatedAt = null, runtimeIsLive = null } = {},
+) {
+  const s = session;
+  const sessionId = session?.id || session?.taskId;
+  const turns = Array.isArray(session?.turns)
+    ? cloneTurns(session.turns)
+    : (Array.isArray(session?.insights?.turnTimeline)
+      ? cloneTurns(session.insights.turnTimeline)
+      : []);
+  const lastActiveAt = String(
+    session?.lastActiveAt
+      || runtimeUpdatedAt
+      || (session?.lastActivityAt ? new Date(session.lastActivityAt).toISOString() : "")
+      || new Date(session?.startedAt || Date.now()).toISOString(),
+  ).trim();
+  const lifecycleStatus = String(session?.status || "active").trim() || "active";
+  const progressStatus = String(progress?.status || "").trim() || null;
+  const runtimeState = (() => {
+    if (!progressStatus || progressStatus === "ended" || progressStatus === "not_found") {
+      return null;
+    }
+    return progressStatus;
+  })();
+  const isLive = runtimeIsLive == null
+    ? Boolean(progress && progress.status === "active")
+    : Boolean(runtimeIsLive);
+  const status = progressStatus === "ended"
+    ? lifecycleStatus
+    : (runtimeState || lifecycleStatus);
+  const normalizedPreview = preview == null ? null : String(preview || "").trim() || null;
+  const turnCount = Math.max(
+    0,
+    Number(session?.turnCount) || 0,
+    turns.length,
+  );
+  const totalEvents = Math.max(
+    0,
+    Number(session?.totalEvents ?? session?.eventCount ?? 0) || 0,
+  );
+  const tokenUsage =
+    resolveSessionTokenUsage(
+      session,
+      Array.isArray(session?.turns)
+        ? cloneTurns(session.turns)
+        : (Array.isArray(session?.insights?.turnTimeline)
+          ? cloneTurns(session.insights.turnTimeline)
+          : []),
+    )
+    || (session?.tokenUsage && typeof session.tokenUsage === "object"
+      ? session.tokenUsage
+      : {});
+
+  return {
+    id: sessionId,
+    taskId: session?.taskId || sessionId,
+    title: session?.taskTitle || session?.title || null,
+    type: session?.type || "task",
+    status,
+    lifecycleStatus,
+    runtimeState,
+    runtimeUpdatedAt: lastActiveAt,
+    runtimeIsLive: isLive,
+    workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
+    workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
+    workspaceRoot: String(s?.metadata?.workspaceRoot || "").trim() || null,
+    branch: String(session?.metadata?.branch || "").trim() || null,
+    workflowId: String(session?.metadata?.workflowId || "").trim() || null,
+    workflowName: String(session?.metadata?.workflowName || "").trim() || null,
+    rootTaskId: String(session?.metadata?.rootTaskId || "").trim() || null,
+    parentTaskId: String(session?.metadata?.parentTaskId || "").trim() || null,
+    rootSessionId: String(session?.metadata?.rootSessionId || "").trim() || null,
+    parentSessionId: String(session?.metadata?.parentSessionId || "").trim() || null,
+    rootRunId: String(session?.metadata?.rootRunId || "").trim() || null,
+    parentRunId: String(session?.metadata?.parentRunId || "").trim() || null,
+    delegationDepth: Number.isFinite(Number(session?.metadata?.delegationDepth))
+      ? Math.max(0, Math.trunc(Number(session.metadata.delegationDepth)))
+      : 0,
+    turnCount,
+    turns,
+    tokenCount: Number(session?.tokenCount ?? tokenUsage.totalTokens ?? session?.totalTokens ?? 0) || 0,
+    inputTokens: Number(session?.inputTokens ?? tokenUsage.inputTokens ?? 0) || 0,
+    outputTokens: Number(session?.outputTokens ?? tokenUsage.outputTokens ?? 0) || 0,
+    tokenUsage: {
+      totalTokens: Number(session?.tokenCount ?? tokenUsage.totalTokens ?? session?.totalTokens ?? 0) || 0,
+      inputTokens: Number(session?.inputTokens ?? tokenUsage.inputTokens ?? 0) || 0,
+      outputTokens: Number(session?.outputTokens ?? tokenUsage.outputTokens ?? 0) || 0,
+    },
+    createdAt: session?.createdAt || new Date(session?.startedAt || Date.now()).toISOString(),
+    lastActiveAt,
+    idleMs: progress?.idleMs ?? 0,
+    elapsedMs: progress?.elapsedMs ?? Math.max(
+      0,
+      Number(session?.endedAt || Date.now()) - Number(session?.startedAt || Date.now()),
+    ),
+    recommendation: progress?.recommendation || "none",
+    preview: normalizedPreview,
+    lastMessage: normalizedPreview,
+    totalTokens: Number(session?.totalTokens ?? tokenUsage.totalTokens ?? session?.tokenCount ?? 0) || 0,
+    totalEvents,
+    eventCount: totalEvents,
+    metadata:
+      session?.metadata && typeof session.metadata === "object"
+        ? { ...session.metadata }
+        : {},
+  };
+}
+
 function cloneSessionMessages(messages = []) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({ ...message }));
 }
@@ -1518,6 +1627,7 @@ export class SessionTracker {
    */
   listAllSessions(options = {}) {
     const includePersisted = options.includePersisted !== false;
+    const lightweight = options.lightweight === true;
     const byId = new Map();
     const addSummary = (s, options = {}) => {
       if (!s) return;
@@ -1526,7 +1636,10 @@ export class SessionTracker {
       const progress = includeRuntimeProgress && s.status === "active"
         ? this.getProgressStatus(sessionId)
         : null;
-      byId.set(sessionId, buildSessionSummaryRecord(s, {
+      const summaryBuilder = lightweight
+        ? buildLightweightSessionSummaryRecord
+        : buildSessionSummaryRecord;
+      byId.set(sessionId, summaryBuilder(s, {
         progress,
         preview: this.#lastMessagePreview(s),
       }));
@@ -1537,16 +1650,24 @@ export class SessionTracker {
     }
 
     if (includePersisted) {
-      for (const persisted of this.#readPersistedSessionSummaries()) {
+      for (const persisted of this.#readPersistedSessionSummaries({ lightweight })) {
         if (!persisted) continue;
         const sessionId = persisted.id || persisted.taskId;
         if (!sessionId || byId.has(sessionId)) continue;
-        byId.set(sessionId, {
-          ...persisted,
-          turns: Array.isArray(persisted.turns)
-            ? persisted.turns.map((turn) => ({ ...turn }))
-            : [],
-        });
+        byId.set(sessionId, lightweight
+          ? {
+              ...persisted,
+              metadata:
+                persisted?.metadata && typeof persisted.metadata === "object"
+                  ? { ...persisted.metadata }
+                  : {},
+            }
+          : {
+              ...persisted,
+              turns: Array.isArray(persisted.turns)
+                ? persisted.turns.map((turn) => ({ ...turn }))
+                : [],
+            });
       }
     }
 
@@ -2209,10 +2330,12 @@ export class SessionTracker {
     this.#persistedSummaryCache = { loadedAt: 0, sessions: [] };
   }
 
-  #readPersistedSessionSummaries() {
+  #readPersistedSessionSummaries(options = {}) {
     if (!this.#persistDir || !existsSync(this.#persistDir)) {
       return [];
     }
+
+    const lightweight = options.lightweight === true;
 
     const now = Date.now();
     if (
@@ -2220,7 +2343,15 @@ export class SessionTracker {
       now - Number(this.#persistedSummaryCache.loadedAt || 0) <
         PERSISTED_SESSION_LIST_CACHE_TTL_MS
     ) {
-      return this.#persistedSummaryCache.sessions;
+      return lightweight
+        ? this.#persistedSummaryCache.sessions.map((session) => ({
+            ...session,
+            metadata:
+              session?.metadata && typeof session.metadata === "object"
+                ? { ...session.metadata }
+                : {},
+          }))
+        : this.#persistedSummaryCache.sessions;
     }
 
     const sessions = [];
