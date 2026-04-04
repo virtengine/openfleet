@@ -1,21 +1,48 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
-import { buildRepoCodexConfig, ensureRepoConfigs } from "../config/repo-config.mjs";
-import {
-  buildCommonMcpBlocks,
-  buildSandboxPermissions,
-  ensureAgentMaxThreads,
-  ensureFeatureFlags,
-  ensureModelProviderSectionsFromEnv,
-  ensureSandboxWorkspaceWrite,
-  ensureTrustedProjects,
-  ensureTopLevelSandboxPermissions,
-} from "../shell/codex-config.mjs";
-import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+let buildRepoCodexConfig;
+let ensureRepoConfigs;
+let buildCommonMcpBlocks;
+let buildSandboxPermissions;
+let ensureAgentMaxThreads;
+let ensureFeatureFlags;
+let ensureModelProviderSectionsFromEnv;
+let ensureSandboxWorkspaceWrite;
+let ensureTrustedProjects;
+let ensureTopLevelSandboxPermissions;
+let resolveCodexProfileRuntime;
+
+async function loadFreshCodexConfigModules() {
+  vi.resetModules();
+  vi.unmock("../config/repo-config.mjs");
+  vi.unmock("../shell/codex-config.mjs");
+  vi.unmock("../shell/codex-model-profiles.mjs");
+
+  const repoConfigModule = await import("../config/repo-config.mjs");
+  const codexConfigModule = await import("../shell/codex-config.mjs");
+  const profileModule = await import("../shell/codex-model-profiles.mjs");
+
+  buildRepoCodexConfig = repoConfigModule.buildRepoCodexConfig;
+  ensureRepoConfigs = repoConfigModule.ensureRepoConfigs;
+  buildCommonMcpBlocks = codexConfigModule.buildCommonMcpBlocks;
+  buildSandboxPermissions = codexConfigModule.buildSandboxPermissions;
+  ensureAgentMaxThreads = codexConfigModule.ensureAgentMaxThreads;
+  ensureFeatureFlags = codexConfigModule.ensureFeatureFlags;
+  ensureModelProviderSectionsFromEnv = codexConfigModule.ensureModelProviderSectionsFromEnv;
+  ensureSandboxWorkspaceWrite = codexConfigModule.ensureSandboxWorkspaceWrite;
+  ensureTrustedProjects = codexConfigModule.ensureTrustedProjects;
+  ensureTopLevelSandboxPermissions = codexConfigModule.ensureTopLevelSandboxPermissions;
+  resolveCodexProfileRuntime = profileModule.resolveCodexProfileRuntime;
+}
 
 describe("codex-config defaults", () => {
+  beforeEach(async () => {
+    await loadFreshCodexConfigModules();
+  });
+
   it("omits default MCP server blocks unless explicitly enabled", () => {
     const block = buildCommonMcpBlocks();
     expect(block).toBe("");

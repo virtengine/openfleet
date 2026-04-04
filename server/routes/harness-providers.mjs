@@ -142,6 +142,13 @@ export async function tryHandleHarnessProviderRoutes(context = {}) {
         reason: "harness-executors-updated",
         source: "harness-providers-route",
       });
+      if (primaryExecutor && typeof deps.switchPrimaryAgent === "function") {
+        try {
+          await deps.switchPrimaryAgent(primaryExecutor);
+        } catch {
+          // Best effort only. Saved config remains canonical.
+        }
+      }
       invalidateApiCache?.("status");
       invalidateApiCache?.("server-state");
       invalidateApiCache?.("infra");

@@ -905,11 +905,29 @@ function isSdkOnlyExecutorKey(key) {
   ].includes(key);
 }
 
-function isExecutorSettingVisible(def, runtime = "harness") {
+function isHarnessProviderFabricSetting(def) {
+  return String(def?.section || "").trim() === "Harness Provider Fabric";
+}
+
+function emitAgentInventoryRefresh(detail = {}) {
+  try {
+    if (typeof globalThis?.dispatchEvent !== "function" || typeof globalThis?.CustomEvent !== "function") return;
+    globalThis.dispatchEvent(new CustomEvent("ve:agents-refresh", { detail }));
+  } catch {
+    // Non-browser or unsupported host.
+  }
+}
+
+function isExecutorSettingVisible(def, runtime = "harness", options = {}) {
   const key = String(def?.key || "");
   if (!key) return true;
   if (key === "EXECUTOR_MODE") return false;
   if (runtime === "harness" && isSdkOnlyExecutorKey(key)) return false;
+  if (
+    runtime === "harness"
+    && options.hasExplicitHarnessExecutors === true
+    && isHarnessProviderFabricSetting(def)
+  ) return false;
   return true;
 }
 
@@ -1407,6 +1425,10 @@ function HarnessExecutorsEditor() {
     setProviderOptions(sortHarnessProviderEntries(Array.isArray(res?.providerOptions) ? res.providerOptions : providerOptions));
     setProviderItems(sortHarnessProviderEntries(Array.isArray(res?.providers?.items) ? res.providers.items : providerItems));
     applyLoadedState(res || {});
+    emitAgentInventoryRefresh({
+      source: "harness-executors-save",
+      primaryExecutor,
+    });
   }, [applyLoadedState, executors, primaryExecutor, providerItems, providerOptions, routingMode]);
 
   const handleDiscard = useCallback(async () => {
@@ -1831,6 +1853,7 @@ function ServerConfigMode() {
   const [serverSources, setServerSources] = useState(null); // { KEY: "env" | "config" | "default" | "derived" | ... }
   const [serverMeta, setServerMeta] = useState(null);     // { envPath, configPath, configDir }
   const [agentArchitecture, setAgentArchitecture] = useState(null);
+  const [harnessExecutorsState, setHarnessExecutorsState] = useState(null);
   const [configSync, setConfigSync] = useState(null);     // { total, updated, skipped, configPath }
   const [loadError, setLoadError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1890,6 +1913,7 @@ function ServerConfigMode() {
         );
         setServerMeta(res.meta || null);
         setAgentArchitecture(res.agentArchitecture || null);
+        setHarnessExecutorsState(res.harnessExecutors || null);
         if (!preserveConfigSync) setConfigSync(null);
       } else if (isLegacyObject) {
         // Demo/legacy compatibility: /api/settings may return a plain object.
@@ -1897,6 +1921,7 @@ function ServerConfigMode() {
         setServerSources(null);
         setServerMeta(null);
         setAgentArchitecture(null);
+        setHarnessExecutorsState(null);
         if (!preserveConfigSync) setConfigSync(null);
       } else {
         throw new Error(res?.error || "Unexpected response format");
@@ -1907,6 +1932,7 @@ function ServerConfigMode() {
       setServerSources(null);
       setServerMeta(null);
       setAgentArchitecture(null);
+      setHarnessExecutorsState(null);
       setConfigSync(null);
     } finally {
       if (!silent) setLoading(false);
@@ -1939,6 +1965,10 @@ function ServerConfigMode() {
     ),
     [edits, serverData],
   );
+  const hasExplicitHarnessExecutors = useMemo(
+    () => harnessExecutorsState?.hasExplicitExecutors === true,
+    [harnessExecutorsState],
+  );
 
   /* Filtered settings when searching */
   const filteredSettings = useMemo(() => {
@@ -1946,12 +1976,15 @@ function ServerConfigMode() {
     const results = [];
     for (const def of SETTINGS_SCHEMA) {
       if (!showAdvanced && def.advanced && !isContextShreddingSetting(def)) continue;
-      if (def.category === "executor" && !isExecutorSettingVisible(def, activeAgentRuntime)) continue;
+      if (
+        def.category === "executor"
+        && !isExecutorSettingVisible(def, activeAgentRuntime, { hasExplicitHarnessExecutors })
+      ) continue;
       const haystack = `${def.key} ${def.label} ${def.description || ""}`;
       if (fuzzyMatch(searchQuery, haystack)) results.push(def);
     }
     return results;
-  }, [searchQuery, showAdvanced, isContextShreddingSetting, activeAgentRuntime]);
+  }, [searchQuery, showAdvanced, isContextShreddingSetting, activeAgentRuntime, hasExplicitHarnessExecutors]);
 
   /* ─── Value resolution: edited value → server value → empty ─── */
   const normalizeSettingTextValue = useCallback(
@@ -2197,6 +2230,10 @@ function ServerConfigMode() {
         // Refresh from backend so derived/runtime-resolved values stay accurate.
         await fetchSettings({ silent: true, preserveConfigSync: true });
         setEdits({});
+        emitAgentInventoryRefresh({
+          source: "settings-save",
+          keys: changeKeys,
+        });
       }
       await runSettingsExternalEditorAction("save");
       showToast("Settings saved successfully", "success");
@@ -2677,7 +2714,8 @@ function ServerConfigMode() {
       const catDefs = activeCategory === "context-shredding"
         ? SETTINGS_SCHEMA.filter((def) => isContextShreddingSetting(def))
         : (grouped.get(activeCategory) || []).filter((def) => (
-            activeCategory !== "executor" || isExecutorSettingVisible(def, activeAgentRuntime)
+            activeCategory !== "executor"
+            || isExecutorSettingVisible(def, activeAgentRuntime, { hasExplicitHarnessExecutors })
           ));
       const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 

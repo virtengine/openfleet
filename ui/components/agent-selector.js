@@ -167,7 +167,7 @@ const EXECUTOR_DISPLAY_NAMES = {
 };
 
 function resolveAgentIconKey(agent = {}) {
-  return agent?.id || agent?.providerId || agent?.provider || "";
+  return agent?.providerId || agent?.id || agent?.provider || "";
 }
 
 function resolveAgentSubtitle(agent = {}) {
@@ -501,6 +501,12 @@ export async function loadAvailableAgents() {
   } finally {
     agentSelectorLoading.value = false;
   }
+}
+
+function handleAgentInventoryRefreshEvent() {
+  loadAvailableAgents().catch((err) => {
+    console.warn("[agent-selector] Failed to refresh agents:", err);
+  });
 }
 
 function setActiveManualAgent(agentId) {
@@ -1416,6 +1422,14 @@ export function ChatInputToolbar() {
     if (availableAgents.value.length === 0 && !agentSelectorLoading.value) {
       loadAvailableAgents();
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    window.addEventListener("ve:agents-refresh", handleAgentInventoryRefreshEvent);
+    return () => {
+      window.removeEventListener("ve:agents-refresh", handleAgentInventoryRefreshEvent);
+    };
   }, []);
 
   return html`

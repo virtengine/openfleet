@@ -1165,6 +1165,13 @@ describeUiServer("ui-server mini app", () => {
       expect(updateJson.primaryExecutorId).toBe("local-openai");
       expect(updateJson.executors.map((entry) => entry.id)).toEqual(["local-openai"]);
 
+      const refreshedAgentsResponse = await fetch(`http://127.0.0.1:${port}/api/agents/available`);
+      const refreshedAgentsJson = await refreshedAgentsResponse.json();
+      expect(refreshedAgentsResponse.status).toBe(200);
+      expect(refreshedAgentsJson.ok).toBe(true);
+      expect(refreshedAgentsJson.active).toBe("local-openai");
+      expect(refreshedAgentsJson.agents.map((entry) => entry.id)).toEqual(["local-openai"]);
+
       const savedConfig = JSON.parse(readFileSync(configPath, "utf8"));
       expect(savedConfig.harness).toEqual(expect.objectContaining({
         primaryExecutor: "local-openai",
@@ -9612,6 +9619,246 @@ describeUiServer("ui-server mini app", () => {
       await new Promise((resolve) => server.close(resolve));
     }
   }, 15000);
+
+  it("exposes codex desktop style session surface metadata for multi-repo workspaces", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-session-surface-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRoot = join(tmpDir, "workspaces", "surface-ws");
+    const repoPrimary = join(workspaceRoot, "repo-alpha");
+    const repoSelected = join(workspaceRoot, "repo-beta");
+    mkdirSync(repoPrimary, { recursive: true });
+    mkdirSync(repoSelected, { recursive: true });
+    const previousConfigPath = process.env.BOSUN_CONFIG_PATH;
+
+    const { execSync } = await import("node:child_process");
+    const initRepo = (repoDir, branchName) => {
+      execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+      execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+      execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+      writeFileSync(join(repoDir, "notes.txt"), `init ${branchName}\n`, "utf8");
+      execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+      execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+      execSync("git branch -m main", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+      execSync(`git checkout -b ${branchName}`, { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    };
+    initRepo(repoPrimary, "feature/repo-alpha");
+    initRepo(repoSelected, "feature/session-surface");
+
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "surface-ws",
+          workspaces: [
+            {
+              id: "surface-ws",
+              name: "Surface Workspace",
+              path: workspaceRoot,
+              activeRepo: "repo-beta",
+              repos: [
+                { name: "repo-alpha", primary: true },
+                { name: "repo-beta", primary: false },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const trackerMod = await import("../infra/session-tracker.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const createJson = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "primary",
+          workspaceId: "surface-ws",
+          selectedRepoPath: repoSelected,
+          executionTarget: "connect_codex_web",
+          permissionMode: "full_access",
+          branch: "feature/session-surface",
+          prompt: "session surface contract",
+        }),
+      }).then((response) => response.json());
+
+      expect(createJson.ok).toBe(true);
+      const sessionId = createJson.session?.id;
+      expect(sessionId).toBeTruthy();
+
+      const tracker = trackerMod.getSessionTracker();
+      tracker.recordEvent(sessionId, {
+        id: `${sessionId}-user-1`,
+        role: "user",
+        content: "Inspect session surface metadata",
+        timestamp: "2026-04-04T11:00:00.000Z",
+        turnIndex: 0,
+      });
+      tracker.recordEvent(sessionId, {
+        id: `${sessionId}-assistant-1`,
+        role: "assistant",
+        content: "Surface metadata prepared",
+        timestamp: "2026-04-04T11:00:02.000Z",
+        turnIndex: 0,
+        meta: {
+          usage: {
+            inputTokens: 210,
+            outputTokens: 90,
+            totalTokens: 300,
+            cacheInputTokens: 45,
+          },
+        },
+      });
+      tracker.updateSessionMetadata(sessionId, (currentMetadata = {}) => ({
+        ...currentMetadata,
+        branch: "feature/session-surface",
+        turnDiffs: {
+          [`${encodeURIComponent(sessionId)}:turn:0`]: {
+            turnId: `${encodeURIComponent(sessionId)}:turn:0`,
+            turnIndex: 0,
+            capturedAt: "2026-04-04T11:00:03.000Z",
+            diff: {
+              files: [
+                {
+                  filename: "src/session-surface.mjs",
+                  status: "modified",
+                  additions: 12,
+                  deletions: 3,
+                  patch: "@@ -1 +1 @@\n-old\n+new\n",
+                  hunks: [{ header: "@@ -1 +1 @@", lines: [] }],
+                },
+              ],
+              totalFiles: 1,
+              totalAdditions: 12,
+              totalDeletions: 3,
+              formatted: "1 file changed, 12 insertions(+), 3 deletions(-)",
+              sourceRange: "origin/main...feature/session-surface",
+            },
+            source: {
+              kind: "turn",
+              label: "origin/main...feature/session-surface",
+              detail: repoSelected,
+            },
+          },
+        },
+      }));
+      tracker.endSession(sessionId, "completed");
+      const liveSession = tracker.getSessionById(sessionId);
+      liveSession.insights = {
+        ...(liveSession.insights && typeof liveSession.insights === "object" ? liveSession.insights : {}),
+        contextWindow: {
+          usedTokens: 41000,
+          totalTokens: 380000,
+          percent: 11,
+        },
+      };
+
+      const listJson = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`).then((response) => response.json());
+      const listed = listJson.sessions.find((entry) => entry.id === sessionId);
+      expect(listed?.surface?.repository?.selected).toEqual(expect.objectContaining({
+        path: repoSelected,
+        name: "repo-beta",
+      }));
+      expect(listed?.surface?.repository?.available).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "repo-alpha", primary: true }),
+        expect.objectContaining({ name: "repo-beta", selected: true }),
+      ]));
+      expect(listed?.surface?.permissionMode?.selected?.id).toBe("full_access");
+      expect(listed?.surface?.executionTarget?.selected?.id).toBe("connect_codex_web");
+
+      const detailJson = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`,
+      ).then((response) => response.json());
+      expect(detailJson.ok).toBe(true);
+      expect(detailJson.session.surface.repository.available).toHaveLength(2);
+      expect(detailJson.session.surface.branch.selected).toBe("feature/session-surface");
+      expect(detailJson.session.surface.branch.available).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "feature/session-surface", current: true }),
+        expect.objectContaining({ name: "main" }),
+      ]));
+      expect(detailJson.session.surface.tokenUsage).toEqual(expect.objectContaining({
+        totalTokens: 300,
+        inputTokens: 210,
+        outputTokens: 90,
+        cacheInputTokens: 45,
+      }));
+      expect(detailJson.session.surface.contextWindow).toEqual(expect.objectContaining({
+        usedTokens: 41000,
+        totalTokens: 380000,
+        percent: 11,
+      }));
+      expect(detailJson.session.turns).toEqual([
+        expect.objectContaining({
+          id: `${encodeURIComponent(sessionId)}:turn:0`,
+          turnIndex: 0,
+          fileChanges: expect.objectContaining({
+            totalFiles: 1,
+            totalAdditions: 12,
+            totalDeletions: 3,
+            files: [
+              expect.objectContaining({
+                filename: "src/session-surface.mjs",
+                status: "modified",
+                hasPatch: true,
+              }),
+            ],
+          }),
+          diffRef: expect.objectContaining({
+            turnId: `${encodeURIComponent(sessionId)}:turn:0`,
+            turnIndex: 0,
+          }),
+        }),
+      ]);
+
+      const branchesJson = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/branches?workspace=all`,
+      ).then((response) => response.json());
+      expect(branchesJson.ok).toBe(true);
+      expect(branchesJson.repository).toEqual(expect.objectContaining({
+        path: repoSelected,
+        name: "repo-beta",
+      }));
+      expect(branchesJson.branch.available).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "feature/session-surface", current: true }),
+        expect.objectContaining({ name: "main" }),
+      ]));
+
+      const turnDiffJson = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/diff?workspace=all&turnId=${encodeURIComponent(`${encodeURIComponent(sessionId)}:turn:0`)}`,
+      ).then((response) => response.json());
+      expect(turnDiffJson.ok).toBe(true);
+      expect(turnDiffJson.source).toEqual(expect.objectContaining({
+        kind: "turn",
+        turnId: `${encodeURIComponent(sessionId)}:turn:0`,
+        turnIndex: 0,
+      }));
+      expect(turnDiffJson.diff).toEqual(expect.objectContaining({
+        totalFiles: 1,
+        totalAdditions: 12,
+        totalDeletions: 3,
+      }));
+    } finally {
+      if (previousConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = previousConfigPath;
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 20000);
 
   it("builds task diff payloads from a posted task snapshot and linked worktree path", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

@@ -102,6 +102,11 @@ function compactSessionMetadata(metadata = {}) {
     "hidden",
     "hiddenInLists",
     "title",
+    "branch",
+    "selectedRepoPath",
+    "selectedRepoName",
+    "executionTarget",
+    "permissionMode",
     "contextCompressionMode",
     "queuedFollowups",
   ];
@@ -203,6 +208,217 @@ function buildSessionCompressionMetrics(session = null, events = []) {
   };
 }
 
+function normalizeSessionPermissionMode(value, fallback = "default_permissions") {
+  const normalized = toTrimmedString(value).toLowerCase();
+  if (normalized === "full_access" || normalized === "full-access" || normalized === "full") return "full_access";
+  if (
+    normalized === "default_permissions"
+    || normalized === "default-permissions"
+    || normalized === "default"
+    || normalized === "standard"
+    || normalized === "workspace_write"
+    || normalized === "workspace-write"
+    || !normalized
+  ) {
+    return "default_permissions";
+  }
+  return fallback;
+}
+
+function normalizeSessionExecutionTarget(value, fallback = "local_project") {
+  const normalized = toTrimmedString(value).toLowerCase();
+  if (
+    normalized === "connect_codex_web"
+    || normalized === "connect-codex-web"
+    || normalized === "codex_web"
+    || normalized === "codex-web"
+    || normalized === "web"
+  ) {
+    return "connect_codex_web";
+  }
+  if (normalized === "send_to_cloud" || normalized === "send-to-cloud" || normalized === "cloud") {
+    return "send_to_cloud";
+  }
+  if (
+    normalized === "local_project"
+    || normalized === "local-project"
+    || normalized === "local"
+    || !normalized
+  ) {
+    return "local_project";
+  }
+  return fallback;
+}
+
+function buildSessionTurnId(sessionId, turn = {}) {
+  const safeSessionId = encodeURIComponent(toTrimmedString(sessionId || "session"));
+  const turnIndex = Number.isFinite(Number(turn?.turnIndex)) ? Number(turn.turnIndex) : 0;
+  return `${safeSessionId}:turn:${turnIndex}`;
+}
+
+function summarizeDiffFilesForSurface(files = []) {
+  return (Array.isArray(files) ? files : []).map((file = {}) => ({
+    filename: String(file.filename || file.file || file.newFilename || file.oldFilename || "unknown").trim() || "unknown",
+    status: String(file.status || "modified").trim() || "modified",
+    additions: Math.max(0, Number(file.additions || 0) || 0),
+    deletions: Math.max(0, Number(file.deletions || 0) || 0),
+    binary: Boolean(file.binary),
+    hasPatch: Boolean(String(file.patch || file.diff || "").trim() || (Array.isArray(file.hunks) && file.hunks.length > 0)),
+    hunkCount: Array.isArray(file.hunks) ? file.hunks.length : 0,
+  }));
+}
+
+function buildTurnDiffSummary(snapshot = null) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const diff = snapshot.diff && typeof snapshot.diff === "object" ? snapshot.diff : snapshot;
+  const files = summarizeDiffFilesForSurface(diff.files);
+  return {
+    turnId: toTrimmedString(snapshot.turnId || "") || null,
+    turnIndex: Number.isFinite(Number(snapshot.turnIndex)) ? Number(snapshot.turnIndex) : null,
+    capturedAt: toTrimmedString(snapshot.capturedAt || "") || null,
+    totalFiles: Math.max(0, Number(diff.totalFiles || files.length || 0) || 0),
+    totalAdditions: Math.max(0, Number(diff.totalAdditions || 0) || 0),
+    totalDeletions: Math.max(0, Number(diff.totalDeletions || 0) || 0),
+    formatted: toTrimmedString(diff.formatted || snapshot.summary || "") || "",
+    files,
+  };
+}
+
+function listStoredTurnDiffSnapshots(session = null) {
+  const metadata =
+    session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const raw = metadata.turnDiffs;
+  if (!raw || typeof raw !== "object") return [];
+  const values = Array.isArray(raw) ? raw : Object.values(raw);
+  return values
+    .filter((entry) => entry && typeof entry === "object")
+    .sort((left, right) => Number(left?.turnIndex || 0) - Number(right?.turnIndex || 0));
+}
+
+function findStoredTurnDiffSnapshot(session = null, { turnId = "", turnIndex = null } = {}) {
+  const snapshots = listStoredTurnDiffSnapshots(session);
+  const normalizedTurnId = toTrimmedString(turnId);
+  if (normalizedTurnId) {
+    const exact = snapshots.find((entry) => toTrimmedString(entry?.turnId) === normalizedTurnId);
+    if (exact) return exact;
+  }
+  if (Number.isFinite(Number(turnIndex))) {
+    const numericTurnIndex = Number(turnIndex);
+    return snapshots.find((entry) => Number(entry?.turnIndex) === numericTurnIndex) || null;
+  }
+  return null;
+}
+
+function buildPermissionModeSurface(session = null) {
+  const metadata =
+    session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const selectedId = normalizeSessionPermissionMode(metadata.permissionMode, "default_permissions");
+  const options = [
+    {
+      id: "default_permissions",
+      label: "Default Permissions",
+      description: "Run with the default Bosun/Codex permission profile.",
+      available: true,
+    },
+    {
+      id: "full_access",
+      label: "Full access",
+      description: "Run with the broadest local access profile.",
+      available: true,
+    },
+  ];
+  return {
+    selected: options.find((option) => option.id === selectedId) || options[0],
+    options,
+  };
+}
+
+function buildExecutionTargetSurface(session = null) {
+  const metadata =
+    session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const selectedId = normalizeSessionExecutionTarget(metadata.executionTarget, "local_project");
+  const options = [
+    {
+      id: "local_project",
+      label: "Local project",
+      description: "Run against the local workspace repository.",
+      available: true,
+    },
+    {
+      id: "connect_codex_web",
+      label: "Connect Codex web",
+      description: "Hand off to a connected Codex web surface when supported.",
+      available: true,
+    },
+    {
+      id: "send_to_cloud",
+      label: "Send to cloud",
+      description: "Cloud continuation is not available in this surface yet.",
+      available: false,
+    },
+  ];
+  return {
+    selected: options.find((option) => option.id === selectedId) || options[0],
+    options,
+  };
+}
+
+function buildSessionContextSurface(session = null, metrics = null, events = []) {
+  const insights =
+    session?.insights && typeof session.insights === "object"
+      ? session.insights
+      : {};
+  const tokenUsage =
+    metrics?.tokenUsage && typeof metrics.tokenUsage === "object"
+      ? metrics.tokenUsage
+      : {};
+  const contextWindow =
+    insights.contextWindow && typeof insights.contextWindow === "object"
+      ? { ...insights.contextWindow }
+      : {};
+  const usedTokens = Math.max(
+    0,
+    Number(
+      contextWindow.usedTokens
+      ?? contextWindow.totalTokensUsed
+      ?? tokenUsage.totalTokens
+      ?? 0,
+    ) || 0,
+  );
+  const totalTokens = Number.isFinite(Number(contextWindow.totalTokens))
+    ? Math.max(0, Number(contextWindow.totalTokens))
+    : null;
+  const percent = Number.isFinite(Number(contextWindow.percent))
+    ? Math.max(0, Math.min(100, Number(contextWindow.percent)))
+    : (totalTokens && totalTokens > 0 ? Math.round((usedTokens / totalTokens) * 100) : null);
+  return {
+    contextWindow: {
+      ...contextWindow,
+      usedTokens,
+      totalTokens,
+      percent,
+    },
+    tokenUsage: {
+      totalTokens: Math.max(0, Number(tokenUsage.totalTokens || 0) || 0),
+      inputTokens: Math.max(0, Number(tokenUsage.inputTokens || 0) || 0),
+      outputTokens: Math.max(0, Number(tokenUsage.outputTokens || 0) || 0),
+      cacheInputTokens: Math.max(0, Number(tokenUsage.cacheInputTokens || 0) || 0),
+    },
+    compaction: {
+      mode: metrics?.compressionMode || "normal",
+      compactEvents: Math.max(0, Number(metrics?.compactEvents || 0) || 0),
+      recentEventCount: Array.isArray(events) ? events.length : 0,
+      canCompact: metrics?.compressionMode !== "disabled",
+    },
+  };
+}
+
 function extractCachedEntryText(entry = null) {
   const item = entry?.item && typeof entry.item === "object" ? entry.item : null;
   if (!item) return "";
@@ -259,6 +475,104 @@ function compactSessionListItem(session = {}) {
   delete compact.messages;
   delete compact.trajectory;
   return compact;
+}
+
+async function buildSessionSurfacePayload(session = null, workspaceContext = {}, deps = {}, options = {}) {
+  if (!session || typeof session !== "object") return null;
+  const includeBranches = options.includeBranches === true;
+  const listWorkspaceReposForSessionSurface = deps.listWorkspaceReposForSessionSurface;
+  const listGitBranchesForRepo = deps.listGitBranchesForRepo;
+  const readCurrentBranchForRepo = deps.readCurrentBranchForRepo;
+
+  const repoInventory = typeof listWorkspaceReposForSessionSurface === "function"
+    ? listWorkspaceReposForSessionSurface(workspaceContext, session)
+    : { workspaceId: session.workspaceId || null, workspaceRoot: session.workspaceRoot || null, selectedRepoPath: session.workspaceDir || null, repos: [] };
+  const availableRepos = Array.isArray(repoInventory?.repos) ? repoInventory.repos.slice() : [];
+  const selectedRepo =
+    availableRepos.find((entry) => entry?.selected)
+    || availableRepos[0]
+    || null;
+  const metadata =
+    session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const selectedBranch =
+    toTrimmedString(metadata.branch || "")
+    || toTrimmedString(selectedRepo?.branch || "")
+    || (selectedRepo?.path && typeof readCurrentBranchForRepo === "function"
+      ? toTrimmedString(readCurrentBranchForRepo(selectedRepo.path) || "")
+      : "")
+    || null;
+  const branchInventory =
+    includeBranches
+    && selectedRepo?.path
+    && typeof listGitBranchesForRepo === "function"
+      ? listGitBranchesForRepo(selectedRepo.path, { limit: 40 })
+      : null;
+  const events = listSessionShreddingEvents(session.id || session.taskId);
+  const metrics = buildSessionCompressionMetrics(session, events);
+  const context = buildSessionContextSurface(session, metrics, events);
+  return {
+    repository: {
+      workspaceId: repoInventory?.workspaceId || null,
+      workspaceRoot: repoInventory?.workspaceRoot || null,
+      selected: selectedRepo || null,
+      available: availableRepos,
+    },
+    branch: {
+      selected: selectedBranch,
+      repoId: selectedRepo?.id || null,
+      repoPath: selectedRepo?.path || null,
+      available: Array.isArray(branchInventory?.branches) ? branchInventory.branches : [],
+      current: branchInventory?.current || selectedBranch || null,
+    },
+    executionTarget: buildExecutionTargetSurface(session),
+    permissionMode: buildPermissionModeSurface(session),
+    contextWindow: context.contextWindow,
+    tokenUsage: context.tokenUsage,
+    compaction: context.compaction,
+  };
+}
+
+function enrichSessionTurnsForSurface(session = null) {
+  if (!session || typeof session !== "object") return [];
+  const turns = Array.isArray(session.turns) ? session.turns : [];
+  return turns.map((turn) => {
+    const turnId = buildSessionTurnId(session.id || session.taskId, turn);
+    const snapshot = findStoredTurnDiffSnapshot(session, {
+      turnId,
+      turnIndex: Number.isFinite(Number(turn?.turnIndex)) ? Number(turn.turnIndex) : null,
+    });
+    return {
+      ...turn,
+      id: turnId,
+      fileChanges: buildTurnDiffSummary(snapshot),
+      diffRef: {
+        turnId,
+        turnIndex: Number.isFinite(Number(turn?.turnIndex)) ? Number(turn.turnIndex) : null,
+      },
+    };
+  });
+}
+
+async function buildSessionResponsePayload(session = null, workspaceContext = {}, deps = {}, options = {}) {
+  if (!session || typeof session !== "object") return session;
+  const includeBranches = options.includeBranches === true;
+  const responseSession = {
+    ...session,
+    metadata:
+      session.metadata && typeof session.metadata === "object"
+        ? { ...session.metadata }
+        : {},
+  };
+  if (responseSession.metadata && typeof responseSession.metadata === "object") {
+    delete responseSession.metadata.turnDiffs;
+  }
+  responseSession.turns = enrichSessionTurnsForSurface(session);
+  responseSession.surface = await buildSessionSurfacePayload(session, workspaceContext, deps, {
+    includeBranches,
+  });
+  return responseSession;
 }
 
 function mergeSessionListItems(primarySessions = [], fallbackSessions = [], mergeSessionRecords) {
@@ -391,6 +705,9 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     getRecentCommits,
     resolveActiveWorkspaceExecutionContext,
     resolveWorkspaceContextById,
+    listWorkspaceReposForSessionSurface,
+    listGitBranchesForRepo,
+    readCurrentBranchForRepo,
   } = deps;
 
   if (path === "/api/harness/sessions" && req.method === "GET") {
@@ -568,9 +885,14 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const pagedSessions = limit > 0
         ? sessions.slice(offset, offset + limit)
         : sessions;
-      const responseSessions = wantsFull
+      const sessionPayloads = wantsFull
         ? pagedSessions
         : pagedSessions.map((session) => compactSessionListItem(session));
+      const responseSessions = await Promise.all(
+        sessionPayloads.map((session) => buildSessionResponsePayload(session, workspaceContext, deps, {
+          includeBranches: wantsFull,
+        })),
+      );
       jsonResponse(res, 200, {
         ok: true,
         sessions: responseSessions,
@@ -606,7 +928,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const type = body?.type || "manual";
       const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const requestedWorkspaceId = toTrimmedString(body?.workspaceId || "");
-      const requestedWorkspaceDir = normalizeCandidatePath(body?.workspaceDir);
+      const requestedWorkspaceDir = normalizeCandidatePath(body?.selectedRepoPath || body?.repoPath || body?.workspaceDir);
       const requestedWorkspaceRoot = normalizeCandidatePath(body?.workspaceRoot);
       const workspaceContext =
         (requestedWorkspaceId && typeof resolveWorkspaceContextById === "function"
@@ -629,6 +951,14 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         || toTrimmedString(getPrimaryAgentSelection?.() || "")
         || getPrimaryAgentName();
       const requestedModel = toTrimmedString(body?.model || "") || undefined;
+      const selectedBranch =
+        toTrimmedString(body?.branch || "")
+        || (resolvedWorkspaceDir && typeof readCurrentBranchForRepo === "function"
+          ? toTrimmedString(readCurrentBranchForRepo(resolvedWorkspaceDir) || "")
+          : "")
+        || undefined;
+      const executionTarget = normalizeSessionExecutionTarget(body?.executionTarget, "local_project");
+      const permissionMode = normalizeSessionPermissionMode(body?.permissionMode, "default_permissions");
       const tracker = getSessionTracker();
       const session = tracker.createSession({
         id,
@@ -639,6 +969,11 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           agent: requestedAgent,
           mode: body?.mode || getAgentMode(),
           model: requestedModel,
+          ...(selectedBranch ? { branch: selectedBranch } : {}),
+          selectedRepoPath: resolvedWorkspaceDir || undefined,
+          selectedRepoName: resolvedWorkspaceDir ? basename(resolvedWorkspaceDir) : undefined,
+          executionTarget,
+          permissionMode,
           contextCompressionMode: resolveSessionContextCompressionMode(null, body),
           source: body?.source || undefined,
           visibility: body?.visibility || undefined,
@@ -650,9 +985,19 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
         },
       });
+      const responseSession = await buildSessionResponsePayload(
+        tracker.getSessionById(session.id) || session,
+        {
+          workspaceId: resolvedWorkspaceId,
+          workspaceDir: resolvedWorkspaceDir,
+          workspaceRoot: resolvedWorkspaceRoot,
+        },
+        deps,
+        { includeBranches: true },
+      );
       jsonResponse(res, 200, {
         ok: true,
-        session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata },
+        session: responseSession,
       });
       broadcastUiEvent(["sessions"], "invalidate", { reason: "session-created", sessionId: id });
       broadcastSessionsSnapshot();
@@ -771,7 +1116,10 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const fullParam = toTrimmedString(url.searchParams.get("full") || "").toLowerCase();
       const wantsFull = fullParam === "1" || fullParam === "true" || fullParam === "yes";
       if (wantsFull) {
-        jsonResponse(res, 200, { ok: true, session });
+        const responseSession = await buildSessionResponsePayload(session, workspaceContext, deps, {
+          includeBranches: true,
+        });
+        jsonResponse(res, 200, { ok: true, session: responseSession });
         return true;
       }
       const parsedLimit = Number(limitParam);
@@ -784,9 +1132,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         ? Math.max(0, Math.min(Number(offsetParam) || 0, total))
         : Math.max(0, total - limit);
       const sliced = allMessages.slice(offset, offset + limit);
+      const pagedSession = await buildSessionResponsePayload(
+        { ...session, messages: sliced },
+        workspaceContext,
+        deps,
+        { includeBranches: false },
+      );
       jsonResponse(res, 200, {
         ok: true,
-        session: { ...session, messages: sliced },
+        session: pagedSession,
         pagination: { total, offset, limit, hasMore: offset > 0 },
       });
     } catch (err) {
@@ -809,6 +1163,52 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         session,
         metrics: buildSessionCompressionMetrics(session, events),
         recentEvents: events.slice(0, 50),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  if (action === "branches" && req.method === "GET") {
+    try {
+      const session = getScopedSessionRecord({ includeMessages: false });
+      if (!session) {
+        jsonResponse(res, 404, { ok: false, error: "Session not found" });
+        return true;
+      }
+      const surface = await buildSessionSurfacePayload(session, workspaceContext, deps, {
+        includeBranches: false,
+      });
+      const requestedRepoPath = normalizeCandidatePath(
+        url.searchParams.get("repoPath")
+        || url.searchParams.get("repo")
+        || session?.metadata?.selectedRepoPath
+        || session?.workspaceDir
+        || session?.metadata?.workspaceDir,
+      );
+      const selectedRepo =
+        (requestedRepoPath
+          ? surface?.repository?.available?.find((repo) => repo?.path === requestedRepoPath)
+          : null)
+        || surface?.repository?.selected
+        || null;
+      const branchInventory =
+        selectedRepo?.path && typeof listGitBranchesForRepo === "function"
+          ? listGitBranchesForRepo(selectedRepo.path, { limit: 100 })
+          : { repoPath: selectedRepo?.path || null, current: null, branches: [] };
+      jsonResponse(res, 200, {
+        ok: true,
+        sessionId,
+        repository: selectedRepo,
+        branch: {
+          selected:
+            toTrimmedString(session?.metadata?.branch || "")
+            || branchInventory.current
+            || null,
+          current: branchInventory.current || null,
+          available: branchInventory.branches,
+        },
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -984,6 +1384,17 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const messageModel = toTrimmedString(
         body?.model || session?.metadata?.model || "",
       ) || undefined;
+      const messageBranch = toTrimmedString(
+        body?.branch || session?.metadata?.branch || "",
+      ) || undefined;
+      const executionTarget = normalizeSessionExecutionTarget(
+        body?.executionTarget || session?.metadata?.executionTarget,
+        "local_project",
+      );
+      const permissionMode = normalizeSessionPermissionMode(
+        body?.permissionMode || session?.metadata?.permissionMode,
+        "default_permissions",
+      );
       const contextCompressionMode = resolveSessionContextCompressionMode(session, body);
       const forceContextShredding = contextCompressionMode === "forced";
       const skipContextShredding = contextCompressionMode === "disabled";
@@ -1003,6 +1414,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           ...(nextAgent ? { agent: nextAgent } : {}),
           ...(nextModel ? { model: nextModel } : {}),
           ...(nextAgentProfileId ? { agentProfileId: nextAgentProfileId } : {}),
+          ...(messageBranch ? { branch: messageBranch } : {}),
+          ...(session?.workspaceDir || session?.metadata?.workspaceDir
+            ? {
+                selectedRepoPath: session?.workspaceDir || session?.metadata?.workspaceDir,
+                selectedRepoName: basename(session?.workspaceDir || session?.metadata?.workspaceDir),
+              }
+            : {}),
+          executionTarget,
+          permissionMode,
           contextCompressionMode,
         }));
         if (nextMetadata) {
@@ -1021,11 +1441,70 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         turnModel = messageModel,
         turnAgentProfileId = messageAgentProfileId,
         skipQueuedDrain = false,
+        waitForSettlement = false,
       } = {}) => {
         if (!exec) return false;
         const liveSession = tracker.getSessionById(sessionId) || session;
         if (!liveSession) return false;
         const sessionWorkspaceDir = resolveSessionWorkspaceDir(liveSession);
+        const captureTurnDiffSnapshot = async () => {
+          if (!sessionWorkspaceDir || !existsSync(sessionWorkspaceDir)) return null;
+          const latestSession = tracker.getSessionById(sessionId) || liveSession;
+          const turns = Array.isArray(latestSession?.turns) ? latestSession.turns : [];
+          const latestTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+          if (!latestTurn) return null;
+          const turnId = buildSessionTurnId(sessionId, latestTurn);
+          let stats = collectDiffStats(sessionWorkspaceDir, {
+            range: "HEAD",
+            includePatch: true,
+          });
+          if (Number(stats?.totalFiles || 0) === 0 && existsSync(deps.resolve(sessionWorkspaceDir, ".git"))) {
+            await new Promise((resolveRetry) => setTimeout(resolveRetry, 25));
+            stats = collectDiffStats(sessionWorkspaceDir, {
+              range: "HEAD",
+              includePatch: true,
+            });
+          }
+          const snapshot = {
+            turnId,
+            turnIndex: Number.isFinite(Number(latestTurn?.turnIndex)) ? Number(latestTurn.turnIndex) : null,
+            capturedAt: new Date().toISOString(),
+            diff: stats,
+            source: {
+              kind: "turn",
+              label: stats?.sourceRange || "origin/main...HEAD",
+              detail: sessionWorkspaceDir,
+            },
+          };
+          tracker.updateSessionMetadata?.(sessionId, (currentMetadata = {}) => {
+            const currentTurnDiffs =
+              currentMetadata.turnDiffs && typeof currentMetadata.turnDiffs === "object" && !Array.isArray(currentMetadata.turnDiffs)
+                ? { ...currentMetadata.turnDiffs }
+                : {};
+            currentTurnDiffs[turnId] = snapshot;
+            const orderedKeys = Object.keys(currentTurnDiffs)
+              .sort((left, right) => {
+                const leftIndex = Number(currentTurnDiffs[left]?.turnIndex || 0);
+                const rightIndex = Number(currentTurnDiffs[right]?.turnIndex || 0);
+                return leftIndex - rightIndex;
+              });
+            while (orderedKeys.length > 12) {
+              const oldestKey = orderedKeys.shift();
+              if (oldestKey) delete currentTurnDiffs[oldestKey];
+            }
+            return {
+              ...currentMetadata,
+              turnDiffs: currentTurnDiffs,
+              selectedRepoPath: sessionWorkspaceDir,
+              selectedRepoName: basename(sessionWorkspaceDir),
+              ...(typeof readCurrentBranchForRepo === "function"
+                ? { branch: toTrimmedString(readCurrentBranchForRepo(sessionWorkspaceDir) || "") || currentMetadata.branch }
+                : {}),
+            };
+          });
+          invalidateDurableSessionListCache();
+          return snapshot;
+        };
         let userMessageRecorded = false;
         const safeContent = typeof turnContent === "string" ? turnContent : "";
         const safeAttachments = Array.isArray(turnAttachments) ? turnAttachments.filter(Boolean) : [];
@@ -1073,7 +1552,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         const abortController = new AbortController();
         sessionRunAbortControllers.set(sessionId, abortController);
         let completedNormally = false;
-        exec(safeContent, {
+        const turnLifecycle = exec(safeContent, {
           sessionId,
           sessionType: "primary",
           mode: messageMode,
@@ -1098,8 +1577,10 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           if (latestSession?.status === "active") {
             tracker.updateSessionStatus(sessionId, "completed");
           }
-          broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
-          broadcastSessionsSnapshot();
+          return captureTurnDiffSnapshot().finally(() => {
+            broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
+            broadcastSessionsSnapshot();
+          });
         }).catch((execErr) => {
           const latestSession = tracker.getSessionById(sessionId);
           const sessionStillActive = latestSession?.status === "active";
@@ -1151,10 +1632,14 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
                 turnAttachments: Array.isArray(nextQueued.entry.attachments) ? nextQueued.entry.attachments : [],
                 turnAgent: toTrimmedString(nextQueued.entry.agent || "") || messageAgent,
                 turnModel: toTrimmedString(nextQueued.entry.model || "") || messageModel,
+                waitForSettlement: true,
               });
             }
           }
         });
+        if (waitForSettlement) {
+          await turnLifecycle;
+        }
         return true;
       };
 
@@ -1395,6 +1880,11 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
   if (action === "diff" && req.method === "GET") {
     try {
       const session = getScopedSessionRecord({ includeMessages: true });
+      const requestedTurnId = toTrimmedString(url.searchParams.get("turnId") || "");
+      const requestedTurnIndexRaw = url.searchParams.get("turnIndex");
+      const requestedTurnIndex = Number.isFinite(Number(requestedTurnIndexRaw))
+        ? Number(requestedTurnIndexRaw)
+        : null;
       if (!session) {
         jsonResponse(res, 200, {
           ok: true,
@@ -1409,6 +1899,31 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           commits: [],
         });
         return true;
+      }
+      if (requestedTurnId || requestedTurnIndex != null) {
+        const snapshot = findStoredTurnDiffSnapshot(session, {
+          turnId: requestedTurnId,
+          turnIndex: requestedTurnIndex,
+        });
+        const targetTurn = enrichSessionTurnsForSurface(session).find((turn) =>
+          (requestedTurnId && turn?.id === requestedTurnId)
+          || (requestedTurnIndex != null && Number(turn?.turnIndex) === Number(requestedTurnIndex))
+        ) || null;
+        if (snapshot) {
+          jsonResponse(res, 200, {
+            ok: true,
+            turn: targetTurn,
+            diff: snapshot.diff,
+            summary: snapshot.diff?.formatted || snapshot.summary || "",
+            commits: [],
+            source: {
+              ...(snapshot.source && typeof snapshot.source === "object" ? snapshot.source : {}),
+              turnId: snapshot.turnId || requestedTurnId || null,
+              turnIndex: Number.isFinite(Number(snapshot.turnIndex)) ? Number(snapshot.turnIndex) : requestedTurnIndex,
+            },
+          });
+          return true;
+        }
       }
       const worktreePath = await resolveSessionWorktreePath(session);
       if (!worktreePath || !existsSync(worktreePath)) {
@@ -1435,13 +1950,22 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const commits = getRecentCommits(worktreePath);
       jsonResponse(res, 200, {
         ok: true,
+        turn:
+          requestedTurnId || requestedTurnIndex != null
+            ? enrichSessionTurnsForSurface(session).find((turn) =>
+                (requestedTurnId && turn?.id === requestedTurnId)
+                || (requestedTurnIndex != null && Number(turn?.turnIndex) === Number(requestedTurnIndex))
+              ) || null
+            : null,
         diff: stats,
         summary,
         commits,
         source: {
-          kind: "session",
+          kind: requestedTurnId || requestedTurnIndex != null ? "turn-fallback" : "session",
           label: stats.sourceRange || "origin/main...HEAD",
           detail: worktreePath,
+          ...(requestedTurnId ? { turnId: requestedTurnId } : {}),
+          ...(requestedTurnIndex != null ? { turnIndex: requestedTurnIndex } : {}),
         },
       });
     } catch (err) {

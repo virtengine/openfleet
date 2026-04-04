@@ -7130,6 +7130,218 @@ function resolveDefaultRepositoryForWorkspaceContext(workspaceContext = {}) {
   ).trim();
 }
 
+function runGitInRepo(repoDir, args, timeoutMs = 10000) {
+  const cwd = normalizeCandidatePath(repoDir) || repoRoot;
+  const argList = Array.isArray(args)
+    ? args
+    : String(args || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  const res = spawnSync("git", argList, {
+    cwd,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    throw new Error(String(res.stderr || res.stdout || "git command failed").trim());
+  }
+  return String(res.stdout || "").trim();
+}
+
+function readCurrentBranchForRepo(repoDir = "") {
+  const normalizedRepoDir = normalizeCandidatePath(repoDir);
+  if (!normalizedRepoDir || !existsSync(normalizedRepoDir)) return null;
+  try {
+    const branch = runGitInRepo(normalizedRepoDir, ["branch", "--show-current"], 5000);
+    return String(branch || "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function listGitBranchesForRepo(repoDir = "", options = {}) {
+  const normalizedRepoDir = normalizeCandidatePath(repoDir);
+  if (!normalizedRepoDir || !existsSync(normalizedRepoDir)) {
+    return {
+      repoPath: normalizedRepoDir || null,
+      current: null,
+      branches: [],
+    };
+  }
+  const limit = Number.isFinite(Number(options.limit))
+    ? Math.max(1, Math.min(Math.trunc(Number(options.limit)), 200))
+    : 40;
+  const current = readCurrentBranchForRepo(normalizedRepoDir);
+  let raw = "";
+  try {
+    raw = runGitInRepo(
+      normalizedRepoDir,
+      [
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname:short)||%(HEAD)||%(objectname:short)||%(upstream:short)",
+        "refs/heads",
+        "refs/remotes",
+      ],
+      15000,
+    );
+  } catch {
+    raw = "";
+  }
+  const seen = new Set();
+  const branches = [];
+  for (const line of String(raw || "").split("\n")) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) continue;
+    const [nameRaw, headRaw, shortHashRaw, upstreamRaw] = trimmed.split("||");
+    const name = String(nameRaw || "").trim();
+    if (!name || name === "origin/HEAD") continue;
+    const scope = name.startsWith("origin/") || name.startsWith("remotes/")
+      ? "remote"
+      : "local";
+    const key = `${scope}:${name}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const isCurrent =
+      String(headRaw || "").trim() === "*"
+      || (current && (name === current || name.endsWith(`/${current}`)));
+    branches.push({
+      name,
+      current: Boolean(isCurrent),
+      scope,
+      shortHash: String(shortHashRaw || "").trim() || null,
+      upstream: String(upstreamRaw || "").trim() || null,
+    });
+  }
+  branches.sort((left, right) => {
+    if (left.current && !right.current) return -1;
+    if (!left.current && right.current) return 1;
+    if (left.scope !== right.scope) return left.scope === "local" ? -1 : 1;
+    return String(left.name || "").localeCompare(String(right.name || ""));
+  });
+  return {
+    repoPath: normalizedRepoDir,
+    current,
+    branches: branches.slice(0, limit),
+  };
+}
+
+function listWorkspaceReposForSessionSurface(workspaceContext = {}, session = null) {
+  const sessionMeta =
+    session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const sessionWorkspaceId = String(
+    session?.workspaceId
+    || sessionMeta.workspaceId
+    || workspaceContext?.workspaceId
+    || "",
+  ).trim();
+  const sessionWorkspaceDir = normalizeCandidatePath(
+    session?.workspaceDir
+    || sessionMeta.workspaceDir
+    || sessionMeta.selectedRepoPath
+    || workspaceContext?.workspaceDir,
+  );
+  const sessionWorkspaceRoot = normalizeCandidatePath(
+    session?.workspaceRoot
+    || sessionMeta.workspaceRoot
+    || workspaceContext?.workspaceRoot,
+  );
+  const { listed, active } = resolveManagedWorkspaceInventory();
+  const normalizedListed = Array.isArray(listed)
+    ? listed.map((entry) => normalizeResolvedWorkspaceEntry(entry)).filter(Boolean)
+    : [];
+  const normalizedActive = normalizeResolvedWorkspaceEntry(active);
+  let workspace =
+    (sessionWorkspaceId
+      ? normalizedListed.find((entry) => String(entry?.id || "").trim() === sessionWorkspaceId)
+      : null)
+    || null;
+  if (!workspace) {
+    workspace = normalizedListed.find((entry) => {
+      const workspacePath = normalizeCandidatePath(entry?.path);
+      const repoDir = pickWorkspaceRepoDir(entry);
+      const rootDir = pickWorkspaceRootDir(entry, repoDir, workspacePath);
+      return Boolean(
+        (sessionWorkspaceDir && (sessionWorkspaceDir === repoDir || isPathWithinPath(rootDir, sessionWorkspaceDir)))
+        || (sessionWorkspaceRoot && rootDir && sessionWorkspaceRoot === rootDir),
+      );
+    }) || null;
+  }
+  workspace = workspace || normalizedActive || normalizedListed[0] || null;
+
+  const availableRepos = [];
+  const seenRepoPaths = new Set();
+  const workspacePath = normalizeCandidatePath(workspace?.path);
+  const workspaceRoot = pickWorkspaceRootDir(workspace, sessionWorkspaceDir || pickWorkspaceRepoDir(workspace), workspacePath || sessionWorkspaceRoot || repoRoot)
+    || sessionWorkspaceRoot
+    || repoRoot;
+  const pushRepoEntry = (entry, index = 0) => {
+    if (!entry || typeof entry !== "object") return;
+    const repoPath =
+      resolveWorkspaceRepoLocation(entry)
+      || (workspacePath && entry.name ? normalizeCandidatePath(resolve(workspacePath, String(entry.name))) : "")
+      || "";
+    const normalizedRepoPath = normalizeCandidatePath(repoPath);
+    const displayName = String(
+      entry.name
+      || (normalizedRepoPath ? basename(normalizedRepoPath) : "")
+      || `repo-${index + 1}`,
+    ).trim();
+    const repoId = normalizedRepoPath || displayName;
+    const dedupeKey = String(repoId || "").trim().toLowerCase();
+    if (!dedupeKey || seenRepoPaths.has(dedupeKey)) return;
+    seenRepoPaths.add(dedupeKey);
+    const selected =
+      Boolean(
+        normalizedRepoPath && sessionWorkspaceDir && normalizedRepoPath === sessionWorkspaceDir,
+      )
+      || (!normalizedRepoPath && displayName.toLowerCase() === String(sessionMeta.selectedRepoName || "").trim().toLowerCase());
+    availableRepos.push({
+      id: repoId,
+      name: displayName,
+      displayName,
+      path: normalizedRepoPath || null,
+      branch: normalizedRepoPath ? readCurrentBranchForRepo(normalizedRepoPath) : null,
+      primary: Boolean(entry.primary),
+      selected,
+    });
+  };
+  const workspaceRepos = Array.isArray(workspace?.repos) ? workspace.repos : [];
+  workspaceRepos.forEach(pushRepoEntry);
+  if (availableRepos.length === 0 && sessionWorkspaceDir) {
+    pushRepoEntry({
+      name: basename(sessionWorkspaceDir),
+      path: sessionWorkspaceDir,
+      primary: true,
+    });
+  }
+  if (sessionWorkspaceDir && !availableRepos.some((repo) => repo.path === sessionWorkspaceDir)) {
+    pushRepoEntry({
+      name: basename(sessionWorkspaceDir),
+      path: sessionWorkspaceDir,
+      primary: availableRepos.length === 0,
+    }, availableRepos.length);
+  }
+  availableRepos.sort((left, right) => {
+    if (left.selected && !right.selected) return -1;
+    if (!left.selected && right.selected) return 1;
+    if (left.primary && !right.primary) return -1;
+    if (!left.primary && right.primary) return 1;
+    return String(left.displayName || left.name || "").localeCompare(String(right.displayName || right.name || ""));
+  });
+  return {
+    workspaceId: String(workspace?.id || sessionWorkspaceId || "").trim() || null,
+    workspaceRoot,
+    selectedRepoPath: sessionWorkspaceDir || availableRepos.find((repo) => repo.selected)?.path || null,
+    repos: availableRepos,
+  };
+}
+
 async function resolveDefaultKanbanProjectId(adapter, requestedProjectId = "") {
   const explicitProjectId = String(requestedProjectId || "").trim();
   if (explicitProjectId) return explicitProjectId;
@@ -24108,6 +24320,9 @@ async function handleApi(req, res, url) {
       resolveWorkspaceContextFromRequest,
       resolveActiveWorkspaceExecutionContext,
       resolveWorkspaceContextById,
+      listWorkspaceReposForSessionSurface,
+      listGitBranchesForRepo,
+      readCurrentBranchForRepo,
       normalizeCandidatePath,
       mergeTrackerAndLedgerSessions,
       listDurableSessionsFromLedger,

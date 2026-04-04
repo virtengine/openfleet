@@ -28,6 +28,7 @@ describe("task-claims", () => {
   beforeEach(async () => {
     tempRoot = await mkdtemp(resolve(tmpdir(), "codex-claims-"));
     vi.clearAllMocks();
+    vi.resetModules();
   });
 
   afterEach(async () => {
@@ -50,6 +51,7 @@ describe("task-claims", () => {
     let initTaskClaims, claimTask, getClaim;
 
     beforeEach(async () => {
+      vi.resetModules();
       ({ initTaskClaims, claimTask, getClaim } = await import(
         "../task/task-claims.mjs"
       ));
