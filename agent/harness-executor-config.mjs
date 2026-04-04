@@ -103,6 +103,7 @@ function normalizeHarnessModelEntry(rawEntry = {}, index = 0, options = {}) {
     label,
     enabled: parseBooleanLike(value.enabled, true),
     apiStyle,
+    apiVersion: toTrimmedString(value.apiVersion || "") || null,
     reasoningEffort,
     contextWindow,
   };

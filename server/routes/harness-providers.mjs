@@ -73,6 +73,7 @@ export async function tryHandleHarnessProviderRoutes(context = {}) {
     buildResolvedSettingsState,
     buildProviderInventory,
     buildHarnessExecutorInventory,
+    getProviderModelCatalog,
     readJsonBody,
     readConfigDocument,
     writeJsonFileAtomic,
@@ -156,6 +157,62 @@ export async function tryHandleHarnessProviderRoutes(context = {}) {
         ...buildHarnessExecutorInventory(configData, rawValues, providerInventory),
         selection: buildProviderSelectionPayload(deps),
       });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // POST /api/harness/discover-models — discover available models for an executor instance.
+  // For Azure: calls the deployment list API at the configured endpoint.
+  // For all providers: falls back to the static known-models catalog.
+  if (path === "/api/harness/discover-models" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const providerId = toTrimmedString(body?.providerId || "");
+      const endpoint = toTrimmedString(body?.endpoint || body?.baseUrl || "");
+      const apiKeyEnv = toTrimmedString(body?.apiKeyEnv || "");
+
+      // For Azure, try a live deployment listing.
+      if (providerId === "azure-openai-responses" && endpoint) {
+        const apiKey = (apiKeyEnv ? String(process.env[apiKeyEnv] || "") : "")
+          || String(process.env.AZURE_OPENAI_API_KEY || "");
+        if (apiKey) {
+          try {
+            const base = endpoint.replace(/\/$/, "");
+            const deploymentsUrl = `${base}/openai/deployments?api-version=2024-10-01-preview`;
+            const azRes = await fetch(deploymentsUrl, {
+              headers: { "api-key": apiKey, "Content-Type": "application/json" },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (azRes.ok) {
+              const azData = await azRes.json().catch(() => null);
+              const deployments = Array.isArray(azData?.value) ? azData.value : [];
+              const models = [
+                ...new Set(
+                  deployments
+                    .map((d) => toTrimmedString(d?.model || d?.id || d?.name || ""))
+                    .filter(Boolean),
+                ),
+              ];
+              if (models.length > 0) {
+                jsonResponse(res, 200, { ok: true, models, source: "azure-deployment-api" });
+                return true;
+              }
+            }
+          } catch {
+            // fall through to static catalog
+          }
+        }
+      }
+
+      // Fall back to static provider catalog.
+      const { rawValues } = buildResolvedSettingsState();
+      const catalog = getProviderModelCatalog(providerId, { env: process.env, settings: rawValues });
+      const models = (Array.isArray(catalog?.models) ? catalog.models : [])
+        .map((m) => toTrimmedString(m?.id || m || ""))
+        .filter(Boolean);
+      jsonResponse(res, 200, { ok: true, models, source: "static-catalog" });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

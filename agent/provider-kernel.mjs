@@ -317,7 +317,13 @@ export function createProviderKernel(options = {}) {
     const requestedAdapterName = String(input.adapterName || "").trim();
     const selectionId = String(input.selectionId || input.provider || "").trim();
     const runtime = resolveRuntime(selectionId, requestedAdapterName);
-    const adapterName = requestedAdapterName || runtime.providerEntry?.adapterId || "";
+    // Only use requestedAdapterName if it directly maps to a registered adapter;
+    // otherwise fall back to the provider entry's adapterId so named harness
+    // executors (whose selectionId is not an adapter key) still resolve correctly.
+    const adapterName =
+      (requestedAdapterName && options.adapters?.[requestedAdapterName] != null)
+        ? requestedAdapterName
+        : runtime.providerEntry?.adapterId || requestedAdapterName || "";
     const targetAdapter = options.adapters?.[adapterName] || null;
     if (!runtime.providerEntry && !targetAdapter) {
       throw new ProviderConfigurationError(`Unknown provider selection "${selectionId || adapterName || "default"}"`, {
@@ -361,8 +367,15 @@ export function createProviderKernel(options = {}) {
                     model: payload.model || runnerOptions.model || null,
                     metadata: payload.metadata || runnerOptions.metadata || {},
                   });
+                  const selectedModel = payload.model || runnerOptions.model || normalizedInput.model || null;
+                  // Look up per-model apiVersion override from the registry catalog (Azure primarily)
+                  const modelEntry = selectedModel
+                    ? (runtime.registry.getModelCatalog?.(runtime.providerId)?.models || [])
+                        .find((m) => m.id === selectedModel) || null
+                    : null;
+                  const modelApiVersion = modelEntry?.apiVersion || null;
                   const mergedProviderConfig =
-                    explicitProviderConfig || execOptions.providerConfig
+                    explicitProviderConfig || execOptions.providerConfig || modelApiVersion
                       ? {
                           ...(execOptions.providerConfig || {}),
                           ...(explicitProviderConfig || {}),
@@ -373,6 +386,7 @@ export function createProviderKernel(options = {}) {
                             || execOptions.providerConfig?.model
                             || explicitProviderConfig?.model
                             || null,
+                          ...(modelApiVersion ? { apiVersion: modelApiVersion } : {}),
                         }
                       : undefined;
                   return targetAdapter.exec(extractMessageFromPayload(payload), {

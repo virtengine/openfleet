@@ -6882,7 +6882,6 @@ export class WorkflowEngine extends EventEmitter {
         }
 
         const propagateSkippedDependencies = (skippedNodeId) => {
-          if (countForwardIncomingEdges(skippedNodeId) > 1) return;
           const skippedEdges = adjacency.get(skippedNodeId) || [];
           for (const skippedEdge of skippedEdges) {
             if (skippedEdge.backEdge) continue;

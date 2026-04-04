@@ -24460,6 +24460,7 @@ async function handleApi(req, res, url) {
       buildResolvedSettingsState,
       buildProviderInventory,
       buildHarnessExecutorInventory,
+      getProviderModelCatalog,
       readConfigDocument,
       writeJsonFileAtomic,
       emitConfigReload,

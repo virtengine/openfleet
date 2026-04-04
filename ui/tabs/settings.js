@@ -1081,11 +1081,13 @@ function normalizeHarnessExecutorModelForEditor(entry = {}, index = 0, fallbackA
   const id = String(value.id || value.model || value.name || "").trim() || `model-${index + 1}`;
   const label = String(value.label || value.name || "").trim();
   const apiStyle = String(value.apiStyle || value.transport?.apiStyle || fallbackApiStyle || "provider-default").trim() || "provider-default";
+  const apiVersion = String(value.apiVersion || "").trim();
   return {
     _id: value._id || `harness-model-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
     id,
     label,
     apiStyle,
+    apiVersion,
     enabled: value.enabled !== false,
   };
 }
@@ -1127,6 +1129,26 @@ function formatHarnessAuthModeLabel(value = "") {
   if (normalized === "subscription") return "Subscription";
   if (normalized === "local") return "Local";
   return normalized;
+}
+
+function formatHarnessAuthModeDescription(value = "") {
+  const normalized = String(value || "").trim();
+  if (normalized === "apiKey") return "Direct API key — you supply a secret key from the provider dashboard. Required for Azure OpenAI and direct OpenAI / Anthropic API access.";
+  if (normalized === "oauth") return "Browser OAuth — Bosun uses your existing logged-in account session (e.g. Codex desktop login, `gh auth login`, GitHub Copilot). No manual API key needed. The env binding below should point to the env var that holds the OAuth access token.";
+  if (normalized === "subscription") return "Paid subscription — Bosun authenticates via your ChatGPT Plus/Pro or Claude Pro subscription session, not a developer API key. The session token is usually auto-detected from ~/.codex/auth.json after signing in with the Codex desktop app.";
+  if (normalized === "local") return "Local server — no external credentials needed; requests go to a local endpoint (e.g. Ollama).";
+  return "";
+}
+
+function resolveDefaultAuthBindingEnv(authEnvMap, mode) {
+  // authEnvMap is providerInfo.auth.env — keys like { apiKey: { keys:[...], key:... }, oauth: {...}, subscription: {...} }
+  if (!authEnvMap || !mode) return "";
+  const modeMap = { apiKey: "apiKey", oauth: "oauth", subscription: "subscription" };
+  const modeKey = modeMap[mode];
+  if (!modeKey) return "";
+  const entry = authEnvMap[modeKey];
+  // Prefer the currently-detected key; fall back to first in keys list
+  return String(entry?.key || (Array.isArray(entry?.keys) ? entry.keys[0] : "") || "").trim();
 }
 
 function formatHarnessAuthWarningMessages(authState = {}) {
@@ -1327,14 +1349,21 @@ function HarnessExecutorsEditor() {
     const providerOption = getProviderOption(fallbackProvider);
     const baseName = providerOption?.label || providerInfo?.label || fallbackProvider;
     const sequence = executors.filter((entry) => entry.providerId === fallbackProvider).length + 1;
+    const preferredMode = providerInfo?.auth?.preferredMode || "";
+    const authEnvMap = providerInfo?.auth?.env || {};
     const created = normalizeExecutor({
       id: `${fallbackProvider}-${Date.now()}`,
       name: sequence > 1 ? `${baseName} ${sequence}` : baseName,
       providerId: fallbackProvider,
       defaultModel: providerInfo?.modelCatalog?.defaultModel || providerOptions[0]?.defaultModel || "",
-      authMode: providerInfo?.auth?.preferredMode || "",
+      authMode: preferredMode,
       apiStyle: providerOption?.apiStyle || providerOptions[0]?.apiStyle || "provider-default",
       weight: 100,
+      authBindings: {
+        apiKeyEnv: preferredMode === "apiKey" ? resolveDefaultAuthBindingEnv(authEnvMap, "apiKey") : "",
+        oauthTokenEnv: preferredMode === "oauth" ? resolveDefaultAuthBindingEnv(authEnvMap, "oauth") : "",
+        subscriptionEnv: preferredMode === "subscription" ? resolveDefaultAuthBindingEnv(authEnvMap, "subscription") : "",
+      },
     }, executors.length);
     const nextExecutors = [...executors, created];
     const nextPrimary = primaryExecutor || created.id;
@@ -1389,7 +1418,14 @@ function HarnessExecutorsEditor() {
       if (field === "providerId") {
         const providerInfo = getProviderInventoryEntry(value);
         const providerOption = getProviderOption(value);
-        next.authMode = providerInfo?.auth?.preferredMode || "";
+        const newPreferredMode = providerInfo?.auth?.preferredMode || "";
+        const newAuthEnvMap = providerInfo?.auth?.env || {};
+        next.authMode = newPreferredMode;
+        next.authBindings = {
+          apiKeyEnv: newPreferredMode === "apiKey" ? resolveDefaultAuthBindingEnv(newAuthEnvMap, "apiKey") : "",
+          oauthTokenEnv: newPreferredMode === "oauth" ? resolveDefaultAuthBindingEnv(newAuthEnvMap, "oauth") : "",
+          subscriptionEnv: newPreferredMode === "subscription" ? resolveDefaultAuthBindingEnv(newAuthEnvMap, "subscription") : "",
+        };
         next.defaultModel = providerInfo?.modelCatalog?.defaultModel || providerOption?.defaultModel || "";
         next.apiStyle = providerOption?.apiStyle || "provider-default";
         next.modelEntries = Array.isArray(next.modelEntries)
@@ -1497,6 +1533,7 @@ function HarnessExecutorsEditor() {
             id: String(model.id || "").trim(),
             ...(String(model.label || "").trim() ? { label: String(model.label || "").trim() } : {}),
             ...(String(model.apiStyle || "").trim() ? { apiStyle: String(model.apiStyle || "").trim() } : {}),
+            ...(String(model.apiVersion || "").trim() ? { apiVersion: String(model.apiVersion || "").trim() } : {}),
             ...(model.enabled === false ? { enabled: false } : {}),
           }))
           .filter((model) => model.id),
@@ -1701,7 +1738,7 @@ function HarnessExecutorsEditor() {
                 <${TextField} type="number" size="small" variant="outlined" value=${normalizeHarnessExecutorWeight(entry.weight, 100)} onInput=${(e) => updateExecutor(entry._id, "weight", e.target.value)} inputProps=${{ min: 0, max: 100000 }} fullWidth />
                 <div class="meta-text" style="margin-top:4px">${routingMode === "spread" ? "Higher weights make this executor more likely to receive spread-routed work." : "Stored now so the executor is ready if you later switch the Harness runtime to spread routing."}</div>
               </div>
-              <div>
+              <div style="grid-column:1/-1">
                 <div class="setting-row-label">Auth Mode</div>
                 ${authModeOptions.length > 0
                   ? html`
@@ -1713,40 +1750,52 @@ function HarnessExecutorsEditor() {
                   : html`
                       <${TextField} size="small" variant="outlined" value=${entry.authMode} onInput=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} placeholder=${authState.preferredMode || "provider default"} fullWidth />
                     `}
+                ${formatHarnessAuthModeDescription(entry.authMode || authState.preferredMode) && html`
+                  <div class="meta-text" style="margin-top:4px">${formatHarnessAuthModeDescription(entry.authMode || authState.preferredMode)}</div>
+                `}
               </div>
-                <div>
-                  <div class="setting-row-label">API Key Env Binding</div>
-                  <${TextField}
-                    size="small"
-                    variant="outlined"
-                    value=${entry.authBindings?.apiKeyEnv || ""}
-                    onInput=${(e) => updateExecutorAuthBinding(entry._id, "apiKeyEnv", e.target.value)}
-                    placeholder="OPENAI_API_KEY / AZURE_US_API_KEY / ..."
-                    fullWidth
-                  />
-                </div>
-                <div>
-                  <div class="setting-row-label">OAuth Token Env Binding</div>
-                  <${TextField}
-                    size="small"
-                    variant="outlined"
-                    value=${entry.authBindings?.oauthTokenEnv || ""}
-                    onInput=${(e) => updateExecutorAuthBinding(entry._id, "oauthTokenEnv", e.target.value)}
-                    placeholder="OPENAI_ACCESS_TOKEN / COPILOT_OAUTH_TOKEN / ..."
-                    fullWidth
-                  />
-                </div>
-                <div>
-                  <div class="setting-row-label">Subscription Env Binding</div>
-                  <${TextField}
-                    size="small"
-                    variant="outlined"
-                    value=${entry.authBindings?.subscriptionEnv || ""}
-                    onInput=${(e) => updateExecutorAuthBinding(entry._id, "subscriptionEnv", e.target.value)}
-                    placeholder="CHATGPT_SUBSCRIPTION_TOKEN / ..."
-                    fullWidth
-                  />
-                </div>
+                ${(!entry.authMode || entry.authMode === "apiKey") && html`
+                  <div>
+                    <div class="setting-row-label">API Key Env Binding</div>
+                    <${TextField}
+                      size="small"
+                      variant="outlined"
+                      value=${entry.authBindings?.apiKeyEnv || ""}
+                      onInput=${(e) => updateExecutorAuthBinding(entry._id, "apiKeyEnv", e.target.value)}
+                      placeholder=${resolveDefaultAuthBindingEnv(authState?.env, "apiKey") || "OPENAI_API_KEY / AZURE_OPENAI_API_KEY / ..."}
+                      fullWidth
+                    />
+                    <div class="meta-text" style="margin-top:4px">${authState?.env?.apiKey?.configured ? html`<span style="color:var(--color-success,#4caf73)">&#x2713; ${authState.env.apiKey.key} is set</span>` : "Name of the env var that holds your API key. Leave blank to use the provider default."}</div>
+                  </div>
+                `}
+                ${(!entry.authMode || entry.authMode === "oauth") && html`
+                  <div>
+                    <div class="setting-row-label">OAuth Token Env Binding</div>
+                    <${TextField}
+                      size="small"
+                      variant="outlined"
+                      value=${entry.authBindings?.oauthTokenEnv || ""}
+                      onInput=${(e) => updateExecutorAuthBinding(entry._id, "oauthTokenEnv", e.target.value)}
+                      placeholder=${resolveDefaultAuthBindingEnv(authState?.env, "oauth") || "OPENAI_ACCESS_TOKEN / COPILOT_OAUTH_TOKEN / GITHUB_TOKEN / ..."}
+                      fullWidth
+                    />
+                    <div class="meta-text" style="margin-top:4px">${authState?.env?.oauth?.configured ? html`<span style="color:var(--color-success,#4caf73)">&#x2713; ${authState.env.oauth.key} is set</span>` : "Name of the env var holding your OAuth access token. Leave blank to use the provider default."}</div>
+                  </div>
+                `}
+                ${(!entry.authMode || entry.authMode === "subscription") && html`
+                  <div>
+                    <div class="setting-row-label">Subscription Env Binding</div>
+                    <${TextField}
+                      size="small"
+                      variant="outlined"
+                      value=${entry.authBindings?.subscriptionEnv || ""}
+                      onInput=${(e) => updateExecutorAuthBinding(entry._id, "subscriptionEnv", e.target.value)}
+                      placeholder=${resolveDefaultAuthBindingEnv(authState?.env, "subscription") || "OPENAI_SESSION_TOKEN / ..."}
+                      fullWidth
+                    />
+                    <div class="meta-text" style="margin-top:4px">${authState?.env?.subscription?.configured ? html`<span style="color:var(--color-success,#4caf73)">&#x2713; ${authState.env.subscription.key} is set — session auto-detected from ~/.codex/auth.json</span>` : "Name of the env var holding the subscription session token. Auto-detected from ~/.codex/auth.json after signing in with the Codex desktop app. Leave blank to use the provider default."}</div>
+                  </div>
+                `}
               ${supportsEndpoint && html`
                 <div>
                   <div class="setting-row-label">${supportsAzureDeployment ? "Endpoint URL" : "Base URL / Endpoint"}</div>
@@ -1764,10 +1813,6 @@ function HarnessExecutorsEditor() {
                 <div>
                   <div class="setting-row-label">Azure Deployment</div>
                   <${TextField} size="small" variant="outlined" value=${entry.deployment} onInput=${(e) => updateExecutor(entry._id, "deployment", e.target.value)} placeholder="deployment name" fullWidth />
-                </div>
-                <div>
-                  <div class="setting-row-label">Azure API Version</div>
-                  <${TextField} size="small" variant="outlined" value=${entry.apiVersion} onInput=${(e) => updateExecutor(entry._id, "apiVersion", e.target.value)} placeholder="2025-03-01-preview" fullWidth />
                 </div>
               `}
               ${supportsWorkspace && html`
@@ -1791,15 +1836,64 @@ function HarnessExecutorsEditor() {
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
                 <div>
                   <div class="setting-row-label">Model Catalog</div>
-                  <div class="meta-text">Optional per-executor model list. Add only the models this runtime instance should expose in chat, then override API style per model when needed.</div>
+                  <div class="meta-text">Per-executor model list. Load known models from the provider or discover them from a live endpoint. You can then remove any you don't need.</div>
                 </div>
-                <${Button} variant="outlined" size="small" onClick=${() => addExecutorModel(entry._id)}>Add model<//>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+                  ${Array.isArray(providerInfo?.modelCatalog?.models) && providerInfo.modelCatalog.models.length > 0 && html`
+                    <${Button} variant="outlined" size="small" onClick=${() => {
+                      const fallbackApiStyle = supportsHarnessExecutorConfigurableApiStyle(entry.providerId)
+                        ? (entry.apiStyle || "provider-default")
+                        : "provider-default";
+                      const nextExecutors = executors.map((ex) => {
+                        if (ex._id !== entry._id) return ex;
+                        const existingIds = new Set((ex.modelEntries || []).map((m) => m.id).filter(Boolean));
+                        const toAdd = providerInfo.modelCatalog.models
+                          .map((m) => String(m?.id || m || "").trim())
+                          .filter((id) => id && !existingIds.has(id))
+                          .map((id, i) => normalizeHarnessExecutorModelForEditor({ id }, (ex.modelEntries?.length || 0) + i, fallbackApiStyle));
+                        return { ...ex, modelEntries: [...(ex.modelEntries || []), ...toAdd] };
+                      });
+                      setExecutors(nextExecutors);
+                      markDirty(nextExecutors, primaryExecutor, routingMode);
+                      haptic("light");
+                    }}>Load from provider<//>
+                  `}
+                  ${supportsAzureDeployment && html`
+                    <${Button} variant="outlined" size="small" onClick=${async () => {
+                      try {
+                        const res = await apiFetch("/api/harness/discover-models", {
+                          method: "POST",
+                          body: JSON.stringify({
+                            providerId: entry.providerId,
+                            endpoint: entry.endpoint || entry.baseUrl || "",
+                            apiKeyEnv: entry.authBindings?.apiKeyEnv || "",
+                          }),
+                        }).catch(() => null);
+                        const discovered = Array.isArray(res?.models) ? res.models : [];
+                        if (!discovered.length) { haptic("heavy"); return; }
+                        const fallbackApiStyle = entry.apiStyle || "provider-default";
+                        const nextExecutors = executors.map((ex) => {
+                          if (ex._id !== entry._id) return ex;
+                          const existingIds = new Set((ex.modelEntries || []).map((m) => m.id).filter(Boolean));
+                          const toAdd = discovered
+                            .filter((id) => id && !existingIds.has(id))
+                            .map((id, i) => normalizeHarnessExecutorModelForEditor({ id }, (ex.modelEntries?.length || 0) + i, fallbackApiStyle));
+                          return { ...ex, modelEntries: [...(ex.modelEntries || []), ...toAdd] };
+                        });
+                        setExecutors(nextExecutors);
+                        markDirty(nextExecutors, primaryExecutor, routingMode);
+                        haptic("light");
+                      } catch { haptic("heavy"); }
+                    }}>Discover from deployment<//>
+                  `}
+                  <${Button} variant="outlined" size="small" onClick=${() => addExecutorModel(entry._id)}>Add model<//>
+                </div>
               </div>
               ${(Array.isArray(entry.modelEntries) ? entry.modelEntries : []).length === 0
-                ? html`<div class="meta-text">No explicit model list. Bosun will fall back to the provider catalog for this runtime.</div>`
+                ? html`<div class="meta-text">No explicit model list. Use "Load from provider" to populate from the known model catalog, or add manually. Bosun will fall back to the provider catalog.</div>`
                 : html`
                     ${(entry.modelEntries || []).map((model, modelIndex) => html`
-                      <div key=${model._id} style="display:grid;grid-template-columns:minmax(180px,1.5fr) minmax(140px,1fr) minmax(180px,1fr) auto;gap:8px;align-items:end;margin-bottom:8px">
+                      <div key=${model._id} style="display:grid;grid-template-columns:minmax(160px,1.5fr) minmax(120px,1fr) ${supportsAzureDeployment ? "minmax(150px,1fr)" : ""} minmax(160px,1fr) auto;gap:8px;align-items:end;margin-bottom:8px">
                         <div>
                           <div class="setting-row-label">Model ID</div>
                           <${TextField} size="small" variant="outlined" value=${model.id} onInput=${(e) => updateExecutorModel(entry._id, model._id, "id", e.target.value)} placeholder=${modelIndex === 0 ? "gpt-5.4" : "model id"} fullWidth />
@@ -1808,6 +1902,12 @@ function HarnessExecutorsEditor() {
                           <div class="setting-row-label">Label</div>
                           <${TextField} size="small" variant="outlined" value=${model.label} onInput=${(e) => updateExecutorModel(entry._id, model._id, "label", e.target.value)} placeholder="Optional UI label" fullWidth />
                         </div>
+                        ${supportsAzureDeployment && html`
+                          <div>
+                            <div class="setting-row-label">API Version</div>
+                            <${TextField} size="small" variant="outlined" value=${model.apiVersion || ""} onInput=${(e) => updateExecutorModel(entry._id, model._id, "apiVersion", e.target.value)} placeholder="e.g. 2025-03-01-preview" fullWidth />
+                          </div>
+                        `}
                         <div>
                           <div class="setting-row-label">${supportsConfigurableApiStyle ? "API Style For This Model" : "Model Transport"}</div>
                           ${supportsConfigurableApiStyle

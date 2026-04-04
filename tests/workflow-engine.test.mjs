@@ -5976,6 +5976,78 @@ describe("WorkflowEngine trigger evaluation", () => {
     expect(run.getNodeStatus("low-trigger")).toBe(NodeStatus.COMPLETED);
     expect(run.getNodeStatus("should-not-run")).toBe(NodeStatus.SKIPPED);
   });
+  it("propagates skipped multi-input branches so alternate satisfied edges can continue", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "fix-needed",
+          type: "condition.expression",
+          label: "Fix Needed?",
+          config: { expression: "false" },
+        },
+        {
+          id: "pause-task-spawning",
+          type: "notify.log",
+          label: "Pause Task Spawning",
+          config: { message: "pause" },
+        },
+        {
+          id: "security-fix-needed",
+          type: "condition.expression",
+          label: "Security Fix Needed?",
+          config: { expression: "false" },
+        },
+        {
+          id: "dispatch-security-fix-agents",
+          type: "notify.log",
+          label: "Dispatch Security Fix Agents",
+          config: { message: "dispatch security" },
+        },
+        {
+          id: "generic-fix-needed",
+          type: "condition.expression",
+          label: "Generic Fix Needed?",
+          config: { expression: "false" },
+        },
+        {
+          id: "review-needed",
+          type: "condition.expression",
+          label: "Review Needed?",
+          config: { expression: "false" },
+        },
+        {
+          id: "resume-task-spawning",
+          type: "notify.log",
+          label: "Resume Task Spawning",
+          config: { message: "resume" },
+        },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "fix-needed" },
+        { id: "e2", source: "fix-needed", target: "pause-task-spawning", condition: "$output?.result === true" },
+        { id: "e3", source: "fix-needed", target: "review-needed", condition: "$output?.result !== true" },
+        { id: "e4", source: "pause-task-spawning", target: "security-fix-needed" },
+        { id: "e5", source: "pause-task-spawning", target: "dispatch-security-fix-agents" },
+        { id: "e6", source: "security-fix-needed", target: "generic-fix-needed", condition: "$output?.result !== true" },
+        { id: "e7", source: "dispatch-security-fix-agents", target: "generic-fix-needed" },
+        { id: "e8", source: "generic-fix-needed", target: "review-needed", condition: "$output?.result !== true" },
+        { id: "e9", source: "review-needed", target: "resume-task-spawning", condition: "$output?.result !== true" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+
+    expect(result.getNodeStatus("fix-needed")).toBe(NodeStatus.COMPLETED);
+    expect(result.getNodeStatus("pause-task-spawning")).toBe(NodeStatus.SKIPPED);
+    expect(result.getNodeStatus("security-fix-needed")).toBe(NodeStatus.SKIPPED);
+    expect(result.getNodeStatus("dispatch-security-fix-agents")).toBe(NodeStatus.SKIPPED);
+    expect(result.getNodeStatus("generic-fix-needed")).toBe(NodeStatus.SKIPPED);
+    expect(result.getNodeStatus("review-needed")).toBe(NodeStatus.COMPLETED);
+    expect(result.getNodeStatus("resume-task-spawning")).toBe(NodeStatus.COMPLETED);
+  });
+
   it("evaluateScheduleTriggers skips disabled workflows", () => {
     const wf = {
       id: "sched-disabled",

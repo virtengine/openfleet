@@ -1103,10 +1103,10 @@ export function SessionList({
     (id) => {
       selectedSessionId.value = id;
       setRevealedActions(null);
-      setContextMenu(null);
+      closeContextMenu();
       if (onSelect) onSelect(id);
     },
-    [onSelect],
+    [onSelect, closeContextMenu],
   );
 
   const handleRetry = useCallback(() => {
@@ -1129,21 +1129,21 @@ export function SessionList({
 
   const handleArchive = useCallback(async (id) => {
     setRevealedActions(null);
-    setContextMenu(null);
+    closeContextMenu();
     await archiveSession(id);
-  }, []);
+  }, [closeContextMenu]);
 
   const handleDelete = useCallback(async (id) => {
     setRevealedActions(null);
-    setContextMenu(null);
+    closeContextMenu();
     await deleteSession(id);
-  }, []);
+  }, [closeContextMenu]);
 
   const handleResume = useCallback(async (id) => {
     setRevealedActions(null);
-    setContextMenu(null);
+    closeContextMenu();
     await resumeSession(id);
-  }, []);
+  }, [closeContextMenu]);
 
   const handleContextMenu = useCallback((id, event) => {
     setRevealedActions(null);
@@ -1207,8 +1207,8 @@ export function SessionList({
   const handleListClick = useCallback((e) => {
     if (e.target.closest(".session-item-wrapper")) return;
     setRevealedActions(null);
-    setContextMenu(null);
-  }, []);
+    closeContextMenu();
+  }, [closeContextMenu]);
 
   const emptyTitle = hasSearch
     ? "No matching sessions"
