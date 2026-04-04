@@ -38,8 +38,8 @@ export function normalizeWorkflowHarnessOutput(kind, payload = {}, options = {})
     output: cloneValue(payload?.output ?? payload?.result ?? null),
     summary: normalizeText(payload?.summary || payload?.message) || null,
     error: normalizeText(payload?.error) || null,
-    matchedPort: normalizePort(payload?.matchedPort || payload?.port, success ? "default" : "error"),
-    port: normalizePort(payload?.port || payload?.matchedPort, success ? "default" : "error"),
+    matchedPort: (payload?.matchedPort || payload?.port) ? normalizePort(payload?.matchedPort || payload?.port) : null,
+    port: (payload?.port || payload?.matchedPort) ? normalizePort(payload?.port || payload?.matchedPort) : null,
     lineage: cloneValue(payload?.lineage) || null,
     meta: cloneValue(payload?.meta || options.meta) || {},
   };
