@@ -2,6 +2,54 @@ function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
 
+const HARNESS_PROVIDER_CONFIG_KEYS = Object.freeze({
+  "openai-responses": "openai",
+  "openai-codex-subscription": "chatgptCodex",
+  "azure-openai-responses": "azureOpenai",
+  "anthropic-messages": "anthropic",
+  "claude-subscription-shim": "claudeSubscription",
+  "openai-compatible": "openaiCompatible",
+  "ollama": "ollama",
+  "copilot-oauth": "copilot",
+});
+
+function ensureObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function collectEnabledHarnessProviderIds(executors = []) {
+  const enabled = new Set();
+  for (const entry of Array.isArray(executors) ? executors : []) {
+    if (entry?.enabled === false) continue;
+    const providerId = toTrimmedString(entry?.providerId || entry?.provider || entry?.type || "");
+    if (providerId) enabled.add(providerId);
+  }
+  return enabled;
+}
+
+function alignProviderConfigWithHarnessExecutors(configData = {}, executors = [], primaryExecutorId = "", routingMode = "") {
+  const harnessExecutors = Array.isArray(executors) ? executors : [];
+  const enabledProviderIds = collectEnabledHarnessProviderIds(harnessExecutors);
+  const primaryExecutor = harnessExecutors.find((entry) => toTrimmedString(entry?.id || "") === primaryExecutorId) || null;
+  const primaryProviderId = toTrimmedString(primaryExecutor?.providerId || "");
+  const providers = ensureObject(configData.providers);
+  configData.providers = providers;
+
+  for (const providerId of enabledProviderIds) {
+    const providerConfigKey = HARNESS_PROVIDER_CONFIG_KEYS[providerId];
+    if (!providerConfigKey) continue;
+    providers[providerConfigKey] = ensureObject(providers[providerConfigKey]);
+    providers[providerConfigKey].enabled = true;
+  }
+
+  if (primaryProviderId) {
+    providers.defaultProvider = primaryProviderId;
+  }
+  if (["default-only", "fallback", "spread"].includes(routingMode)) {
+    providers.routingMode = routingMode;
+  }
+}
+
 function buildProviderSelectionPayload(deps = {}) {
   return {
     poolSdk: toTrimmedString(deps.getPoolSdkName?.() || "") || null,
@@ -88,6 +136,7 @@ export async function tryHandleHarnessProviderRoutes(context = {}) {
       } else if (routingMode === "") {
         delete configData.harness.routingMode;
       }
+      alignProviderConfigWithHarnessExecutors(configData, executors, primaryExecutor, routingMode);
       writeJsonFileAtomic(configPath, configData);
       emitConfigReload?.({
         reason: "harness-executors-updated",

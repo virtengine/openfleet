@@ -1014,6 +1014,37 @@ const HARNESS_EXECUTOR_API_STYLE_OPTIONS = [
   { value: "chat-completions", label: "Chat Completions API" },
 ];
 
+function normalizeHarnessExecutorModelForEditor(entry = {}, index = 0, fallbackApiStyle = "provider-default") {
+  const value = entry && typeof entry === "object" ? entry : { id: entry };
+  const id = String(value.id || value.model || value.name || "").trim() || `model-${index + 1}`;
+  const label = String(value.label || value.name || "").trim();
+  const apiStyle = String(value.apiStyle || value.transport?.apiStyle || fallbackApiStyle || "provider-default").trim() || "provider-default";
+  return {
+    _id: value._id || `harness-model-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    id,
+    label,
+    apiStyle,
+    enabled: value.enabled !== false,
+  };
+}
+
+function extractHarnessExecutorModelsForEditor(entry = {}, fallbackApiStyle = "provider-default") {
+  const input = Array.isArray(entry.models)
+    ? entry.models
+    : String(entry.modelsText || "")
+      .split(",")
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+  const seen = new Set();
+  return input
+    .map((item, index) => normalizeHarnessExecutorModelForEditor(item, index, fallbackApiStyle))
+    .filter((item) => {
+      if (!item.id || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+}
+
 function formatHarnessProviderStatus(authState = {}) {
   if (authState?.authenticated) return "Connected";
   if (authState?.canRun) return "Runnable";
@@ -1024,6 +1055,46 @@ function formatHarnessProviderStatus(authState = {}) {
       .replace(/\b\w/g, (match) => match.toUpperCase());
   }
   return "Unknown";
+}
+
+function sortHarnessProviderEntries(entries = []) {
+  const rank = (entry) => {
+    if (entry?.auth?.canRun === true || entry?.authenticated === true) return 0;
+    if (entry?.auth?.authenticated === true) return 1;
+    if (entry?.enabled !== false) return 2;
+    return 3;
+  };
+  return [...entries].sort((left, right) => {
+    const rankDelta = rank(left) - rank(right);
+    if (rankDelta !== 0) return rankDelta;
+    return String(left?.label || left?.name || left?.providerId || left?.id || "")
+      .localeCompare(String(right?.label || right?.name || right?.providerId || right?.id || ""));
+  });
+}
+
+function formatHarnessRoutingModeLabel(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "fallback") return "Failover";
+  if (normalized === "spread") return "Spread";
+  return "Default only";
+}
+
+function deriveHarnessExecutorRoutingLabel(entry = {}, primaryExecutor = "", routingMode = "default-only") {
+  if (String(entry?.id || "").trim() === String(primaryExecutor || "").trim()) {
+    return "Primary";
+  }
+  if (entry?.enabled === false) return "Disabled";
+  if (routingMode === "spread") return "Spread";
+  if (routingMode === "fallback") return "Failover";
+  return "Dormant";
+}
+
+function describeHarnessExecutorEndpoint(entry = {}) {
+  const endpoint = String(entry?.endpoint || entry?.baseUrl || "").trim();
+  const deployment = String(entry?.deployment || "").trim();
+  const workspace = String(entry?.workspace || "").trim();
+  const project = String(entry?.project || "").trim();
+  return [endpoint, deployment, workspace, project].filter(Boolean).join(" · ");
 }
 
 function HarnessExecutorsEditor() {
@@ -1044,7 +1115,10 @@ function HarnessExecutorsEditor() {
     providerId: String(entry.providerId || "openai-responses").trim(),
     enabled: entry.enabled !== false,
     defaultModel: String(entry.defaultModel || "").trim(),
-    modelsText: Array.isArray(entry.models) ? entry.models.join(", ") : String(entry.modelsText || "").trim(),
+    modelEntries: extractHarnessExecutorModelsForEditor(
+      entry,
+      String(entry.apiStyle || "provider-default").trim() || "provider-default",
+    ),
     authMode: String(entry.authMode || "").trim(),
     endpoint: String(entry.endpoint || "").trim(),
     baseUrl: String(entry.baseUrl || "").trim(),
@@ -1077,6 +1151,30 @@ function HarnessExecutorsEditor() {
     return entry?.enabled !== false && (providerInfo?.auth?.canRun === true || providerInfo?.auth?.authenticated === true);
   }).length, [executors, providerItems]);
 
+  const connectedProviderCount = useMemo(
+    () => providerItems.filter((item) => item?.enabled !== false && item?.auth?.authenticated === true).length,
+    [providerItems],
+  );
+  const configuredProviderCount = useMemo(
+    () => providerItems.filter((item) => item?.enabled !== false && (item?.auth?.configured === true || item?.auth?.available === true || item?.auth?.authenticated === true)).length,
+    [providerItems],
+  );
+  const sortedProviderOptions = useMemo(
+    () => sortHarnessProviderEntries(providerOptions),
+    [providerOptions],
+  );
+  const sortedProviderItems = useMemo(
+    () => sortHarnessProviderEntries(providerItems),
+    [providerItems],
+  );
+  const providerItemById = useMemo(() => {
+    const map = new Map();
+    for (const item of providerItems) {
+      map.set(String(item?.providerId || "").trim(), item);
+    }
+    return map;
+  }, [providerItems]);
+
   const primaryExecutorLabel = useMemo(() => (
     executors.find((entry) => entry.id === primaryExecutor)?.name
     || executors.find((entry) => entry.id === primaryExecutor)?.id
@@ -1101,8 +1199,8 @@ function HarnessExecutorsEditor() {
     (async () => {
       try {
         const res = await apiFetch("/api/harness/executors");
-        setProviderOptions(Array.isArray(res?.providerOptions) ? res.providerOptions : []);
-        setProviderItems(Array.isArray(res?.providers?.items) ? res.providers.items : []);
+        setProviderOptions(sortHarnessProviderEntries(Array.isArray(res?.providerOptions) ? res.providerOptions : []));
+        setProviderItems(sortHarnessProviderEntries(Array.isArray(res?.providers?.items) ? res.providers.items : []));
         applyLoadedState(res || {});
         setLoadError("");
       } catch (err) {
@@ -1174,6 +1272,9 @@ function HarnessExecutorsEditor() {
         next.authMode = providerInfo?.auth?.preferredMode || "";
         next.defaultModel = providerInfo?.modelCatalog?.defaultModel || providerOption?.defaultModel || "";
         next.apiStyle = providerOption?.apiStyle || "provider-default";
+        next.modelEntries = Array.isArray(next.modelEntries)
+          ? next.modelEntries.map((model, modelIndex) => normalizeHarnessExecutorModelForEditor(model, modelIndex, next.apiStyle))
+          : [];
         if (!String(value || "").includes("azure")) {
           next.deployment = "";
           next.apiVersion = "";
@@ -1190,6 +1291,47 @@ function HarnessExecutorsEditor() {
     markDirty(nextExecutors, nextPrimary, routingMode);
   }, [executors, getProviderInventoryEntry, getProviderOption, markDirty, primaryExecutor, routingMode]);
 
+  const updateExecutorModel = useCallback((executorId, modelInternalId, field, value) => {
+    const nextExecutors = executors.map((entry) => {
+      if (entry._id !== executorId) return entry;
+      const nextModels = (Array.isArray(entry.modelEntries) ? entry.modelEntries : []).map((model) => (
+        model._id === modelInternalId
+          ? { ...model, [field]: value }
+          : model
+      ));
+      return { ...entry, modelEntries: nextModels };
+    });
+    setExecutors(nextExecutors);
+    markDirty(nextExecutors, primaryExecutor, routingMode);
+  }, [executors, markDirty, primaryExecutor, routingMode]);
+
+  const addExecutorModel = useCallback((executorId) => {
+    const nextExecutors = executors.map((entry) => {
+      if (entry._id !== executorId) return entry;
+      const nextModels = [
+        ...(Array.isArray(entry.modelEntries) ? entry.modelEntries : []),
+        normalizeHarnessExecutorModelForEditor({}, entry.modelEntries?.length || 0, entry.apiStyle || "provider-default"),
+      ];
+      return { ...entry, modelEntries: nextModels };
+    });
+    setExecutors(nextExecutors);
+    markDirty(nextExecutors, primaryExecutor, routingMode);
+    haptic("light");
+  }, [executors, markDirty, primaryExecutor, routingMode]);
+
+  const removeExecutorModel = useCallback((executorId, modelInternalId) => {
+    const nextExecutors = executors.map((entry) => {
+      if (entry._id !== executorId) return entry;
+      return {
+        ...entry,
+        modelEntries: (Array.isArray(entry.modelEntries) ? entry.modelEntries : []).filter((model) => model._id !== modelInternalId),
+      };
+    });
+    setExecutors(nextExecutors);
+    markDirty(nextExecutors, primaryExecutor, routingMode);
+    haptic("light");
+  }, [executors, markDirty, primaryExecutor, routingMode]);
+
   const handleSave = useCallback(async () => {
     const payload = executors.map((entry) => ({
       id: entry.id,
@@ -1197,7 +1339,14 @@ function HarnessExecutorsEditor() {
       providerId: entry.providerId,
       enabled: entry.enabled !== false,
       defaultModel: entry.defaultModel || undefined,
-      models: String(entry.modelsText || "").split(",").map((item) => item.trim()).filter(Boolean),
+      models: (Array.isArray(entry.modelEntries) ? entry.modelEntries : [])
+        .map((model) => ({
+          id: String(model.id || "").trim(),
+          ...(String(model.label || "").trim() ? { label: String(model.label || "").trim() } : {}),
+          ...(String(model.apiStyle || "").trim() ? { apiStyle: String(model.apiStyle || "").trim() } : {}),
+          ...(model.enabled === false ? { enabled: false } : {}),
+        }))
+        .filter((model) => model.id),
       authMode: entry.authMode || undefined,
       endpoint: entry.endpoint || undefined,
       baseUrl: entry.baseUrl || undefined,
@@ -1216,8 +1365,8 @@ function HarnessExecutorsEditor() {
         routingMode,
       }),
     });
-    setProviderOptions(Array.isArray(res?.providerOptions) ? res.providerOptions : providerOptions);
-    setProviderItems(Array.isArray(res?.providers?.items) ? res.providers.items : providerItems);
+    setProviderOptions(sortHarnessProviderEntries(Array.isArray(res?.providerOptions) ? res.providerOptions : providerOptions));
+    setProviderItems(sortHarnessProviderEntries(Array.isArray(res?.providers?.items) ? res.providers.items : providerItems));
     applyLoadedState(res || {});
   }, [applyLoadedState, executors, primaryExecutor, providerItems, providerOptions, routingMode]);
 
@@ -1244,7 +1393,7 @@ function HarnessExecutorsEditor() {
     <${Card} title="Harness Chat Executors"
       badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
       <div class="meta-text" style="margin-bottom:10px">
-        Named Bosun Harness executors are the chat-visible runtime instances. Configure as many provider-backed endpoints as you need, choose the primary one, and Bosun will route future Harness sessions through these IDs instead of legacy SDK executors.
+        Named Bosun Harness executors are the actual runtime instances Bosun exposes to chat, workflows, Telegram, web, and TUI. Configure one executor per real endpoint or account, choose the primary one, and Bosun will route future Harness sessions through these IDs instead of legacy SDK executors.
       </div>
       <div class="settings-arch-grid" style="margin-bottom:12px">
         <div class="settings-arch-card">
@@ -1262,20 +1411,29 @@ function HarnessExecutorsEditor() {
           <div class="settings-arch-current">Current: <code>${primaryExecutorLabel}</code></div>
           <div class="settings-arch-note">This is the default Harness executor Bosun uses when a surface does not explicitly pick another one.</div>
         </div>
+        <div class="settings-arch-card">
+          <div class="settings-arch-title">Shared Provider Auth</div>
+          <div class="settings-arch-current">Current: <code>${connectedProviderCount}/${configuredProviderCount || providerItems.length || 0}</code></div>
+          <div class="settings-arch-note">Connected means Bosun already has auth for the backing provider. Saving enabled executors will also align provider-kernel defaults so the instance is not left half-wired behind separate toggles.</div>
+        </div>
       </div>
       ${loadError && html`<div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>`}
       ${providerOptions.length > 0 && html`
         <div style="margin-bottom:12px">
-          <div class="setting-row-label" style="margin-bottom:6px">Quick Add Runtime Endpoint</div>
+          <div class="setting-row-label" style="margin-bottom:6px">Quick Add Runtime Instance</div>
           <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${providerOptions.map((option) => html`
+            ${sortedProviderOptions.map((option) => {
+              const providerInfo = providerItemById.get(String(option.id || "").trim()) || null;
+              const status = formatHarnessProviderStatus(providerInfo?.auth || {});
+              return html`
               <${Button} key=${option.id} variant="outlined" size="small" onClick=${() => addExecutorForProvider(option.id)}>
-                + ${option.label}
+                + ${option.label}${status ? ` · ${status}` : ""}
               <//>
-            `)}
+            `;
+            })}
           </div>
           <div class="meta-text" style="margin-top:6px">
-            Use one named executor per real runtime endpoint or account, for example <code>azure-us</code>, <code>azure-sweden</code>, <code>copilot-oauth</code>, <code>codex-oauth</code>, or <code>local-openai</code>.
+            Use one named executor per real runtime endpoint or account, for example <code>azure-us</code>, <code>azure-sweden</code>, <code>copilot-oauth</code>, <code>codex-oauth</code>, <code>openai-prod</code>, or <code>local-openai</code>. For OpenAI-compatible targets, use the instance API-style controls below to choose <code>responses</code> or <code>chat-completions</code> per executor or per model.
           </div>
         </div>
       `}
@@ -1313,12 +1471,15 @@ function HarnessExecutorsEditor() {
         const supportsOrgProject = entry.providerId === "openai-responses";
         const supportsAzureDeployment = entry.providerId === "azure-openai-responses";
         const isPrimary = entry.id === primaryExecutor;
+        const routingLabel = deriveHarnessExecutorRoutingLabel(entry, primaryExecutor, routingMode);
+        const endpointSummary = describeHarnessExecutorEndpoint(entry);
         return html`
           <div key=${entry._id} style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
               <div>
                 <strong>${entry.name || `Executor ${index + 1}`}</strong>
                 <div class="meta-text">${entry.id || `executor-${index + 1}`} · ${providerOption?.label || providerInfo?.label || entry.providerId}</div>
+                ${endpointSummary && html`<div class="meta-text" style="margin-top:4px">${endpointSummary}</div>`}
               </div>
               <div style="display:flex;align-items:center;gap:8px">
                 <${Toggle} checked=${entry.enabled !== false} onChange=${(value) => updateExecutor(entry._id, "enabled", value)} label="Enabled" />
@@ -1327,6 +1488,7 @@ function HarnessExecutorsEditor() {
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
               ${isPrimary && html`<${Chip} size="small" color="primary" label="Primary" />`}
+              <${Chip} size="small" variant="outlined" label=${routingLabel} />
               <${Chip} size="small" variant="outlined" label=${formatHarnessProviderStatus(authState)} />
               <${Chip} size="small" variant="outlined" label=${HARNESS_EXECUTOR_API_STYLE_OPTIONS.find((option) => option.value === (entry.apiStyle || "provider-default"))?.label || "Provider default"} />
               ${entry.defaultModel && html`<${Chip} size="small" variant="outlined" label=${entry.defaultModel} />`}
@@ -1343,7 +1505,7 @@ function HarnessExecutorsEditor() {
               <div>
                 <div class="setting-row-label">Provider Runtime</div>
                 <${Select} size="small" value=${entry.providerId} onChange=${(e) => updateExecutor(entry._id, "providerId", e.target.value)} fullWidth>
-                  ${providerOptions.map((option) => html`<${MenuItem} value=${option.id}>${option.label}<//>`)}
+                  ${sortedProviderOptions.map((option) => html`<${MenuItem} value=${option.id}>${option.label}<//>`)}
                 <//>
               </div>
               <div>
@@ -1355,10 +1517,6 @@ function HarnessExecutorsEditor() {
               <div>
                 <div class="setting-row-label">Default Model</div>
                 <${TextField} size="small" variant="outlined" value=${entry.defaultModel} onInput=${(e) => updateExecutor(entry._id, "defaultModel", e.target.value)} placeholder="gpt-5.4 / claude-sonnet-4.6 / ..." fullWidth />
-              </div>
-              <div>
-                <div class="setting-row-label">Allowed Models</div>
-                <${TextField} size="small" variant="outlined" value=${entry.modelsText} onInput=${(e) => updateExecutor(entry._id, "modelsText", e.target.value)} placeholder="comma-separated model ids" fullWidth />
               </div>
               <div>
                 <div class="setting-row-label">Auth Mode</div>
@@ -1404,10 +1562,47 @@ function HarnessExecutorsEditor() {
                 </div>
               `}
             </div>
+            <div style="margin-top:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                <div>
+                  <div class="setting-row-label">Model Catalog</div>
+                  <div class="meta-text">Optional per-executor model list. Add only the models this runtime instance should expose in chat, then override API style per model when needed.</div>
+                </div>
+                <${Button} variant="outlined" size="small" onClick=${() => addExecutorModel(entry._id)}>Add model<//>
+              </div>
+              ${(Array.isArray(entry.modelEntries) ? entry.modelEntries : []).length === 0
+                ? html`<div class="meta-text">No explicit model list. Bosun will fall back to the provider catalog for this runtime.</div>`
+                : html`
+                    ${(entry.modelEntries || []).map((model, modelIndex) => html`
+                      <div key=${model._id} style="display:grid;grid-template-columns:minmax(180px,1.5fr) minmax(140px,1fr) minmax(180px,1fr) auto;gap:8px;align-items:end;margin-bottom:8px">
+                        <div>
+                          <div class="setting-row-label">Model ID</div>
+                          <${TextField} size="small" variant="outlined" value=${model.id} onInput=${(e) => updateExecutorModel(entry._id, model._id, "id", e.target.value)} placeholder=${modelIndex === 0 ? "gpt-5.4" : "model id"} fullWidth />
+                        </div>
+                        <div>
+                          <div class="setting-row-label">Label</div>
+                          <${TextField} size="small" variant="outlined" value=${model.label} onInput=${(e) => updateExecutorModel(entry._id, model._id, "label", e.target.value)} placeholder="Optional UI label" fullWidth />
+                        </div>
+                        <div>
+                          <div class="setting-row-label">API Style For This Model</div>
+                          <${Select} size="small" value=${model.apiStyle || "provider-default"} onChange=${(e) => updateExecutorModel(entry._id, model._id, "apiStyle", e.target.value)} fullWidth>
+                            ${HARNESS_EXECUTOR_API_STYLE_OPTIONS.map((option) => html`<${MenuItem} value=${option.value}>${option.label}<//>`)}
+                          <//>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px">
+                          <${Toggle} checked=${model.enabled !== false} onChange=${(value) => updateExecutorModel(entry._id, model._id, "enabled", value)} label="Enabled" />
+                          <${Button} variant="text" color="error" size="small" onClick=${() => removeExecutorModel(entry._id, model._id)}>Remove<//>
+                        </div>
+                      </div>
+                    `)}
+                  `}
+            </div>
             <div class="meta-text" style="margin-top:8px">
               Provider auth: <strong>${authState.status || "unknown"}</strong>
               ${authState.authenticated ? " · connected" : authState.requiresAction ? " · needs auth" : ""}
+              ${authState.canRun ? " · runnable" : ""}
               ${authState.connection?.accountId ? ` · account ${authState.connection.accountId}` : ""}
+              ${authState.preferredMode ? ` · ${authState.preferredMode}` : ""}
               ${providerInfo?.description ? ` · ${providerInfo.description}` : ""}
             </div>
           </div>
@@ -1416,7 +1611,7 @@ function HarnessExecutorsEditor() {
       <${Button} variant="outlined" size="small" onClick=${addExecutor}>+ Add Harness Executor<//>
       ${executors.length === 0 && !loadError && html`
         <div class="meta-text" style="margin-top:8px">
-          No named Harness executors yet. Add one here to make it appear as a selectable chat/runtime executor.
+          No named Harness executors yet. Add one here to make it appear as a selectable chat/runtime executor. Bosun will still keep shared provider defaults below, but named executors are the first-class runtime objects that direct sessions and future tasks actually choose from.
         </div>
       `}
     <//>

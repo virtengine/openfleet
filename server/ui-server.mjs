@@ -10788,6 +10788,26 @@ function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents =
       const executorModels = Array.isArray(entry?.models)
         ? entry.models.map((model) => String(model || "").trim()).filter(Boolean)
         : [];
+      const runtimeModelEntries = Array.isArray(runtimeEntry?.modelCatalog?.models)
+        ? runtimeEntry.modelCatalog.models
+        : [];
+      const providerModelEntries = Array.isArray(providerEntry?.modelCatalog?.models)
+        ? providerEntry.modelCatalog.models
+        : [];
+      const executorModelEntries = Array.isArray(entry?.modelEntries)
+        ? entry.modelEntries
+        : [];
+      const mergedModelEntries = (executorModelEntries.length > 0
+        ? executorModelEntries
+        : (runtimeModelEntries.length > 0 ? runtimeModelEntries : providerModelEntries)
+      ).map((model) => ({
+        id: String(model?.id || model || "").trim(),
+        label: String(model?.label || model?.name || model?.id || model || "").trim(),
+        apiStyle: String(model?.apiStyle || model?.transport?.apiStyle || entry?.apiStyle || runtimeEntry?.apiStyle || providerEntry?.transport?.apiStyle || "").trim() || null,
+        reasoningEffort: String(model?.reasoningEffort || model?.reasoning || "").trim() || null,
+        contextWindow: Number.isFinite(Number(model?.contextWindow)) ? Number(model.contextWindow) : null,
+        enabled: model?.enabled !== false,
+      })).filter((model) => model.id);
       return {
         ...(runtimeEntry || {}),
         id: selectionId || providerId,
@@ -10807,6 +10827,7 @@ function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents =
           String(entry?.defaultModel || runtimeEntry?.defaultModel || providerEntry?.modelCatalog?.defaultModel || "").trim()
           || null,
         models: executorModels.length > 0 ? executorModels : (runtimeModels.length > 0 ? runtimeModels : providerModels),
+        modelEntries: mergedModelEntries,
         capabilities: normalizeAgentCapabilitiesList(runtimeEntry?.capabilities || providerEntry?.capabilities),
         auth: runtimeEntry?.auth || providerEntry?.auth || null,
         modelCatalog: runtimeEntry?.modelCatalog || providerEntry?.modelCatalog || null,

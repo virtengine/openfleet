@@ -57,7 +57,7 @@ export const availableAgents = signal([]); // Array<{ id, name, provider, availa
 export const manualAgents = signal([]);
 
 /** Currently active agent adapter id */
-export const activeAgent = signal("codex-sdk");
+export const activeAgent = signal("");
 export const activeManualAgentId = signal("");
 
 /** Whether agent data is currently loading */
@@ -195,6 +195,51 @@ function buildLabel(model) {
       return seg.charAt(0).toUpperCase() + seg.slice(1);
     })
     .join(" ");
+}
+
+function formatApiStyleLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || normalized === "provider-default") return "";
+  if (normalized === "responses") return "Responses API";
+  if (normalized === "chat-completions") return "Chat Completions API";
+  return normalized;
+}
+
+function buildRuntimeModelEntries(agentInfo = null, currentAgentId = "") {
+  const structuredModels = Array.isArray(agentInfo?.modelEntries)
+    ? agentInfo.modelEntries
+        .map((entry) => ({
+          value: String(entry?.id || "").trim(),
+          label: String(entry?.label || entry?.name || entry?.id || "").trim(),
+          apiStyle: String(entry?.apiStyle || "").trim() || null,
+        }))
+        .filter((entry) => entry.value)
+    : [];
+  if (structuredModels.length > 0) {
+    return [{ value: "", label: "Default", apiStyle: null }, ...structuredModels];
+  }
+  const apiModels = Array.isArray(agentInfo?.models) ? agentInfo.models : [];
+  if (apiModels.length > 0) {
+    return [
+      { value: "", label: "Default", apiStyle: null },
+      ...apiModels.map((model) => ({
+        value: model,
+        label: buildLabel(model),
+        apiStyle: null,
+      })),
+    ];
+  }
+  const providerSdkKey = agentInfo?.provider
+    ? agentInfo.provider.toLowerCase() + "-sdk"
+    : null;
+  const staticList = AGENT_MODELS[currentAgentId]
+    || (providerSdkKey && AGENT_MODELS[providerSdkKey])
+    || AGENT_MODELS["codex-sdk"];
+  return staticList.map((entry) => ({
+    value: entry.value,
+    label: entry.label,
+    apiStyle: null,
+  }));
 }
 
 const STATUS_CONFIG = {
@@ -449,13 +494,9 @@ export async function loadAvailableAgents() {
     }
   } catch (err) {
     console.warn("[agent-selector] Failed to load agents:", err);
-    // Provide sensible fallback agents for offline/dev mode
     if (availableAgents.value.length === 0) {
-      availableAgents.value = [
-        { id: "codex-sdk", name: "Codex", provider: "openai", available: true, busy: false, models: AGENT_MODELS["codex-sdk"].map((m) => m.value).filter(Boolean), capabilities: ["agent", "plan"] },
-        { id: "copilot-sdk", name: "Copilot", provider: "github", available: true, busy: false, models: AGENT_MODELS["copilot-sdk"].map((m) => m.value).filter(Boolean), capabilities: ["ask", "agent", "plan"] },
-        { id: "claude-sdk", name: "Claude", provider: "anthropic", available: true, busy: false, models: AGENT_MODELS["claude-sdk"].map((m) => m.value).filter(Boolean), capabilities: ["ask", "agent", "plan"] },
-      ];
+      availableAgents.value = [];
+      manualAgents.value = [];
     }
   } finally {
     agentSelectorLoading.value = false;
@@ -696,19 +737,7 @@ export function ModelPicker() {
   // Build model entries: prefer live API list, fall back to static registry.
   // For custom executor IDs (e.g. "copilot-claude"), derive the right static list
   // from the agent's provider field ("COPILOT" → "copilot-sdk").
-  const apiModels = agentInfo?.models;
-  const providerSdkKey = agentInfo?.provider
-    ? agentInfo.provider.toLowerCase() + "-sdk"   // "COPILOT" → "copilot-sdk"
-    : null;
-  const staticList = AGENT_MODELS[current]
-    || (providerSdkKey && AGENT_MODELS[providerSdkKey])
-    || AGENT_MODELS["codex-sdk"];
-  const modelEntries = apiModels && apiModels.length > 0
-    ? [
-        { value: "", label: "Default" },
-        ...apiModels.map((m) => ({ value: m, label: buildLabel(m) })),
-      ]
-    : staticList;
+  const modelEntries = buildRuntimeModelEntries(agentInfo, current);
 
   // When executor changes, reset model if the stored value isn't in the new list
   useEffect(() => {
@@ -717,7 +746,7 @@ export function ModelPicker() {
       selectedModel.value = "";
       try { localStorage.setItem("ve-selected-model", ""); } catch {}
     }
-  }, [current]);
+  }, [current, model, modelEntries]);
 
   const handleOpen = useCallback((e) => {
     setAnchorEl(e.currentTarget);
@@ -734,7 +763,8 @@ export function ModelPicker() {
     setAnchorEl(null);
   }, []);
 
-  const displayLabel = model ? buildLabel(model) : "Default";
+  const selectedEntry = modelEntries.find((entry) => entry.value === model);
+  const displayLabel = selectedEntry?.label || (model ? buildLabel(model) : "Default");
 
   return html`
     <${Tooltip} title="Model override (Default = executor decides)" arrow>
@@ -776,7 +806,11 @@ export function ModelPicker() {
             ? html`<${ListItemIcon} sx=${{ minWidth: "28px !important" }}><${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}></${ListItemIcon}>`
             : html`<${ListItemIcon} sx=${{ minWidth: "28px !important" }} />`
           }
-          <${ListItemText}>${m.label}</${ListItemText}>
+          <${ListItemText}
+            primary=${m.label}
+            secondary=${m.apiStyle ? formatApiStyleLabel(m.apiStyle) : null}
+            secondaryTypographyProps=${{ fontSize: 11 }}
+          />
         </${MenuItem}>
       `)}
     </${Menu}>

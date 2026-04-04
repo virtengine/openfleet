@@ -124,8 +124,11 @@ function resolveProviderEnabled(providerId, explicitEnabled, options = {}) {
 
 function buildProviderEntry(providerId, definition, adapter, fields, options) {
   const configuredModels = Array.isArray(fields.models)
-    ? fields.models.map((entry) => String(entry || "").trim()).filter(Boolean)
+    ? fields.models.filter(Boolean)
     : [];
+  const configuredModelIds = configuredModels
+    .map((entry) => String(entry?.id || entry?.model || entry?.name || entry || "").trim())
+    .filter(Boolean);
   const modelCatalog = getProviderModelCatalog(providerId, {
     adapter,
     executor: fields.executor,
@@ -152,8 +155,8 @@ function buildProviderEntry(providerId, definition, adapter, fields, options) {
     busy: fields.busy,
     source: fields.source || null,
     weight: fields.weight || 0,
-    models: configuredModels.length > 0
-      ? configuredModels
+    models: configuredModelIds.length > 0
+      ? configuredModelIds
       : modelCatalog.models.map((entry) => entry.id),
     defaultModel: fields.defaultModel || modelCatalog.defaultModel,
     endpoint: fields.endpoint || null,
@@ -195,7 +198,7 @@ function buildConfiguredProviders(options = {}) {
     const enabled = resolveProviderEnabled(providerId, entry?.enabled !== false, options);
     const available = enabled && !resolveDisabled(definition || { id: providerId, adapterId }, env);
     const configuredModels = Array.isArray(entry?.models)
-      ? entry.models.map((model) => String(model || "").trim()).filter(Boolean)
+      ? entry.models.filter(Boolean)
       : [];
     const name = String(entry?.name || "").trim()
       || definition?.name

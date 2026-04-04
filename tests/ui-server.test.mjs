@@ -1074,7 +1074,10 @@ describeUiServer("ui-server mini app", () => {
             providerId: "azure-openai-responses",
             enabled: true,
             defaultModel: "gpt-5.4",
-            models: ["gpt-5.4", "gpt-5.4-mini"],
+            models: [
+              { id: "gpt-5.4", label: "GPT-5.4", apiStyle: "responses" },
+              { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", apiStyle: "chat-completions" },
+            ],
             endpoint: "https://azure-us.example.test",
             deployment: "gpt-5-prod",
             apiVersion: "2025-03-01-preview",
@@ -1126,6 +1129,10 @@ describeUiServer("ui-server mini app", () => {
         providerLabel: "Azure OpenAI Responses",
         runtimeKind: "harness",
         models: ["gpt-5.4", "gpt-5.4-mini"],
+        modelEntries: [
+          expect.objectContaining({ id: "gpt-5.4", label: "GPT-5.4", apiStyle: "responses" }),
+          expect.objectContaining({ id: "gpt-5.4-mini", label: "GPT-5.4 Mini", apiStyle: "chat-completions" }),
+        ],
         subtitle: "Azure OpenAI Responses · gpt-5.4 · Responses API",
       }));
 
@@ -1142,7 +1149,10 @@ describeUiServer("ui-server mini app", () => {
               providerId: "openai-compatible",
               enabled: true,
               defaultModel: "qwen2.5-coder:latest",
-              models: ["qwen2.5-coder:latest", "llama3.3:70b"],
+              models: [
+                { id: "qwen2.5-coder:latest", label: "Qwen 2.5 Coder", apiStyle: "chat-completions" },
+                { id: "llama3.3:70b", label: "Llama 3.3 70B", apiStyle: "responses" },
+              ],
               baseUrl: "http://127.0.0.1:4000/v1",
               apiStyle: "chat-completions",
             },
@@ -1164,9 +1174,20 @@ describeUiServer("ui-server mini app", () => {
             id: "local-openai",
             providerId: "openai-compatible",
             baseUrl: "http://127.0.0.1:4000/v1",
+            models: [
+              expect.objectContaining({ id: "qwen2.5-coder:latest", label: "Qwen 2.5 Coder", apiStyle: "chat-completions" }),
+              expect.objectContaining({ id: "llama3.3:70b", label: "Llama 3.3 70B", apiStyle: "responses" }),
+            ],
             apiStyle: "chat-completions",
           }),
         ],
+      }));
+      expect(savedConfig.providers).toEqual(expect.objectContaining({
+        defaultProvider: "openai-compatible",
+        routingMode: "fallback",
+        openaiCompatible: expect.objectContaining({
+          enabled: true,
+        }),
       }));
     } finally {
       await new Promise((resolve) => server.close(resolve));

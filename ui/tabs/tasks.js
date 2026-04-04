@@ -440,7 +440,19 @@ function normalizeSubtaskRow(entry, fallbackParentTaskId = "") {
     title: toText(entry.title || entry.summary || entry.name, "(untitled subtask)"),
     status: toText(entry.status || entry.state),
     assignee: toText(entry.assignee || entry.owner),
+    taskType: normalizeTaskTypeValue(entry?.taskType || entry?.type || entry?.kind || entry?.meta?.taskType || entry?.meta?.type, "subtask"),
     storyPoints: toText(entry.storyPoints || entry.points),
+    epicId: toText(entry.epicId || entry.epic || entry.epic_id || entry?.meta?.epicId),
+    dueDate: normalizeTaskDueDateInput(entry),
+    blockedReason: toText(entry.blockedReason || entry?.meta?.blockedReason),
+    dependencyTaskIds: normalizeDependencyInput(
+      entry.dependencyTaskIds
+        || entry.dependsOn
+        || entry.dependencies
+        || entry?.meta?.dependencyTaskIds
+        || entry?.meta?.dependsOn,
+    ),
+    labels: normalizeTagInput(entry.tags || entry.labels || entry?.meta?.tags || []),
     parentTaskId: toText(
       entry.parentTaskId || entry.parentId || entry.parent_task_id || entry?.meta?.parentTaskId,
       fallbackParentTaskId,
@@ -469,6 +481,25 @@ function mergeSubtaskLists(...lists) {
     }
   }
   return [...merged.values()];
+}
+
+function buildTaskHierarchyPath(task, hierarchyModel = null) {
+  const taskById = hierarchyModel?.taskById || new Map();
+  const path = [];
+  const seen = new Set();
+  let cursor = task;
+  while (cursor && typeof cursor === "object") {
+    const cursorId = toText(cursor.id || cursor.taskId);
+    if (!cursorId || seen.has(cursorId)) break;
+    seen.add(cursorId);
+    path.unshift(cursor);
+    const parentId = toText(
+      cursor.parentTaskId || cursor.parentId || cursor.parent_task_id || cursor?.meta?.parentTaskId,
+    );
+    if (!parentId) break;
+    cursor = taskById.get(parentId) || null;
+  }
+  return path;
 }
 
 function buildTaskSearchDocument(task) {
@@ -3233,7 +3264,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 }
 
 /* ─── TaskDetailModal ─── */
-export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false, hierarchyModel = null, hierarchyNodeState = null, onUpdateHierarchySubtasks = null }) {
+export function TaskDetailModal({ task, onClose, onStart, onOpenTask = null, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false, hierarchyModel = null, hierarchyNodeState = null, onUpdateHierarchySubtasks = null }) {
   const hierarchySubtasks = useMemo(
     () => (hierarchyNodeState?.children || [])
       .map((entry) => normalizeSubtaskRow(entry?.task || { id: entry?.id, parentTaskId: task?.id }, task?.id))
@@ -3558,6 +3589,27 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [dryRunResults, setDryRunResults] = useState(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
+  const hierarchyPath = useMemo(() => buildTaskHierarchyPath(task, hierarchyModel), [task, hierarchyModel]);
+  const hierarchyParentLink = hierarchyPath.length > 1 ? hierarchyPath[hierarchyPath.length - 2] : null;
+  const childStats = useMemo(() => {
+    const rows = Array.isArray(subtasks) ? subtasks : [];
+    let done = 0;
+    let blocked = 0;
+    let open = 0;
+    for (const entry of rows) {
+      const tone = getTaskListStatusTone(entry?.status);
+      if (tone === "done") done += 1;
+      else if (tone === "blocked") blocked += 1;
+      else open += 1;
+    }
+    return {
+      total: rows.length,
+      done,
+      blocked,
+      open,
+      progressLabel: rows.length > 0 ? `${done}/${rows.length} done` : "No child work yet",
+    };
+  }, [subtasks]);
 
   const fetchExecutionPlan = useCallback((mode = "resolve") => {
     if (!task?.id) return;
@@ -3722,6 +3774,17 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Unable to open linked session", "error");
     }
   }, [task]);
+  const handleOpenRelatedTask = useCallback((taskId) => {
+    const nextTaskId = toText(taskId);
+    if (!nextTaskId) return;
+    if (typeof onOpenTask === "function") {
+      onOpenTask(nextTaskId);
+      return;
+    }
+    if (typeof window !== "undefined") {
+      window.location.hash = buildTaskDetailPath(nextTaskId);
+    }
+  }, [onOpenTask]);
 
   const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
     setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
@@ -4493,6 +4556,29 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       setCreatingSubtask(false);
     }
   };
+  const handleInlineSubtaskUpdate = useCallback(async (subtask, patch, successMessage = "Child task updated") => {
+    const subtaskId = toText(subtask?.id);
+    if (!subtaskId) return false;
+    const optimistic = normalizeSubtaskRow({ ...subtask, ...patch }, task?.id);
+    setSubtasks((prev) => mergeSubtaskLists(prev, optimistic ? [optimistic] : []));
+    try {
+      const res = await apiFetch("/api/tasks/edit", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId: subtaskId,
+          ...patch,
+        }),
+      });
+      const saved = normalizeSubtaskRow(res?.data || res?.task || { ...subtask, ...patch }, task?.id);
+      setSubtasks((prev) => mergeSubtaskLists(prev, saved ? [saved] : []));
+      showToast(successMessage, "success");
+      scheduleRefresh(120);
+      return true;
+    } catch {
+      await loadSubtasks();
+      return false;
+    }
+  }, [loadSubtasks, task?.id]);
   const handleGenerateReplan = async (mode = "replan") => {
     if (!task?.id || replanning) return;
     const normalizedMode = String(mode || "replan").trim().toLowerCase() === "decompose" ? "decompose" : "replan";
@@ -4675,6 +4761,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <span style="color:var(--color-text);font-weight:500;user-select:all;">${task?.id?.slice(0, 8) || "New"}</span>
         ${task?.priority && html`<span class="task-priority-dot" data-priority=${task.priority}></span>`}
         ${manualOverride && html`<span class="exec-plan-badge" style="background:#fbbf2420;color:#fbbf24;">MANUAL</span>`}
+        <span class="task-hierarchy-type-pill">${getTaskListIssueTypeLabel(task)}</span>
       </div>
 
       ${/* ── Title + Actions ── */ ""}
@@ -4742,6 +4829,60 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </button>
         </div>
       </div>
+      <div class="task-hierarchy-summary">
+        <div class="task-hierarchy-summary-main">
+          <div class="task-hierarchy-links">
+            ${hierarchyParentLink && html`
+              <button type="button" class="task-hierarchy-link-chip" onClick=${() => handleOpenRelatedTask(hierarchyParentLink.id)}>
+                Parent · ${truncate(hierarchyParentLink.title || hierarchyParentLink.id, 48)}
+              </button>
+            `}
+            ${currentEpicEntry && html`
+              <span class="task-hierarchy-link-chip">
+                Epic · ${truncate(currentEpicEntry.label || currentEpicEntry.id, 48)}
+              </span>
+            `}
+            ${currentParentTask && !hierarchyParentLink && html`
+              <button type="button" class="task-hierarchy-link-chip" onClick=${() => handleOpenRelatedTask(currentParentTask.id)}>
+                Parent · ${truncate(currentParentTask.title || currentParentTask.id, 48)}
+              </button>
+            `}
+          </div>
+          <div class="task-hierarchy-trail" role="navigation" aria-label="Task hierarchy breadcrumbs">
+            ${hierarchyPath.length > 0
+              ? hierarchyPath.map((entry, index) => html`
+                  <button
+                    type="button"
+                    key=${`${entry.id || entry.title}-${index}`}
+                    class="task-hierarchy-crumb"
+                    disabled=${index === hierarchyPath.length - 1}
+                    onClick=${() => handleOpenRelatedTask(entry.id)}
+                  >
+                    ${truncate(entry.title || entry.id || "Task", 40)}
+                  </button>
+                `)
+              : html`<span class="task-hierarchy-crumb is-current">${truncate(title || task?.id || "Task", 40)}</span>`}
+          </div>
+        </div>
+        <div class="task-hierarchy-summary-stats">
+          <div class="task-hierarchy-stat-card">
+            <div class="task-hierarchy-stat-label">Child Progress</div>
+            <div class="task-hierarchy-stat-value">${childStats.progressLabel}</div>
+          </div>
+          <div class="task-hierarchy-stat-card">
+            <div class="task-hierarchy-stat-label">Open</div>
+            <div class="task-hierarchy-stat-value">${childStats.open}</div>
+          </div>
+          <div class="task-hierarchy-stat-card">
+            <div class="task-hierarchy-stat-label">Blocked</div>
+            <div class="task-hierarchy-stat-value">${childStats.blocked}</div>
+          </div>
+          <div class="task-hierarchy-stat-card">
+            <div class="task-hierarchy-stat-label">Done</div>
+            <div class="task-hierarchy-stat-value">${childStats.done}</div>
+          </div>
+        </div>
+      </div>
       ${taskWorkspaceLaunchers.length > 0 && html`
         <${MuiMenu}
           anchorEl=${workspaceLauncherAnchor}
@@ -4790,6 +4931,54 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
       ${/* ── LEFT: Main Content ── */ ""}
       <div class="task-detail-main">
+
+        <div class="task-section">
+          <div class="task-section-title">Overview</div>
+          <div class="task-section-body">
+            <div class="task-overview-grid">
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Hierarchy</div>
+                <div class="task-comment-body">
+                  ${hierarchyParentLink
+                    ? truncate(hierarchyParentLink.title || hierarchyParentLink.id, 52)
+                    : currentParentTask
+                      ? truncate(currentParentTask.title || currentParentTask.id, 52)
+                      : "Top-level task"}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${currentEpicEntry ? `Epic ${currentEpicEntry.label || currentEpicEntry.id}` : "No epic linked"}
+                </div>
+              </div>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Child Work</div>
+                <div class="task-comment-body">${childStats.progressLabel}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${childStats.open} open · ${childStats.blocked} blocked · ${childStats.done} done
+                </div>
+              </div>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Dependencies</div>
+                <div class="task-comment-body">${currentDependencyIds.length ? `${currentDependencyIds.length} linked` : "No dependencies"}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${blockedBy.length ? `${blockedBy.length} currently blocking` : "No active blockers recorded"}
+                </div>
+              </div>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Execution Context</div>
+                <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${workflowRuns.length} workflow runs · ${lifetimeAttempts.toLocaleString("en-US")} attempts
+                </div>
+              </div>
+            </div>
+            ${relatedLinks.length > 0 && html`
+              <div style=${{ marginTop: "12px" }}>
+                <div class="task-comment-meta" style=${{ marginBottom: "6px" }}>Development Links</div>
+                <div class="task-comment-body">${renderTaskRelatedLinks(relatedLinks, { onReviewDiff: handleOpenReviewDiff })}</div>
+              </div>
+            `}
+          </div>
+        </div>
 
         ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
           <div class="task-section">
@@ -4974,10 +5163,10 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
-        ${/* Attachments */ ""}
+        ${/* Development / Execution */ ""}
         <div class="task-section" onPaste=${handleAttachmentPaste}>
           <div class="task-section-title">
-            Attachments
+            Development / Execution
             <span class="task-tab-count">${attachments.length}</span>
             <span style="margin-left:auto;">
               <${Button}
@@ -4991,6 +5180,48 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             </span>
           </div>
           <div class="task-section-body">
+            <div class="task-overview-grid" style=${{ marginBottom: "12px" }}>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Branch / PR</div>
+                <div class="task-comment-body">${renderTaskRelatedLinks(relatedLinks, { onReviewDiff: handleOpenReviewDiff })}</div>
+              </div>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Execution Lineage</div>
+                <div class="task-comment-body">${workflowRuns.length
+                  ? `${workflowRuns.filter((run) => Array.isArray(run?.runGraph?.runs) && run.runGraph.runs.length > 0).length} run graphs · ${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.executions?.length || 0), 0)} execution steps`
+                  : "No execution lineage linked yet."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${workflowRuns.length
+                    ? `${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.timeline?.length || 0), 0)} lineage events`
+                    : ""}
+                </div>
+              </div>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Delegation Topology</div>
+                <div class="task-comment-body">${taskGraphPath.length > 1
+                  ? `Task graph: ${taskGraphPath.join(" → ")}`
+                  : (taskTopology?.latestRunId || taskTopology?.latestSessionId || taskTopology?.rootTaskId || taskTopology?.parentTaskId
+                      ? `${taskTopology.workflowName || taskTopology.workflowId || "workflow"} · ${taskTopology.rootTaskId || task?.id || "task"}`
+                      : "No delegated topology linked yet.")}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${[
+                    Number.isFinite(Number(taskTopology?.delegationDepth)) ? `Delegation depth ${Number(taskTopology.delegationDepth || 0)}` : "",
+                    taskTopology?.latestRunId ? `run ${taskTopology.latestRunId}` : "",
+                    taskTopology?.latestSessionId ? `session ${truncate(taskTopology.latestSessionId, 36)}` : "",
+                    taskDelegationTopologyRows.length ? `${taskDelegationTopologyRows.length} delegated run families` : "",
+                  ].filter(Boolean).join(" · ")}
+                </div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${taskSessionAncestry.length > 0 ? `Session ancestry: ${taskSessionAncestry.join(" · ")}` : ""}
+                </div>
+              </div>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Planning / Proof</div>
+                <div class="task-comment-body">${workflowRuns.length
+                  ? `${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.plannerEventCount || run?.plannerTimeline?.length || 0), 0)} planner events · ${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.evidenceCount || 0), 0)} evidence items`
+                  : "No planner or proof events linked yet."}</div>
+              </div>
+            </div>
             <input
               ref=${attachmentInputRef}
               type="file"
@@ -5035,7 +5266,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         ${/* AI Replan */ ""}
         <div class="task-section">
           <div class="task-section-title">
-            AI Replan
+            Planning Adjustments
             ${replanProposal?.status && html`<span class="task-tab-count">${replanProposal.status}</span>`}
             <span style="margin-left:auto;display:flex;gap:6px;">
               <${Button}
@@ -5189,11 +5420,14 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
-        ${/* Subtasks */ ""}
+        ${/* Child Work */ ""}
         <div class="task-section">
           <div class="task-section-title">
-            Subtasks
+            Child Work
             ${subtasks.length > 0 && html`<span class="task-tab-count">${subtasks.length}</span>`}
+            <span class="task-tab-count">${childStats.open} open</span>
+            ${childStats.blocked > 0 && html`<span class="task-tab-count">${childStats.blocked} blocked</span>`}
+            ${childStats.done > 0 && html`<span class="task-tab-count">${childStats.done} done</span>`}
             <span style="margin-left:auto;">
               <${Button}
                 variant="text"
@@ -5206,10 +5440,10 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             </span>
           </div>
           <div class="task-section-body">
-            <div class="task-comment-composer" style=${{ marginBottom: "8px" }}>
+            <div class="task-child-work-toolbar">
               <${TextField}
                 size="small"
-                placeholder="Create subtask summary"
+                placeholder="Create child task summary"
                 value=${subtaskTitle}
                 onInput=${(e) => setSubtaskTitle(e.target.value)}
                 fullWidth
@@ -5220,31 +5454,77 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
                 onClick=${handleCreateSubtask}
               >
-                ${creatingSubtask ? "Creating…" : "Add"}
+                ${creatingSubtask ? "Creating…" : "+ Child"}
               <//>
             </div>
-            <div class="task-comments-list">
+            <div class="task-child-work-list">
               ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
               ${subtasks.map((subtask) => html`
-                <div class="task-comment-item" key=${subtask.id}>
-                  <div class="task-comment-meta">
-                    <span style="user-select:all">${subtask.id}</span>
-                    ${subtask.status ? ` · ${subtask.status}` : ""}
-                    ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                <div class="task-subtask-row" key=${subtask.id}>
+                  <div class="task-subtask-main">
+                    <button type="button" class="task-subtask-open" onClick=${() => handleOpenRelatedTask(subtask.id)}>
+                      <div class="task-subtask-title-row">
+                        <span class="task-hierarchy-type-pill">${getTaskListIssueTypeLabel(subtask)}</span>
+                        <strong>${subtask.title}</strong>
+                      </div>
+                      <div class="task-comment-meta">
+                        <span style="user-select:all">${subtask.id}</span>
+                        ${subtask.status ? ` · ${subtask.status}` : ""}
+                        ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                        ${subtask.dueDate ? ` · due ${subtask.dueDate}` : ""}
+                      </div>
+                    </button>
                   </div>
-                  <div class="task-comment-body">${subtask.title}</div>
-                  ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+                  <div class="task-subtask-controls">
+                    <${Select}
+                      size="small"
+                      value=${subtask.status || "todo"}
+                      onChange=${(e) => { void handleInlineSubtaskUpdate(subtask, { status: e.target.value }, "Child status updated"); }}
+                    >
+                      ${["draft", "todo", "inprogress", "inreview", "blocked", "done", "cancelled"].map(
+                        (entryStatus) => html`<${MenuItem} value=${entryStatus}>${entryStatus}</${MenuItem}>`,
+                      )}
+                    </${Select}>
+                    <${TextField}
+                      size="small"
+                      defaultValue=${subtask.assignee || ""}
+                      placeholder="Assign"
+                      onBlur=${(e) => {
+                        const nextValue = toText(e.target.value);
+                        if (nextValue === toText(subtask.assignee)) return;
+                        void handleInlineSubtaskUpdate(subtask, { assignee: nextValue || null }, nextValue ? "Child assignee updated" : "Child assignee cleared");
+                      }}
+                      onKeyDown=${(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                    />
+                    <${Button} variant="text" size="small" onClick=${() => handleOpenRelatedTask(subtask.id)}>Open<//>
+                  </div>
+                  ${(subtask.dependencyTaskIds?.length > 0 || subtask.blockedReason || subtask.labels?.length > 0) && html`
+                    <div class="task-subtask-signals">
+                      ${subtask.dependencyTaskIds?.length > 0 && html`
+                        <span class="task-subtask-signal">Deps: ${subtask.dependencyTaskIds.join(", ")}</span>
+                      `}
+                      ${subtask.blockedReason && html`
+                        <span class="task-subtask-signal task-subtask-signal-blocked">${truncate(subtask.blockedReason, 96)}</span>
+                      `}
+                      ${subtask.labels?.length > 0 && html`
+                        <span class="task-subtask-signal">Labels: ${subtask.labels.join(", ")}</span>
+                      `}
+                    </div>
+                  `}
                 </div>
               `)}
             </div>
           </div>
         </div>
 
-        ${/* Comments & Updates */ ""}
+        ${/* Activity */ ""}
         <div class="task-section">
           <div class="task-section-title">
-            Comments & Updates
+            Activity
             ${comments.length > 0 && html`<span class="task-tab-count">${comments.length}</span>`}
+            ${historyEntries.length > 0 && html`<span class="task-tab-count">${historyEntries.length} history</span>`}
           </div>
           <div class="task-section-body">
             <div class="task-comments-list">
@@ -5279,104 +5559,32 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 ${postingComment ? "Posting…" : "Post Comment"}
               <//>
             </div>
-          </div>
-        </div>
-
-        ${/* Tracking Overview */ ""}
-        <div class="task-section">
-          <div class="task-section-title">Tracking Overview</div>
-          <div class="task-section-body">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Assigned Agents</div>
-                <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>${taskAgents.length} linked</div>
+            <div class="task-overview-grid" style=${{ marginTop: "14px" }}>
+              <div class="task-overview-card">
+                <div class="task-comment-meta">Timeline Events</div>
+                <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
               </div>
-              <div class="task-comment-item">
+              <div class="task-overview-card">
                 <div class="task-comment-meta">Workflow Runs</div>
                 <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
                   ${workflowRuns.filter((run) => String(run?.status || "").toLowerCase() === "failed").length} failed
                 </div>
               </div>
-              <div class="task-comment-item">
+              <div class="task-overview-card">
                 <div class="task-comment-meta">Durable Sessions</div>
                 <div class="task-comment-body">${taskDurableSessionIds.length
-                  ? `${taskDurableSessionIds.length} session IDs linked across the task, workflow runs, and state ledger.`
+                  ? `${taskDurableSessionIds.length} linked session IDs`
                   : "No durable session lineage linked yet."}</div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    taskPrimaryDurableSessionId ? `primary ${truncate(taskPrimaryDurableSessionId, 36)}` : "",
-                    taskAuditSessionIds.length ? `${taskAuditSessionIds.length} ledger sessions` : "",
-                    taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : "source state ledger / SQLite",
-                  ].filter(Boolean).join(" · ")}
+                  ${[taskPrimaryDurableSessionId ? `primary ${truncate(taskPrimaryDurableSessionId, 36)}` : "", taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : ""].filter(Boolean).join(" · ")}
                 </div>
               </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Planner / Proof</div>
-                <div class="task-comment-body">${workflowRuns.length
-                  ? `${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.plannerEventCount || run?.plannerTimeline?.length || 0), 0)} planner events · ${workflowRuns.reduce((total, run) => total + Number(run?.proofSummary?.evidenceCount || 0), 0)} evidence items`
-                  : "No planner or proof events linked yet."}</div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Execution Lineage</div>
-                <div class="task-comment-body">${workflowRuns.length
-                  ? `${workflowRuns.filter((run) => Array.isArray(run?.runGraph?.runs) && run.runGraph.runs.length > 0).length} run graphs linked · ${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.executions?.length || 0), 0)} execution steps`
-                  : "No execution lineage linked yet."}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${workflowRuns.length
-                    ? `${workflowRuns.reduce((total, run) => total + Number(run?.runGraph?.timeline?.length || 0), 0)} lineage events`
-                    : ""}
-                </div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Delegation Topology</div>
-                <div class="task-comment-body">${taskGraphPath.length > 1
-                  ? `Task graph: ${taskGraphPath.join(" → ")}`
-                  : (taskTopology?.latestRunId || taskTopology?.latestSessionId || taskTopology?.rootTaskId || taskTopology?.parentTaskId
-                      ? `${taskTopology.workflowName || taskTopology.workflowId || "workflow"} · ${taskTopology.rootTaskId || task?.id || "task"}`
-                      : "No delegated topology linked yet.")}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    Number.isFinite(Number(taskTopology?.delegationDepth)) ? `Delegation depth ${Number(taskTopology.delegationDepth || 0)}` : "",
-                    taskTopology?.latestRunId ? `run ${taskTopology.latestRunId}` : "",
-                    taskTopology?.latestSessionId ? `session ${truncate(taskTopology.latestSessionId, 36)}` : "",
-                    taskDelegationTopologyRows.length ? `${taskDelegationTopologyRows.length} delegated run families` : "",
-                  ].filter(Boolean).join(" · ")}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskSessionAncestry.length > 0 ? `Session ancestry: ${taskSessionAncestry.join(" · ")}` : ""}
-                </div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Timeline Events</div>
-                <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
-              </div>
-              <div class="task-comment-item">
+              <div class="task-overview-card">
                 <div class="task-comment-meta">Audit Trail</div>
                 <div class="task-comment-body">${hasTaskAuditContent
-                  ? `${taskAuditEventCount} ledger events · ${taskAuditToolCallCount} tool calls · ${taskAuditArtifactCount} artifacts · ${taskAuditClaimEventCount} claim events`
+                  ? `${taskAuditEventCount} events · ${taskAuditToolCallCount} tool calls · ${taskAuditArtifactCount} artifacts`
                   : "No state ledger / SQLite audit linked yet."}</div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    taskAuditRunCount ? `${taskAuditRunCount} audit-linked workflow runs` : "",
-                    taskAuditPromotedStrategyCount ? `${taskAuditPromotedStrategyCount} promoted strategies` : "",
-                    taskAuditOperatorActionCount ? `${taskAuditOperatorActionCount} operator actions` : "",
-                    taskAuditTraceCount ? `${taskAuditTraceCount} task trace events` : "",
-                    taskAuditSourceLabel ? `source ${taskAuditSourceLabel}` : "",
-                  ].filter(Boolean).join(" · ")}
-                </div>
-                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${[
-                    taskAuditClaim ? summarizeTaskAuditClaim(taskAuditClaim) : "",
-                    taskAuditSessionActivity ? summarizeTaskAuditSessionActivity(taskAuditSessionActivity) : (taskAuditSessionIds.length ? `${taskAuditSessionIds.length} session IDs` : ""),
-                    taskAuditAgentActivity ? summarizeTaskAuditAgentActivity(taskAuditAgentActivity) : (taskAuditAgentIds.length ? `${taskAuditAgentIds.length} agent IDs` : ""),
-                  ].filter(Boolean).join(" · ")}
-                </div>
-              </div>
-              <div class="task-comment-item">
-                <div class="task-comment-meta">Branch / PR</div>
-                <div class="task-comment-body">${renderTaskRelatedLinks(relatedLinks, { onReviewDiff: handleOpenReviewDiff })}</div>
               </div>
             </div>
           </div>
@@ -5385,7 +5593,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         ${/* Workflow Activity */ ""}
         ${workflowRuns.length > 0 && html`
           <div class="task-section">
-            <div class="task-section-title">Workflow Activity</div>
+            <div class="task-section-title">Execution Activity</div>
             <div class="task-section-body">
               <div class="task-comments-list">
                 ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `workflow-${index}`))}
@@ -5398,9 +5606,10 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
       ${/* ── RIGHT: Sidebar ── */ ""}
       <div class="task-detail-sidebar">
+        <div class="task-sidebar-group-title" data-group="primary">Primary Details</div>
 
         ${/* Status */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="status">
           <div class="task-sidebar-label">Status</div>
           <div class="task-sidebar-value">
             <${Select}
@@ -5422,7 +5631,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Priority */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="priority">
           <div class="task-sidebar-label">Priority</div>
           <div class="task-sidebar-value">
             <${Select}
@@ -5440,7 +5649,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Assignee */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="assignee">
           <div class="task-sidebar-label">Assignee</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5455,7 +5664,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Assignees */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="assignees">
           <div class="task-sidebar-label">Assignees</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5470,7 +5679,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Sprint */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="sprint">
           <div class="task-sidebar-label">Sprint</div>
           <div class="task-sidebar-value">
             <div style="display:flex;gap:6px;">
@@ -5495,23 +5704,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 style=${{ width: "60px" }}
               />
             </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Attempts count</div>
-              <div class="task-comment-body">${lifetimeAttempts.toLocaleString("en-US")}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Total tokens across all attempts</div>
-              <div class="task-comment-body">${lifetimeTokenCount.toLocaleString("en-US")}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Total runtime across all attempts</div>
-              <div class="task-comment-body">${formatLifetimeDuration(lifetimeDurationMs)}</div>
-            </div>
           </div>
         </div>
 
         ${/* Story Points */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="story-points">
           <div class="task-sidebar-label">Story Points</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5527,7 +5724,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Due Date */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="due-date">
           <div class="task-sidebar-label">Due Date</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5543,7 +5740,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Epic */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="epic">
           <div class="task-sidebar-label">Epic</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5559,11 +5756,17 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 ${epicCatalog.slice(0, 6).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" style="font-size:10px;" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
               </div>
             `}
+            ${currentEpicEntry?.anchorTaskId && html`
+              <div class="meta-text" style=${{ marginTop: "6px" }}>
+                <button type="button" class="task-inline-link-btn" onClick=${() => handleOpenRelatedTask(currentEpicEntry.anchorTaskId)}>Open epic task</button>
+              </div>
+            `}
           </div>
         </div>
 
         ${/* Goal */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-group-title" data-group="planning">Planning & Automation</div>
+        <div class="task-sidebar-field" data-field="goal">
           <div class="task-sidebar-label">Goal</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5578,7 +5781,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Parent Goal */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="parent-goal">
           <div class="task-sidebar-label">Parent Goal</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5593,7 +5796,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Coordination Team */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="coordination-team">
           <div class="task-sidebar-label">Coordination Team</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5608,7 +5811,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Coordination Role */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="coordination-role">
           <div class="task-sidebar-label">Coordination Role</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5623,7 +5826,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Reports To */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="reports-to">
           <div class="task-sidebar-label">Reports To</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5638,7 +5841,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Coordination Level */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="coordination-level">
           <div class="task-sidebar-label">Coordination Level</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5653,7 +5856,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Parent Task */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="parent-task">
           <div class="task-sidebar-label">Parent Task</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5665,15 +5868,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               fullWidth
             />
             ${currentParentTask && html`
-              <div class="meta-text" style=${{ marginTop: "6px" }}>
-                Linked parent: <strong>${currentParentTask.title || currentParentTask.id}</strong>
+              <div class="meta-text" style=${{ marginTop: "6px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                <span>Linked parent: <strong>${currentParentTask.title || currentParentTask.id}</strong></span>
+                <button type="button" class="task-inline-link-btn" onClick=${() => handleOpenRelatedTask(currentParentTask.id)}>Open</button>
               </div>
             `}
           </div>
         </div>
 
         ${/* Budget Window */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="budget-window">
           <div class="task-sidebar-label">Budget Window</div>
           <div class="task-sidebar-value">
             <${TextField}
@@ -5688,7 +5892,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Budget */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="budget">
           <div class="task-sidebar-label">Budget</div>
           <div class="task-sidebar-value">
             <div style="display:flex;gap:6px;">
@@ -5715,7 +5919,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Tags */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="labels">
           <div class="task-sidebar-label">Tags</div>
           <div class="task-sidebar-value">
             <${TextField} size="small" variant="outlined" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
@@ -5730,7 +5934,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Workspace & Repository */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="workspace">
           <div class="task-sidebar-label">Workspace</div>
           <div class="task-sidebar-value">
             <${Select}
@@ -5747,7 +5951,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
 
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="repository">
           <div class="task-sidebar-label">Repository</div>
           <div class="task-sidebar-value">
             <${Select}
@@ -5769,7 +5973,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Base Branch */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="base-branch">
           <div class="task-sidebar-label">Base Branch</div>
           <div class="task-sidebar-value">
             <${TextField} size="small" variant="outlined" placeholder="e.g. feature/xyz" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
@@ -5777,7 +5981,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Draft toggle */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="draft">
           <div class="task-sidebar-label">Draft</div>
           <div class="task-sidebar-value">
             <${Toggle}
@@ -5793,7 +5997,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Manual Override toggle */ ""}
-        <div class="task-sidebar-field">
+        <div class="task-sidebar-field" data-field="manual">
           <div class="task-sidebar-label">Manual</div>
           <div class="task-sidebar-value">
             <${Toggle}
@@ -5810,7 +6014,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
 
         ${/* Dependencies */ ""}
-        <div class="task-sidebar-field" style="flex-direction:column;gap:6px;">
+        <div class="task-sidebar-field" data-field="dependencies" style="flex-direction:column;gap:6px;">
           <div class="task-sidebar-label" style="width:auto;">Dependencies</div>
           <div class="task-sidebar-value">
             ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "6px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
@@ -5852,13 +6056,13 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
         ${/* Meta info */ ""}
         ${task?.meta?.triggerTemplate?.id && html`
-          <div class="task-sidebar-field">
+          <div class="task-sidebar-field" data-field="trigger">
             <div class="task-sidebar-label">Trigger</div>
             <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">${task.meta.triggerTemplate.id}</div>
           </div>
         `}
         ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) && html`
-          <div class="task-sidebar-field">
+          <div class="task-sidebar-field" data-field="exec-override">
             <div class="task-sidebar-label">Exec Override</div>
             <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">
               ${task?.meta?.execution?.sdk || "auto"}${task?.meta?.execution?.model ? ` · ${task.meta.execution.model}` : ""}
@@ -5866,20 +6070,38 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         `}
         ${task?.branch && html`
-          <div class="task-sidebar-field">
+          <div class="task-sidebar-field" data-field="branch">
             <div class="task-sidebar-label">Branch</div>
             <div class="task-sidebar-value" style="font-size:11px;user-select:all;word-break:break-all;">${task.branch}</div>
           </div>
         `}
 
+        <div class="task-sidebar-field" data-field="runtime-metrics">
+          <div class="task-sidebar-label">Execution</div>
+          <div class="task-sidebar-value">
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Attempts count</div>
+              <div class="task-comment-body">${lifetimeAttempts.toLocaleString("en-US")}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Total tokens</div>
+              <div class="task-comment-body">${lifetimeTokenCount.toLocaleString("en-US")}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Total runtime</div>
+              <div class="task-comment-body">${formatLifetimeDuration(lifetimeDurationMs)}</div>
+            </div>
+          </div>
+        </div>
+
         ${/* Timestamps */ ""}
-        <div class="task-timestamps">
+        <div class="task-timestamps" data-field="timestamps">
           ${task?.created_at && html`<div class="task-timestamp-row">Created ${new Date(task.created_at).toLocaleString()}</div>`}
           ${task?.updated_at && html`<div class="task-timestamp-row">Updated ${formatRelative(task.updated_at)}</div>`}
         </div>
 
         ${/* Save bar */ ""}
-        <div class="task-save-bar">
+        <div class="task-save-bar" data-field="save-actions">
           <${SaveDiscardBar}
             dirty=${hasUnsaved}
             message=${unsavedChangesMessage(changeCount)}
@@ -6490,7 +6712,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   <span><b>Primary Session:</b> <code>${taskPrimaryDurableSessionId || taskDurableSessionIds[0]}</code></span>
                 </div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
-                  ${taskDurableSessionIds.length} durable session IDs · ${taskAuditSourceLabel || "state ledger / SQLite"}
+                  ${taskDurableSessionIds.length} durable session IDs · ${taskAuditSourceLabel || "source state ledger / SQLite"}
                 </div>
                 <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
                   ${taskDurableSessionIds.slice(0, 4).map((sessionId) => html`<code key=${sessionId} style="margin-right:4px;">${sessionId}</code>`)}
@@ -9483,6 +9705,7 @@ export function TasksTab() {
           setDetailTaskHydrating(false);
         }}
         onStart=${(task) => openStartModal(task)}
+        onOpenTask=${openDetail}
         presentation=${isDag ? "side-sheet" : "modal"}
         taskCatalog=${dagTaskCatalog}
         epicCatalog=${dagEpicCatalog}

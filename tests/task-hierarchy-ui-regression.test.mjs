@@ -92,6 +92,16 @@ for (const { relPath, source } of taskTabSources) {
       expect(source).toContain("+ Child");
       expect(source).toContain("progressTotal > 0");
     });
+
+    it("keeps task detail hierarchy panels and child-work controls aligned", () => {
+      expect(source).toContain("task-hierarchy-summary");
+      expect(source).toContain("Child Work");
+      expect(source).toContain("handleInlineSubtaskUpdate");
+      expect(source).toContain("task-sidebar-group-title");
+      expect(source).toContain("Planning Adjustments");
+      expect(source).toContain("Execution Activity");
+      expect(source).toContain("onOpenTask=${openDetail}");
+    });
   });
 }
 
@@ -127,6 +137,14 @@ for (const { relPath, source } of taskStyleSources) {
       expect(source).toContain(".task-tree-progress-pill");
       expect(source).toContain(".task-tree-action-btn");
       expect(source).toContain(".task-tree-status-select");
+    });
+
+    it("defines task-detail hierarchy summary and child work styling", () => {
+      expect(source).toContain(".task-hierarchy-summary");
+      expect(source).toContain(".task-inline-link-btn");
+      expect(source).toContain(".task-sidebar-group-title");
+      expect(source).toContain(".task-child-work-list");
+      expect(source).toContain(".task-subtask-row");
     });
   });
 }

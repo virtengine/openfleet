@@ -67,8 +67,8 @@ function resolveKernelProviderSettings(config = {}, providerId = "") {
   const providerConfigById = {
     "openai-responses": providers.openaiResponses,
     "openai-codex-subscription": providers.chatgptCodex,
-    "azure-openai": providers.azureOpenAi,
-    anthropic: providers.anthropic,
+    "azure-openai-responses": providers.azureOpenAi,
+    "anthropic-messages": providers.anthropic,
     "claude-subscription-shim": providers.claudeSubscription,
     "openai-compatible": providers.openaiCompatible,
     ollama: providers.ollama,
@@ -134,6 +134,31 @@ function resolveKernelConfig(options = {}) {
     }
   }
   return options.config && typeof options.config === "object" ? options.config : {};
+}
+
+function findProviderModelEntry(providerEntry = null, modelId = "") {
+  const normalizedModelId = String(modelId || "").trim();
+  if (!normalizedModelId) return null;
+  const models = Array.isArray(providerEntry?.modelCatalog?.models)
+    ? providerEntry.modelCatalog.models
+    : [];
+  return models.find((entry) => String(entry?.id || "").trim() === normalizedModelId) || null;
+}
+
+function applyModelTransportOverrides(providerConfig = null, providerEntry = null, modelId = "") {
+  if (!providerConfig || typeof providerConfig !== "object") return providerConfig;
+  const modelEntry = findProviderModelEntry(providerEntry, modelId);
+  const apiStyle = String(modelEntry?.apiStyle || "").trim();
+  if (!apiStyle) return providerConfig;
+  return {
+    ...providerConfig,
+    transport: {
+      ...(providerConfig.transport && typeof providerConfig.transport === "object"
+        ? providerConfig.transport
+        : {}),
+      apiStyle,
+    },
+  };
 }
 
 function createRegistryFactory(options = {}) {
@@ -249,15 +274,20 @@ export function createProviderKernel(options = {}) {
             })
       )
       : null;
+    const effectiveProviderConfig = applyModelTransportOverrides(
+      providerConfig,
+      providerEntry,
+      resolvedSelection.model,
+    );
 
     return {
       registry,
       selection: resolvedSelection,
       providerEntry: providerEntry || null,
       providerId,
-      providerConfig: providerConfig
+      providerConfig: effectiveProviderConfig
         ? {
-            ...providerConfig,
+            ...effectiveProviderConfig,
             provider: providerId,
           }
         : null,

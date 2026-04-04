@@ -182,7 +182,30 @@
               "defaultModel": { "type": "string" },
               "models": {
                 "oneOf": [
-                  { "type": "array", "items": { "type": "string" } },
+                  {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["id"],
+                          "properties": {
+                            "id": { "type": "string" },
+                            "label": { "type": "string" },
+                            "enabled": { "type": "boolean", "default": true },
+                            "apiStyle": {
+                              "type": "string",
+                              "enum": ["provider-default", "responses", "chat-completions"]
+                            },
+                            "reasoningEffort": { "type": "string" },
+                            "contextWindow": { "type": "number" }
+                          }
+                        }
+                      ]
+                    }
+                  },
                   { "type": "string" }
                 ]
               },

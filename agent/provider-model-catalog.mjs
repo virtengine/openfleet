@@ -29,6 +29,7 @@ export function normalizeModelEntry(model, options = {}) {
     label: toTrimmedString(value.label || value.name || id) || id,
     providerId,
     family: normalizeModelFamily(id, providerDefinition),
+    apiStyle: toTrimmedString(value.apiStyle || value.transport?.apiStyle || "") || null,
     reasoningEffort: toTrimmedString(value.reasoningEffort || value.reasoning || value.effort) || null,
     contextWindow: Number.isFinite(Number(value.contextWindow)) ? Number(value.contextWindow) : null,
     default: value.default === true || id === toTrimmedString(options.defaultModel),

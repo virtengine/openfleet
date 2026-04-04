@@ -25,6 +25,10 @@ function uniqueStrings(values = []) {
   )];
 }
 
+function normalizeModelEntryId(value, fallback = "model") {
+  return toTrimmedString(value) || fallback;
+}
+
 function parseBooleanLike(value, fallback = true) {
   if (typeof value === "boolean") return value;
   const normalized = toTrimmedString(value).toLowerCase();
@@ -62,6 +66,56 @@ function defaultApiStyleForProvider(providerId = "") {
   if (style === "responses") return "responses";
   if (style === "chat-completions" || style === "openai-compatible") return "chat-completions";
   return "provider-default";
+}
+
+function normalizeHarnessModelEntry(rawEntry = {}, index = 0, options = {}) {
+  const fallbackApiStyle = normalizeApiStyle(
+    options.apiStyle || options.fallbackApiStyle || "provider-default",
+    "provider-default",
+  );
+  const value = rawEntry && typeof rawEntry === "object"
+    ? rawEntry
+    : { id: rawEntry };
+  const id = normalizeModelEntryId(
+    value.id || value.model || value.name,
+    `model-${index + 1}`,
+  );
+  const label = toTrimmedString(value.label || value.name || value.title || id) || id;
+  const apiStyle = normalizeApiStyle(
+    value.apiStyle || value.transport?.apiStyle || fallbackApiStyle,
+    fallbackApiStyle,
+  );
+  const reasoningEffort = toTrimmedString(
+    value.reasoningEffort || value.reasoning || value.effort || "",
+  ) || null;
+  const contextWindow = Number.isFinite(Number(value.contextWindow))
+    ? Number(value.contextWindow)
+    : null;
+  return {
+    id,
+    label,
+    enabled: parseBooleanLike(value.enabled, true),
+    apiStyle,
+    reasoningEffort,
+    contextWindow,
+  };
+}
+
+function normalizeHarnessModelEntries(rawModels = [], options = {}) {
+  const fallbackApiStyle = defaultApiStyleForProvider(options.providerId || "");
+  const input = Array.isArray(rawModels) ? rawModels : uniqueStrings(rawModels);
+  const deduped = [];
+  const seen = new Set();
+  for (const [index, rawEntry] of input.entries()) {
+    const normalized = normalizeHarnessModelEntry(rawEntry, index, {
+      fallbackApiStyle,
+      apiStyle: options.apiStyle,
+    });
+    if (!normalized?.id || seen.has(normalized.id)) continue;
+    seen.add(normalized.id);
+    deduped.push(normalized);
+  }
+  return deduped;
 }
 
 function normalizeExecutorTransport(executor = {}) {
@@ -111,8 +165,21 @@ export function normalizeHarnessExecutor(rawExecutor = {}, index = 0) {
   const fallbackName = driver?.name || providerId || `Harness Executor ${index + 1}`;
   const name = toTrimmedString(rawExecutor.name || rawExecutor.label || rawExecutor.title) || fallbackName;
   const id = sanitizeId(rawExecutor.id || rawExecutor.slug || name || providerId || `executor-${index + 1}`);
-  const models = uniqueStrings(rawExecutor.models || rawExecutor.modelCatalog?.models || []);
-  const defaultModel = toTrimmedString(rawExecutor.defaultModel || rawExecutor.model || models[0] || driver?.defaultModel || "");
+  const modelEntries = normalizeHarnessModelEntries(
+    rawExecutor.models || rawExecutor.modelCatalog?.models || [],
+    {
+      providerId,
+      apiStyle: rawExecutor.apiStyle || rawExecutor.transport?.apiStyle || rawExecutor.transportStyle,
+    },
+  );
+  const models = modelEntries.map((entry) => entry.id);
+  const defaultModel = toTrimmedString(
+    rawExecutor.defaultModel
+    || rawExecutor.model
+    || modelEntries.find((entry) => entry.enabled !== false)?.id
+    || driver?.defaultModel
+    || "",
+  );
   const enabled = parseBooleanLike(rawExecutor.enabled, true);
   const weight = Math.max(0, Number.parseInt(toTrimmedString(rawExecutor.weight), 10) || 0);
   const authMode = toTrimmedString(rawExecutor.authMode || rawExecutor.mode || rawExecutor.auth?.mode || "");
@@ -130,6 +197,7 @@ export function normalizeHarnessExecutor(rawExecutor = {}, index = 0) {
     description: toTrimmedString(rawExecutor.description || driver?.description || ""),
     defaultModel: defaultModel || null,
     models,
+    modelEntries,
     authMode: authMode || null,
     endpoint: toTrimmedString(rawExecutor.endpoint || rawExecutor.url || "") || null,
     baseUrl: toTrimmedString(rawExecutor.baseUrl || rawExecutor.baseURL || "") || null,
@@ -170,7 +238,7 @@ export function buildDerivedHarnessExecutors(providerInventory = null) {
         || null,
       models:
         Array.isArray(item?.modelCatalog?.models)
-          ? item.modelCatalog.models.map((model) => model?.id || model).filter(Boolean)
+          ? item.modelCatalog.models
           : Array.isArray(item?.models)
             ? item.models
             : [],
