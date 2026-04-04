@@ -797,6 +797,7 @@ function buildLightweightSessionSummaryRecord(
     totalTokens: Number(session?.totalTokens ?? tokenUsage.totalTokens ?? session?.tokenCount ?? 0) || 0,
     totalEvents,
     eventCount: totalEvents,
+    insights: session?.insights || null,
     metadata:
       session?.metadata && typeof session.metadata === "object"
         ? { ...session.metadata }

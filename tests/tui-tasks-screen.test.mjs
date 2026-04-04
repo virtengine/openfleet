@@ -1,23 +1,18 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 import {
-  createTaskApiFromRequestJson,
   formatColumnSummary,
   LINE_LIST_FIELD_KEYS,
   TASK_VIEW_WIDTH_THRESHOLD,
   buildBoardColumns,
   buildListRows,
-  createTaskFromForm,
-  deleteTaskById,
-  listTasksFromApi,
   normalizeTaskStatus,
   parseTaskDescription,
   resolveTaskView,
-  updateTaskFromForm,
   validateTaskForm,
 } from "../ui/tui/tasks-screen-helpers.js";
 import {
@@ -28,7 +23,28 @@ import {
   formatTask,
   normalizeTaskCreatePayload,
 } from "../tui/screens/tasks-screen-helpers.mjs";
-import { taskList } from "../task/task-cli.mjs";
+
+let createTaskApiFromRequestJson;
+let createTaskFromForm;
+let deleteTaskById;
+let listTasksFromApi;
+let taskList;
+let updateTaskFromForm;
+
+async function loadTaskCrudModules() {
+  vi.resetModules();
+  const taskScreenHelpers = await import("../ui/tui/tasks-screen-helpers.js");
+  const taskCli = await import("../task/task-cli.mjs");
+
+  ({
+    createTaskApiFromRequestJson,
+    createTaskFromForm,
+    deleteTaskById,
+    listTasksFromApi,
+    updateTaskFromForm,
+  } = taskScreenHelpers);
+  ({ taskList } = taskCli);
+}
 
 const tempDirs = [];
 
@@ -48,6 +64,10 @@ afterEach(() => {
   while (tempDirs.length) {
     rmSync(tempDirs.pop(), { recursive: true, force: true });
   }
+});
+
+beforeEach(async () => {
+  await loadTaskCrudModules();
 });
 
 describe("tui tasks screen helpers", () => {

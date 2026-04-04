@@ -16,6 +16,7 @@ import { buildChatTurnGroups } from "../modules/chat-turn-groups.js";
 import { showToast } from "../modules/state.js";
 import { formatRelative, truncate, formatBytes } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
+import { DiffViewer } from "./diff-viewer.js";
 import {
   Paper, Typography, Box, Stack, IconButton, TextField,
   InputAdornment, Chip, CircularProgress, Skeleton, Tooltip,
@@ -412,6 +413,145 @@ function AttachmentList({ attachments }) {
         `;
       })}
     </${Stack}>
+  `;
+}
+
+function summarizeTurnFileChanges(fileChanges = null) {
+  if (!fileChanges || typeof fileChanges !== "object") return null;
+  const files = Array.isArray(fileChanges.files)
+    ? fileChanges.files.filter(Boolean).map((file = {}) => ({
+        filename: String(file.filename || file.file || "unknown").trim() || "unknown",
+        status: String(file.status || "modified").trim() || "modified",
+        additions: Math.max(0, Number(file.additions || 0) || 0),
+        deletions: Math.max(0, Number(file.deletions || 0) || 0),
+        hasPatch: Boolean(file.hasPatch),
+      }))
+    : [];
+  const totalFiles = Math.max(0, Number(fileChanges.totalFiles || files.length || 0) || 0);
+  if (totalFiles <= 0) return null;
+  return {
+    ...fileChanges,
+    totalFiles,
+    totalAdditions: Math.max(0, Number(fileChanges.totalAdditions || 0) || 0),
+    totalDeletions: Math.max(0, Number(fileChanges.totalDeletions || 0) || 0),
+    files,
+  };
+}
+
+function TurnFilesChangedCard({
+  sessionId = "",
+  workspace = "active",
+  turn = null,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const fileChanges = summarizeTurnFileChanges(turn?.fileChanges);
+  const turnDiffRef = turn?.diffRef && typeof turn.diffRef === "object" ? turn.diffRef : {};
+  if (!fileChanges || !sessionId) return null;
+  const previewFiles = fileChanges.files.slice(0, 4);
+  const remainingFiles = Math.max(0, fileChanges.files.length - previewFiles.length);
+  const turnLabel = Number.isFinite(Number(turn?.turnIndex)) ? `Turn ${Number(turn.turnIndex) + 1}` : "Turn";
+  return html`
+    <${Paper}
+      variant="outlined"
+      sx=${{
+        mb: 1.25,
+        ml: 0,
+        borderRadius: 2,
+        borderColor: "rgba(59, 130, 246, 0.22)",
+        background: "linear-gradient(180deg, rgba(30,41,59,0.7) 0%, rgba(15,23,42,0.58) 100%)",
+        overflow: "hidden",
+      }}
+    >
+      <${Box} sx=${{ px: 1.5, py: 1.25 }}>
+        <${Stack} direction="row" spacing=${1} alignItems="center" useFlexGap flexWrap="wrap">
+          <${Chip}
+            label="Files Changed"
+            size="small"
+            color="primary"
+            variant="filled"
+            sx=${{ height: 22, fontSize: "0.6875rem", fontWeight: 700 }}
+          />
+          <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
+            ${fileChanges.totalFiles} file${fileChanges.totalFiles === 1 ? "" : "s"} changed
+          <//>
+          <${Chip} label=${turnLabel} size="small" variant="outlined" sx=${{ height: 20, fontSize: "0.625rem" }} />
+          ${fileChanges.totalAdditions > 0
+            ? html`<${Chip} label=${`+${fileChanges.totalAdditions}`} size="small" color="success" variant="outlined" sx=${{ height: 20, fontSize: "0.625rem" }} />`
+            : null}
+          ${fileChanges.totalDeletions > 0
+            ? html`<${Chip} label=${`-${fileChanges.totalDeletions}`} size="small" color="error" variant="outlined" sx=${{ height: 20, fontSize: "0.625rem" }} />`
+            : null}
+          <${Button}
+            size="small"
+            variant=${expanded ? "contained" : "outlined"}
+            onClick=${() => setExpanded((prev) => !prev)}
+            sx=${{ ml: "auto", textTransform: "none" }}
+          >
+            ${expanded ? "Hide diff" : "View diff"}
+          </${Button}>
+        </${Stack}>
+        <${Stack} spacing=${0.75} sx=${{ mt: 1.25 }}>
+          ${previewFiles.map((file) => html`
+            <${Box}
+              key=${file.filename}
+              sx=${{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) auto",
+                gap: 1,
+                alignItems: "center",
+                px: 1,
+                py: 0.75,
+                borderRadius: 1.5,
+                bgcolor: "rgba(15, 23, 42, 0.42)",
+              }}
+            >
+              <${Box} sx=${{ minWidth: 0 }}>
+                <${Typography}
+                  variant="caption"
+                  sx=${{
+                    display: "block",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                    fontWeight: 600,
+                    color: "text.primary",
+                  }}
+                >
+                  ${file.filename}
+                <//>
+                <${Typography} variant="caption" color="text.secondary">
+                  ${file.status}${file.hasPatch ? " · diff ready" : ""}
+                <//>
+              </${Box}>
+              <${Stack} direction="row" spacing=${0.5}>
+                ${file.additions > 0
+                  ? html`<${Chip} label=${`+${file.additions}`} size="small" color="success" variant="outlined" sx=${{ height: 18, fontSize: "0.5625rem" }} />`
+                  : null}
+                ${file.deletions > 0
+                  ? html`<${Chip} label=${`-${file.deletions}`} size="small" color="error" variant="outlined" sx=${{ height: 18, fontSize: "0.5625rem" }} />`
+                  : null}
+              </${Stack}>
+            </${Box}>
+          `)}
+          ${remainingFiles > 0
+            ? html`<${Typography} variant="caption" color="text.secondary" sx=${{ px: 0.5 }}>
+                ${remainingFiles} more file${remainingFiles === 1 ? "" : "s"} in this turn
+              <//>`
+            : null}
+        </${Stack}>
+      </${Box}>
+      <${Collapse} in=${expanded} unmountOnExit>
+        <${Box} sx=${{ px: 1.25, pb: 1.25 }}>
+          <${DiffViewer}
+            sessionId=${sessionId}
+            workspace=${workspace}
+            turnId=${turnDiffRef.turnId || turn?.id || ""}
+            turnIndex=${turnDiffRef.turnIndex ?? turn?.turnIndex ?? null}
+            embedded=${true}
+            hideSummary=${true}
+            defaultExpandedFiles=${0}
+          />
+        </${Box}>
+      </${Collapse}>
+    </${Paper}>
   `;
 }
 
@@ -890,13 +1030,14 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
      module load race or a WebSocket push that corrupted state), we default to
      safe empty values so the component renders instead of crashing.
      
-     Use .peek() for signals whose changes should NOT trigger a re-render of
-     this component. sessionsData changes frequently (sidebar metadata), but
-     we only need the session status for the header — not worth re-rendering
-     the entire message list. */
+     This view now renders turn-scoped file-change cards from structured
+     session metadata, so it must react when the session surface updates after a
+     turn settles. */
   let session = null;
+  let trackedSessions = [];
   try {
-    session = (sessionsData.peek() || []).find((s) => s.id === sessionId) || null;
+    trackedSessions = sessionsData.value || [];
+    session = trackedSessions.find((s) => s.id === sessionId) || null;
   } catch (err) {
     console.warn("[ChatView] Failed to read sessionsData:", err);
   }
@@ -907,12 +1048,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const sessionPath = useCallback(
     (action = "") => {
       const currentSession =
-        (sessionsData.peek() || []).find((entry) => entry?.id === sessionId) || session;
+        trackedSessions.find((entry) => entry?.id === sessionId) || session;
       return buildSessionApiPath(sessionId, action, {
         workspace: resolveSessionWorkspaceHint(currentSession, "active"),
       });
     },
-    [sessionId, session],
+    [trackedSessions, sessionId, session],
   );
 
   /* Memoize the filter key list so filteredMessages memoization works properly.
@@ -1077,6 +1218,18 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     if (activeFilters.length > 0) return [];
     return buildChatTurnGroups(visibleMessages);
   }, [visibleMessages, activeFilters.length]);
+  const sessionWorkspace = useMemo(
+    () => resolveSessionWorkspaceHint(session, "active"),
+    [session],
+  );
+  const turnSurfaceByIndex = useMemo(() => {
+    const turns = Array.isArray(session?.turns) ? session.turns : [];
+    return new Map(
+      turns
+        .filter((turn) => Number.isFinite(Number(turn?.turnIndex)))
+        .map((turn) => [Number(turn.turnIndex), turn]),
+    );
+  }, [session]);
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
@@ -1880,6 +2033,21 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                       `
                     : null}
                   ${groupItems.map((item) => renderLinearItem(item))}
+                  ${(() => {
+                    const turn = turnSurfaceByIndex.get(Number(group.turnIndex)) || null;
+                    const fileChanges = summarizeTurnFileChanges(turn?.fileChanges);
+                    const shouldRenderTurnFilesCard =
+                      Boolean(fileChanges)
+                      && (String(turn?.status || "").trim().toLowerCase() === "completed" || group.hasAssistantMessage);
+                    if (!shouldRenderTurnFilesCard) return null;
+                    return html`
+                      <${TurnFilesChangedCard}
+                        sessionId=${sessionId}
+                        workspace=${sessionWorkspace}
+                        turn=${turn}
+                      />
+                    `;
+                  })()}
                 </${Box}>
               `;
             })}

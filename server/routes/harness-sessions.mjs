@@ -557,7 +557,6 @@ function enrichSessionTurnsForSurface(session = null) {
 
 async function buildSessionResponsePayload(session = null, workspaceContext = {}, deps = {}, options = {}) {
   if (!session || typeof session !== "object") return session;
-  const includeBranches = options.includeBranches === true;
   const responseSession = {
     ...session,
     metadata:
@@ -570,7 +569,7 @@ async function buildSessionResponsePayload(session = null, workspaceContext = {}
   }
   responseSession.turns = enrichSessionTurnsForSurface(session);
   responseSession.surface = await buildSessionSurfacePayload(session, workspaceContext, deps, {
-    includeBranches,
+    includeBranches: options.includeBranches === true,
   });
   return responseSession;
 }
@@ -890,7 +889,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         : pagedSessions.map((session) => compactSessionListItem(session));
       const responseSessions = await Promise.all(
         sessionPayloads.map((session) => buildSessionResponsePayload(session, workspaceContext, deps, {
-          includeBranches: wantsFull,
+          includeBranches: false,
         })),
       );
       jsonResponse(res, 200, {
@@ -993,7 +992,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           workspaceRoot: resolvedWorkspaceRoot,
         },
         deps,
-        { includeBranches: true },
+        { includeBranches: false },
       );
       jsonResponse(res, 200, {
         ok: true,
@@ -1117,7 +1116,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const wantsFull = fullParam === "1" || fullParam === "true" || fullParam === "yes";
       if (wantsFull) {
         const responseSession = await buildSessionResponsePayload(session, workspaceContext, deps, {
-          includeBranches: true,
+          includeBranches: false,
         });
         jsonResponse(res, 200, { ok: true, session: responseSession });
         return true;
@@ -1210,6 +1209,108 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           available: branchInventory.branches,
         },
       });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  if (action === "surface" && req.method === "POST") {
+    try {
+      const session = getScopedSessionRecord({ includeMessages: false });
+      if (!session) {
+        jsonResponse(res, 404, { ok: false, error: "Session not found" });
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const surface = await buildSessionSurfacePayload(session, workspaceContext, deps, {
+        includeBranches: false,
+      });
+      const availableRepos = Array.isArray(surface?.repository?.available)
+        ? surface.repository.available
+        : [];
+      const requestedRepoPathRaw =
+        body?.selectedRepoPath
+        ?? body?.repoPath
+        ?? body?.repository?.path
+        ?? null;
+      const requestedRepoPath = requestedRepoPathRaw == null
+        ? null
+        : normalizeCandidatePath(requestedRepoPathRaw);
+      const nextRepo =
+        requestedRepoPath == null
+          ? (surface?.repository?.selected || availableRepos[0] || null)
+          : availableRepos.find((repo) => repo?.path === requestedRepoPath) || null;
+      if (requestedRepoPath != null && !nextRepo) {
+        jsonResponse(res, 400, { ok: false, error: "Selected repo is not available for this session" });
+        return true;
+      }
+      const nextRepoPath = normalizeCandidatePath(nextRepo?.path || session?.metadata?.selectedRepoPath || session?.metadata?.workspaceDir || session?.workspaceDir || workspaceContext?.workspaceDir);
+      const requestedBranch = toTrimmedString(
+        body?.branch
+        ?? body?.branchName
+        ?? body?.branch?.selected
+        ?? body?.branch?.name
+        ?? "",
+      );
+      const repoChanged =
+        requestedRepoPath != null
+        && requestedRepoPath !== normalizeCandidatePath(
+          session?.metadata?.selectedRepoPath
+          || session?.metadata?.workspaceDir
+          || session?.workspaceDir,
+        );
+      const nextBranch =
+        requestedBranch
+        || (repoChanged && nextRepoPath && typeof readCurrentBranchForRepo === "function"
+          ? toTrimmedString(readCurrentBranchForRepo(nextRepoPath) || "")
+          : "")
+        || toTrimmedString(session?.metadata?.branch || "")
+        || toTrimmedString(nextRepo?.branch || "")
+        || null;
+      const executionTarget = normalizeSessionExecutionTarget(
+        body?.executionTarget ?? body?.executionTarget?.selected ?? session?.metadata?.executionTarget,
+        "local_project",
+      );
+      const permissionMode = normalizeSessionPermissionMode(
+        body?.permissionMode ?? body?.permissionMode?.selected ?? session?.metadata?.permissionMode,
+        "default_permissions",
+      );
+      const nextMetadata = tracker.updateSessionMetadata?.(sessionId, (currentMetadata = {}) => ({
+        ...currentMetadata,
+        ...(nextRepoPath ? {
+          workspaceDir: nextRepoPath,
+          selectedRepoPath: nextRepoPath,
+          selectedRepoName: basename(nextRepoPath),
+        } : {}),
+        ...(workspaceContext?.workspaceId ? { workspaceId: workspaceContext.workspaceId } : {}),
+        ...(workspaceContext?.workspaceRoot ? { workspaceRoot: workspaceContext.workspaceRoot } : {}),
+        ...(nextBranch ? { branch: nextBranch } : {}),
+        executionTarget,
+        permissionMode,
+      }));
+      if (!nextMetadata) {
+        jsonResponse(res, 500, { ok: false, error: "Could not update session surface" });
+        return true;
+      }
+      invalidateDurableSessionListCache();
+      const responseSession = await buildSessionResponsePayload(
+        tracker.getSessionById?.(sessionId) || session,
+        workspaceContext,
+        deps,
+        { includeBranches: false },
+      );
+      jsonResponse(res, 200, {
+        ok: true,
+        sessionId,
+        session: responseSession,
+        surface: responseSession?.surface || null,
+      });
+      broadcastUiEvent(["sessions"], "invalidate", {
+        reason: "session-surface-updated",
+        sessionId,
+      });
+      broadcastSessionsSnapshot();
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -1442,6 +1543,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         turnAgentProfileId = messageAgentProfileId,
         skipQueuedDrain = false,
         waitForSettlement = false,
+        dequeueQueuedFollowupOnStart = false,
       } = {}) => {
         if (!exec) return false;
         const liveSession = tracker.getSessionById(sessionId) || session;
@@ -1527,6 +1629,9 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           nextAgentProfileId: turnAgentProfileId,
         });
         recordUserMessageOnce();
+        if (dequeueQueuedFollowupOnStart) {
+          dequeueSessionFollowup();
+        }
         tracker.updateSessionStatus(sessionId, "active");
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         broadcastSessionsSnapshot();
@@ -1577,10 +1682,17 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           if (latestSession?.status === "active") {
             tracker.updateSessionStatus(sessionId, "completed");
           }
-          return captureTurnDiffSnapshot().finally(() => {
-            broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
-            broadcastSessionsSnapshot();
-          });
+          broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
+          broadcastSessionsSnapshot();
+          void captureTurnDiffSnapshot()
+            .catch(() => null)
+            .finally(() => {
+              broadcastUiEvent(["sessions"], "invalidate", {
+                reason: "session-turn-diff-captured",
+                sessionId,
+              });
+              broadcastSessionsSnapshot();
+            });
         }).catch((execErr) => {
           const latestSession = tracker.getSessionById(sessionId);
           const sessionStillActive = latestSession?.status === "active";
@@ -1625,14 +1737,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
             sessionId,
           });
           if (!skipQueuedDrain && completedNormally) {
-            const nextQueued = dequeueSessionFollowup();
-            if (nextQueued?.entry) {
+            const nextQueued = listQueuedFollowups(tracker.getSessionById(sessionId) || liveSession)[0] || null;
+            if (nextQueued) {
               await runInteractiveTurn({
-                turnContent: String(nextQueued.entry.content || ""),
-                turnAttachments: Array.isArray(nextQueued.entry.attachments) ? nextQueued.entry.attachments : [],
-                turnAgent: toTrimmedString(nextQueued.entry.agent || "") || messageAgent,
-                turnModel: toTrimmedString(nextQueued.entry.model || "") || messageModel,
+                turnContent: String(nextQueued.content || ""),
+                turnAttachments: Array.isArray(nextQueued.attachments) ? nextQueued.attachments : [],
+                turnAgent: toTrimmedString(nextQueued.agent || "") || messageAgent,
+                turnModel: toTrimmedString(nextQueued.model || "") || messageModel,
                 waitForSettlement: true,
+                dequeueQueuedFollowupOnStart: true,
               });
             }
           }
@@ -1882,7 +1995,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const session = getScopedSessionRecord({ includeMessages: true });
       const requestedTurnId = toTrimmedString(url.searchParams.get("turnId") || "");
       const requestedTurnIndexRaw = url.searchParams.get("turnIndex");
-      const requestedTurnIndex = Number.isFinite(Number(requestedTurnIndexRaw))
+      const requestedTurnIndex = requestedTurnIndexRaw != null && Number.isFinite(Number(requestedTurnIndexRaw))
         ? Number(requestedTurnIndexRaw)
         : null;
       if (!session) {

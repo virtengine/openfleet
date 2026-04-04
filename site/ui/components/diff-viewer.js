@@ -21,9 +21,25 @@ import {
 
 const html = htm.bind(h);
 
-function buildDiffApiPath({ sessionId = "", taskId = "", workspace = "active" } = {}) {
-  if (taskId) return `/api/tasks/diff?taskId=${encodeURIComponent(String(taskId).trim())}`;
-  return buildSessionApiPath(sessionId, "diff", { workspace }) || "";
+function buildDiffApiPath({
+  sessionId = "",
+  taskId = "",
+  workspace = "active",
+  turnId = "",
+  turnIndex = null,
+} = {}) {
+  if (taskId) {
+    const params = new URLSearchParams({ taskId: String(taskId).trim() });
+    const normalizedWorkspace = String(workspace || "").trim();
+    if (normalizedWorkspace) params.set("workspace", normalizedWorkspace);
+    return `/api/tasks/diff?${params.toString()}`;
+  }
+  const normalizedTurnId = String(turnId || "").trim();
+  const normalizedTurnIndex = Number.isFinite(Number(turnIndex)) ? Number(turnIndex) : null;
+  const params = { workspace };
+  if (normalizedTurnId) params.turnId = normalizedTurnId;
+  if (normalizedTurnIndex != null) params.turnIndex = normalizedTurnIndex;
+  return buildSessionApiPath(sessionId, "diff", params) || "";
 }
 
 const EXT_ICONS = {
@@ -336,15 +352,26 @@ function DiffFile({ file, defaultExpanded = false }) {
   `;
 }
 
-export function DiffViewer({ sessionId = "", taskId = "", workspace = "active", activitySummary = null, title = "" }) {
+export function DiffViewer({
+  sessionId = "",
+  taskId = "",
+  workspace = "active",
+  activitySummary = null,
+  title = "",
+  turnId = "",
+  turnIndex = null,
+  embedded = false,
+  hideSummary = false,
+  defaultExpandedFiles = 2,
+}) {
   const [diffData, setDiffData] = useState(null);
   const [sourceMeta, setSourceMeta] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const diffPath = useMemo(
-    () => buildDiffApiPath({ sessionId, taskId, workspace }),
-    [sessionId, taskId, workspace],
+    () => buildDiffApiPath({ sessionId, taskId, workspace, turnId, turnIndex }),
+    [sessionId, taskId, workspace, turnId, turnIndex],
   );
 
   const loadDiff = useCallback(() => {
@@ -435,32 +462,34 @@ export function DiffViewer({ sessionId = "", taskId = "", workspace = "active", 
   const summaryLabel = diffData?.sourceRange || sourceMeta?.label || title || "";
 
   return html`
-    <div class="diff-viewer">
-      <${Paper} variant="outlined" sx=${{
-        mb: 2,
-        p: 2,
-        borderRadius: "16px",
-        borderColor: "rgba(148, 163, 184, 0.14)",
-        background: "rgba(15, 23, 42, 0.42)",
-      }}>
-        <${Stack} direction="row" spacing=${1} alignItems="center" useFlexGap flexWrap="wrap">
-          <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
-            ${renderedFiles.length
-              ? `${renderedFiles.length} file${renderedFiles.length === 1 ? "" : "s"} ${usingActivityFallback ? "touched" : "changed"}`
-              : "No changes yet"}
+    <div class=${embedded ? "diff-viewer diff-viewer-embedded" : "diff-viewer"}>
+      ${!hideSummary && html`
+        <${Paper} variant="outlined" sx=${{
+          mb: 2,
+          p: embedded ? 1.5 : 2,
+          borderRadius: "16px",
+          borderColor: "rgba(148, 163, 184, 0.14)",
+          background: "rgba(15, 23, 42, 0.42)",
+        }}>
+          <${Stack} direction="row" spacing=${1} alignItems="center" useFlexGap flexWrap="wrap">
+            <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
+              ${renderedFiles.length
+                ? `${renderedFiles.length} file${renderedFiles.length === 1 ? "" : "s"} ${usingActivityFallback ? "touched" : "changed"}`
+                : "No changes yet"}
+            <//>
+            ${usingActivityFallback && html`<${Chip} label="activity fallback" size="small" color="warning" variant="outlined" />`}
+            ${summaryLabel && html`<${Chip} label=${summaryLabel} size="small" variant="outlined" />`}
+            ${sourceMeta?.kind && html`<${Chip} label=${sourceMeta.kind} size="small" color="info" variant="outlined" />`}
+            ${totalAdditions > 0 && html`<${Chip} label=${`+${totalAdditions}`} size="small" color="success" variant="outlined" />`}
+            ${totalDeletions > 0 && html`<${Chip} label=${`-${totalDeletions}`} size="small" color="error" variant="outlined" />`}
           <//>
-          ${usingActivityFallback && html`<${Chip} label="activity fallback" size="small" color="warning" variant="outlined" />`}
-          ${summaryLabel && html`<${Chip} label=${summaryLabel} size="small" variant="outlined" />`}
-          ${sourceMeta?.kind && html`<${Chip} label=${sourceMeta.kind} size="small" color="info" variant="outlined" />`}
-          ${totalAdditions > 0 && html`<${Chip} label=${`+${totalAdditions}`} size="small" color="success" variant="outlined" />`}
-          ${totalDeletions > 0 && html`<${Chip} label=${`-${totalDeletions}`} size="small" color="error" variant="outlined" />`}
+          ${sourceMeta?.detail && html`
+            <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 1 }}>
+              ${sourceMeta.detail}
+            <//>
+          `}
         <//>
-        ${sourceMeta?.detail && html`
-          <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 1 }}>
-            ${sourceMeta.detail}
-          <//>
-        `}
-      <//>
+      `}
 
       ${renderedFiles.length
         ? html`
@@ -469,7 +498,7 @@ export function DiffViewer({ sessionId = "", taskId = "", workspace = "active", 
                 <${DiffFile}
                   key=${file.filename}
                   file=${file}
-                  defaultExpanded=${index < 2}
+                  defaultExpanded=${index < defaultExpandedFiles}
                 />
               `)}
             </div>

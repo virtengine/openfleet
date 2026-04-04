@@ -843,9 +843,9 @@ function maskValue(val) {
 const EXECUTOR_SECTION_ORDER = [
   "Primary Runtime",
   "Harness Control Plane",
-  "Harness Provider Fabric",
+  "Shared Provider Fallbacks",
   "Harness Provider Credentials",
-  "Queued Task Execution",
+  "Queued Task Engine",
   "SDK/CLI Compatibility",
   "SDK/CLI Availability",
   "SDK/CLI Model Profiles",
@@ -855,9 +855,9 @@ const EXECUTOR_SECTION_ORDER = [
 const EXECUTOR_SECTION_DESCRIPTIONS = {
   "Primary Runtime": "Choose whether Bosun runs primarily on the Bosun-native Harness or the legacy SDK/CLI stack.",
   "Harness Control Plane": "Harness activation, profile source, and validation settings for the Bosun-native runtime.",
-  "Harness Provider Fabric": "Shared provider defaults and auth posture for the Harness runtime. Use the Harness Chat Executors editor above this section to define the actual chat-visible runtime instances.",
+  "Shared Provider Fallbacks": "Dormant family-level fallbacks for Harness. These matter only when a named Harness executor does not already define the runtime instance, endpoint, and model posture Bosun should use.",
   "Harness Provider Credentials": "Shared API keys and endpoint-level credentials that Harness executors can inherit when they do not supply their own endpoint overrides.",
-  "Queued Task Execution": "Concurrency, timeouts, retries, review handoff, and planning posture for Bosun's queued task engine.",
+  "Queued Task Engine": "Concurrency, timeouts, retries, review handoff, and planning posture for Bosun's queued task engine.",
   "SDK/CLI Compatibility": "Legacy shell runtime selection, SDK family pinning, and routing behavior used only when SDK/CLI mode is primary.",
   "SDK/CLI Availability": "Disable legacy SDK families you never want Bosun to consider in compatibility mode.",
   "SDK/CLI Model Profiles": "Legacy SDK-specific model and profile settings. Hidden while Harness is primary.",
@@ -936,9 +936,9 @@ function getExecutorSection(def) {
   if (!key) return "Other";
   if (key === "BOSUN_AGENT_RUNTIME") return "Primary Runtime";
   if (def?.section === "Harness Control Plane") return "Harness Control Plane";
-  if (def?.section === "Harness Provider Fabric") return "Harness Provider Fabric";
+  if (def?.section === "Harness Provider Fabric") return "Shared Provider Fallbacks";
   if (def?.section === "Harness Provider Credentials") return "Harness Provider Credentials";
-  if (def?.section === "Queued Task Execution") return "Queued Task Execution";
+  if (def?.section === "Queued Task Execution") return "Queued Task Engine";
   if (def?.section === "SDK/CLI Compatibility") return "SDK/CLI Compatibility";
   if ([
     "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
@@ -948,7 +948,7 @@ function getExecutorSection(def) {
     "INTERNAL_EXECUTOR_MAX_RETRIES",
     "INTERNAL_EXECUTOR_POLL_MS",
     "PROJECT_REQUIREMENTS_PROFILE",
-  ].includes(key)) return "Queued Task Execution";
+  ].includes(key)) return "Queued Task Engine";
   if (key.endsWith("_SDK_DISABLED")) return "SDK/CLI Availability";
   if (
     key.startsWith("CODEX_")
@@ -1032,6 +1032,50 @@ const HARNESS_EXECUTOR_API_STYLE_OPTIONS = [
   { value: "chat-completions", label: "Chat Completions API" },
 ];
 
+const HARNESS_EXECUTOR_ENDPOINT_PROVIDER_IDS = new Set([
+  "azure-openai-responses",
+  "openai-responses",
+  "openai-compatible",
+  "ollama",
+]);
+
+const HARNESS_EXECUTOR_CONFIGURABLE_API_STYLE_PROVIDER_IDS = new Set([
+  "azure-openai-responses",
+  "openai-responses",
+  "openai-compatible",
+  "ollama",
+]);
+
+function normalizeHarnessExecutorId(value, fallback = "harness-executor") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
+}
+
+function normalizeHarnessExecutorWeight(value, fallback = 100) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, parsed);
+}
+
+function supportsHarnessExecutorEndpoint(providerId = "") {
+  return HARNESS_EXECUTOR_ENDPOINT_PROVIDER_IDS.has(String(providerId || "").trim());
+}
+
+function supportsHarnessExecutorConfigurableApiStyle(providerId = "") {
+  return HARNESS_EXECUTOR_CONFIGURABLE_API_STYLE_PROVIDER_IDS.has(String(providerId || "").trim());
+}
+
+function getHarnessExecutorApiStyleOptions(providerId = "") {
+  if (supportsHarnessExecutorConfigurableApiStyle(providerId)) {
+    return HARNESS_EXECUTOR_API_STYLE_OPTIONS;
+  }
+  return HARNESS_EXECUTOR_API_STYLE_OPTIONS.slice(0, 1);
+}
+
 function normalizeHarnessExecutorModelForEditor(entry = {}, index = 0, fallbackApiStyle = "provider-default") {
   const value = entry && typeof entry === "object" ? entry : { id: entry };
   const id = String(value.id || value.model || value.name || "").trim() || `model-${index + 1}`;
@@ -1073,6 +1117,24 @@ function formatHarnessProviderStatus(authState = {}) {
       .replace(/\b\w/g, (match) => match.toUpperCase());
   }
   return "Unknown";
+}
+
+function formatHarnessAuthModeLabel(value = "") {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "Provider default";
+  if (normalized === "apiKey") return "API key";
+  if (normalized === "oauth") return "OAuth";
+  if (normalized === "subscription") return "Subscription";
+  if (normalized === "local") return "Local";
+  return normalized;
+}
+
+function formatHarnessAuthWarningMessages(authState = {}) {
+  return Array.isArray(authState?.warnings)
+    ? authState.warnings
+        .map((entry) => String(entry?.message || "").trim())
+        .filter(Boolean)
+    : [];
 }
 
 function sortHarnessProviderEntries(entries = []) {
@@ -1139,10 +1201,11 @@ function HarnessExecutorsEditor() {
 
   const normalizeExecutor = useCallback((entry = {}, index = 0) => ({
     _id: entry._id || entry.id || `harness-executor-${Date.now()}-${index}`,
-    id: String(entry.id || entry._id || `harness-executor-${index + 1}`).trim(),
+    id: normalizeHarnessExecutorId(entry.id || entry._id || `harness-executor-${index + 1}`, `harness-executor-${index + 1}`),
     name: String(entry.name || entry.label || `Harness Executor ${index + 1}`).trim(),
     providerId: String(entry.providerId || "openai-responses").trim(),
     enabled: entry.enabled !== false,
+    weight: normalizeHarnessExecutorWeight(entry.weight, 100),
     defaultModel: String(entry.defaultModel || "").trim(),
     modelEntries: extractHarnessExecutorModelsForEditor(
       entry,
@@ -1155,11 +1218,11 @@ function HarnessExecutorsEditor() {
     apiVersion: String(entry.apiVersion || "").trim(),
     workspace: String(entry.workspace || "").trim(),
     organization: String(entry.organization || "").trim(),
-    project: String(entry.project || "").trim(),
-    apiStyle: String(entry.apiStyle || "provider-default").trim() || "provider-default",
-    authBindings: {
-      apiKeyEnv: String(entry.authBindings?.apiKeyEnv || entry.apiKeyEnv || "").trim(),
-      oauthTokenEnv: String(entry.authBindings?.oauthTokenEnv || entry.oauthTokenEnv || "").trim(),
+      project: String(entry.project || "").trim(),
+      apiStyle: String(entry.apiStyle || "provider-default").trim() || "provider-default",
+      authBindings: {
+        apiKeyEnv: String(entry.authBindings?.apiKeyEnv || entry.apiKeyEnv || "").trim(),
+        oauthTokenEnv: String(entry.authBindings?.oauthTokenEnv || entry.oauthTokenEnv || "").trim(),
       subscriptionEnv: String(entry.authBindings?.subscriptionEnv || entry.subscriptionEnv || "").trim(),
     },
     auth: entry.auth && typeof entry.auth === "object" ? { ...entry.auth } : null,
@@ -1271,6 +1334,7 @@ function HarnessExecutorsEditor() {
       defaultModel: providerInfo?.modelCatalog?.defaultModel || providerOptions[0]?.defaultModel || "",
       authMode: providerInfo?.auth?.preferredMode || "",
       apiStyle: providerOption?.apiStyle || providerOptions[0]?.apiStyle || "provider-default",
+      weight: 100,
     }, executors.length);
     const nextExecutors = [...executors, created];
     const nextPrimary = primaryExecutor || created.id;
@@ -1281,6 +1345,22 @@ function HarnessExecutorsEditor() {
   }, [executors, getProviderInventoryEntry, getProviderOption, markDirty, normalizeExecutor, primaryExecutor, providerOptions, routingMode]);
 
   const addExecutor = useCallback(() => addExecutorForProvider(""), [addExecutorForProvider]);
+
+  const duplicateExecutor = useCallback((_id) => {
+    const source = executors.find((entry) => entry._id === _id);
+    if (!source) return;
+    const siblingCount = executors.filter((entry) => entry.providerId === source.providerId).length + 1;
+    const next = normalizeExecutor({
+      ...source,
+      _id: undefined,
+      id: `${source.id}-${siblingCount}`,
+      name: `${source.name} ${siblingCount}`,
+    }, executors.length);
+    const nextExecutors = [...executors, next];
+    setExecutors(nextExecutors);
+    markDirty(nextExecutors, primaryExecutor, routingMode);
+    haptic("light");
+  }, [executors, markDirty, normalizeExecutor, primaryExecutor, routingMode]);
 
   const removeExecutor = useCallback((_id) => {
     const nextExecutors = executors.filter((entry) => entry._id !== _id);
@@ -1297,9 +1377,14 @@ function HarnessExecutorsEditor() {
   const updateExecutor = useCallback((_id, field, value) => {
     const nextExecutors = executors.map((entry, index) => {
       if (entry._id !== _id) return entry;
-      const next = { ...entry, [field]: value };
+      const nextValue = field === "id"
+        ? normalizeHarnessExecutorId(value, `executor-${index + 1}`)
+        : field === "weight"
+          ? normalizeHarnessExecutorWeight(value, 100)
+          : value;
+      const next = { ...entry, [field]: nextValue };
       if (field === "name" && (!next.id || next.id === entry.id)) {
-        next.id = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `executor-${index + 1}`;
+        next.id = normalizeHarnessExecutorId(value, `executor-${index + 1}`);
       }
       if (field === "providerId") {
         const providerInfo = getProviderInventoryEntry(value);
@@ -1308,11 +1393,20 @@ function HarnessExecutorsEditor() {
         next.defaultModel = providerInfo?.modelCatalog?.defaultModel || providerOption?.defaultModel || "";
         next.apiStyle = providerOption?.apiStyle || "provider-default";
         next.modelEntries = Array.isArray(next.modelEntries)
-          ? next.modelEntries.map((model, modelIndex) => normalizeHarnessExecutorModelForEditor(model, modelIndex, next.apiStyle))
+          ? next.modelEntries.map((model, modelIndex) => normalizeHarnessExecutorModelForEditor(
+            supportsHarnessExecutorConfigurableApiStyle(value)
+              ? model
+              : { ...model, apiStyle: "provider-default" },
+            modelIndex,
+            next.apiStyle,
+          ))
           : [];
         if (!String(value || "").includes("azure")) {
           next.deployment = "";
           next.apiVersion = "";
+        }
+        if (!supportsHarnessExecutorConfigurableApiStyle(value)) {
+          next.apiStyle = "provider-default";
         }
       }
       return next;
@@ -1359,9 +1453,12 @@ function HarnessExecutorsEditor() {
   const addExecutorModel = useCallback((executorId) => {
     const nextExecutors = executors.map((entry) => {
       if (entry._id !== executorId) return entry;
+      const fallbackApiStyle = supportsHarnessExecutorConfigurableApiStyle(entry.providerId)
+        ? (entry.apiStyle || "provider-default")
+        : "provider-default";
       const nextModels = [
         ...(Array.isArray(entry.modelEntries) ? entry.modelEntries : []),
-        normalizeHarnessExecutorModelForEditor({}, entry.modelEntries?.length || 0, entry.apiStyle || "provider-default"),
+        normalizeHarnessExecutorModelForEditor({}, entry.modelEntries?.length || 0, fallbackApiStyle),
       ];
       return { ...entry, modelEntries: nextModels };
     });
@@ -1393,6 +1490,7 @@ function HarnessExecutorsEditor() {
         name: entry.name,
         providerId: entry.providerId,
         enabled: entry.enabled !== false,
+        weight: normalizeHarnessExecutorWeight(entry.weight, 100),
         defaultModel: entry.defaultModel || undefined,
         models: (Array.isArray(entry.modelEntries) ? entry.modelEntries : [])
           .map((model) => ({
@@ -1527,10 +1625,16 @@ function HarnessExecutorsEditor() {
         const providerInfo = getProviderInventoryEntry(entry.providerId);
         const providerOption = getProviderOption(entry.providerId);
         const authState = entry.auth || providerInfo?.auth || {};
-        const supportsEndpoint = ["azure-openai-responses", "openai-responses", "openai-compatible", "ollama"].includes(entry.providerId);
+        const supportsEndpoint = supportsHarnessExecutorEndpoint(entry.providerId);
+        const supportsConfigurableApiStyle = supportsHarnessExecutorConfigurableApiStyle(entry.providerId);
         const supportsWorkspace = ["openai-codex-subscription", "claude-subscription-shim"].includes(entry.providerId);
         const supportsOrgProject = entry.providerId === "openai-responses";
         const supportsAzureDeployment = entry.providerId === "azure-openai-responses";
+        const authModeOptions = Array.isArray(authState?.supportedModes)
+          ? authState.supportedModes.filter(Boolean)
+          : [];
+        const authWarnings = formatHarnessAuthWarningMessages(authState);
+        const apiStyleOptions = getHarnessExecutorApiStyleOptions(entry.providerId);
         const isPrimary = entry.id === primaryExecutor;
         const routingLabel = deriveHarnessExecutorRoutingLabel(entry, primaryExecutor, routingMode);
         const endpointSummary = describeHarnessExecutorEndpoint(entry);
@@ -1545,6 +1649,7 @@ function HarnessExecutorsEditor() {
               </div>
               <div style="display:flex;align-items:center;gap:8px">
                 <${Toggle} checked=${entry.enabled !== false} onChange=${(value) => updateExecutor(entry._id, "enabled", value)} label="Enabled" />
+                <${Button} variant="outlined" size="small" onClick=${() => duplicateExecutor(entry._id)}>Duplicate<//>
                 <${Button} variant="outlined" size="small" onClick=${() => removeExecutor(entry._id)}>Remove<//>
               </div>
             </div>
@@ -1552,7 +1657,9 @@ function HarnessExecutorsEditor() {
               ${isPrimary && html`<${Chip} size="small" color="primary" label="Primary" />`}
               <${Chip} size="small" variant="outlined" label=${routingLabel} />
               <${Chip} size="small" variant="outlined" label=${formatHarnessProviderStatus(authState)} />
-              <${Chip} size="small" variant="outlined" label=${HARNESS_EXECUTOR_API_STYLE_OPTIONS.find((option) => option.value === (entry.apiStyle || "provider-default"))?.label || "Provider default"} />
+              <${Chip} size="small" variant="outlined" label=${(apiStyleOptions.find((option) => option.value === (entry.apiStyle || "provider-default")) || HARNESS_EXECUTOR_API_STYLE_OPTIONS[0])?.label || "Provider default"} />
+              ${routingMode === "spread" && html`<${Chip} size="small" variant="outlined" label=${`Weight ${normalizeHarnessExecutorWeight(entry.weight, 100)}`} />`}
+              ${authState.preferredMode && html`<${Chip} size="small" variant="outlined" label=${formatHarnessAuthModeLabel(authState.preferredMode)} />`}
               ${entry.defaultModel && html`<${Chip} size="small" variant="outlined" label=${entry.defaultModel} />`}
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -1569,21 +1676,44 @@ function HarnessExecutorsEditor() {
                 <${Select} size="small" value=${entry.providerId} onChange=${(e) => updateExecutor(entry._id, "providerId", e.target.value)} fullWidth>
                   ${sortedProviderOptions.map((option) => html`<${MenuItem} value=${option.id}>${option.label}<//>`)}
                 <//>
+                ${providerOption?.description ? html`<div class="meta-text" style="margin-top:4px">${providerOption.description}</div>` : null}
               </div>
-              <div>
-                <div class="setting-row-label">API Style</div>
-                <${Select} size="small" value=${entry.apiStyle || "provider-default"} onChange=${(e) => updateExecutor(entry._id, "apiStyle", e.target.value)} fullWidth>
-                  ${HARNESS_EXECUTOR_API_STYLE_OPTIONS.map((option) => html`<${MenuItem} value=${option.value}>${option.label}<//>`)}
-                <//>
-              </div>
+              ${supportsConfigurableApiStyle ? html`
+                <div>
+                  <div class="setting-row-label">Executor API Style</div>
+                  <${Select} size="small" value=${entry.apiStyle || "provider-default"} onChange=${(e) => updateExecutor(entry._id, "apiStyle", e.target.value)} fullWidth>
+                    ${apiStyleOptions.map((option) => html`<${MenuItem} value=${option.value}>${option.label}<//>`)}
+                  <//>
+                  <div class="meta-text" style="margin-top:4px">Use this when a specific endpoint should default to <code>/v1/responses</code> or <code>/v1/chat/completions</code>. Model-level overrides below can still differ.</div>
+                </div>
+              ` : html`
+                <div>
+                  <div class="setting-row-label">Executor API Style</div>
+                  <${TextField} size="small" variant="outlined" value=${"Provider native transport"} disabled fullWidth />
+                </div>
+              `}
               <div>
                 <div class="setting-row-label">Default Model</div>
                 <${TextField} size="small" variant="outlined" value=${entry.defaultModel} onInput=${(e) => updateExecutor(entry._id, "defaultModel", e.target.value)} placeholder="gpt-5.4 / claude-sonnet-4.6 / ..." fullWidth />
               </div>
-                <div>
-                  <div class="setting-row-label">Auth Mode</div>
-                  <${TextField} size="small" variant="outlined" value=${entry.authMode} onInput=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} placeholder=${authState.preferredMode || "provider default"} fullWidth />
-                </div>
+              <div>
+                <div class="setting-row-label">Routing Weight</div>
+                <${TextField} type="number" size="small" variant="outlined" value=${normalizeHarnessExecutorWeight(entry.weight, 100)} onInput=${(e) => updateExecutor(entry._id, "weight", e.target.value)} inputProps=${{ min: 0, max: 100000 }} fullWidth />
+                <div class="meta-text" style="margin-top:4px">${routingMode === "spread" ? "Higher weights make this executor more likely to receive spread-routed work." : "Stored now so the executor is ready if you later switch the Harness runtime to spread routing."}</div>
+              </div>
+              <div>
+                <div class="setting-row-label">Auth Mode</div>
+                ${authModeOptions.length > 0
+                  ? html`
+                      <${Select} size="small" value=${entry.authMode || ""} onChange=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} fullWidth>
+                        <${MenuItem} value="">Provider default<//>
+                        ${authModeOptions.map((mode) => html`<${MenuItem} value=${mode}>${formatHarnessAuthModeLabel(mode)}<//>`)}
+                      <//>
+                    `
+                  : html`
+                      <${TextField} size="small" variant="outlined" value=${entry.authMode} onInput=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} placeholder=${authState.preferredMode || "provider default"} fullWidth />
+                    `}
+              </div>
                 <div>
                   <div class="setting-row-label">API Key Env Binding</div>
                   <${TextField}
@@ -1679,10 +1809,14 @@ function HarnessExecutorsEditor() {
                           <${TextField} size="small" variant="outlined" value=${model.label} onInput=${(e) => updateExecutorModel(entry._id, model._id, "label", e.target.value)} placeholder="Optional UI label" fullWidth />
                         </div>
                         <div>
-                          <div class="setting-row-label">API Style For This Model</div>
-                          <${Select} size="small" value=${model.apiStyle || "provider-default"} onChange=${(e) => updateExecutorModel(entry._id, model._id, "apiStyle", e.target.value)} fullWidth>
-                            ${HARNESS_EXECUTOR_API_STYLE_OPTIONS.map((option) => html`<${MenuItem} value=${option.value}>${option.label}<//>`)}
-                          <//>
+                          <div class="setting-row-label">${supportsConfigurableApiStyle ? "API Style For This Model" : "Model Transport"}</div>
+                          ${supportsConfigurableApiStyle
+                            ? html`
+                                <${Select} size="small" value=${model.apiStyle || "provider-default"} onChange=${(e) => updateExecutorModel(entry._id, model._id, "apiStyle", e.target.value)} fullWidth>
+                                  ${apiStyleOptions.map((option) => html`<${MenuItem} value=${option.value}>${option.label}<//>`)}
+                                <//>
+                              `
+                            : html`<${TextField} size="small" variant="outlined" value=${"Provider native transport"} disabled fullWidth />`}
                         </div>
                         <div style="display:flex;align-items:center;gap:8px">
                           <${Toggle} checked=${model.enabled !== false} onChange=${(value) => updateExecutorModel(entry._id, model._id, "enabled", value)} label="Enabled" />
@@ -1701,6 +1835,12 @@ function HarnessExecutorsEditor() {
               ${authState.preferredMode ? ` · ${authState.preferredMode}` : ""}
               ${providerInfo?.description ? ` · ${providerInfo.description}` : ""}
             </div>
+            ${authWarnings.length > 0 && html`
+              <div class="settings-banner settings-banner-warn" style="margin-top:10px">
+                <span>${resolveIcon(":alert:")}</span>
+                <span class="settings-banner-text">${authWarnings.join(" ")}</span>
+              </div>
+            `}
           </div>
         `;
       })}

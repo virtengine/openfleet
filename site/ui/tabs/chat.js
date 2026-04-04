@@ -58,6 +58,7 @@ import {
   getSessionRuntimeState,
   resolveSessionWorkspaceHint,
 } from "../modules/session-api.js";
+import { replaceSessionInList } from "../modules/session-surface.js";
 import { showToast } from "../modules/state.js";
 import { VoiceMicButton, requestVoiceModeOpen } from "../modules/voice.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -69,7 +70,6 @@ import {
   activeManualAgentId,
   activeAgentInfo,
   availableAgents,
-  yoloMode,
   selectedModel,
 } from "../components/agent-selector.js";
 import {
@@ -706,7 +706,6 @@ export function ChatTab() {
               content: msg,
               mode: outboundMode,
               agentProfileId: activeManualAgentId.value || undefined,
-              yolo: yoloMode.peek(),
               model: selectedModel.value || undefined,
               ...(deliveryMode ? { deliveryMode } : {}),
               attachments,
@@ -731,7 +730,6 @@ export function ChatTab() {
           agent: activeAgent.value,
           mode: outboundMode,
           agentProfileId: activeManualAgentId.value || undefined,
-          yolo: yoloMode.peek(),
           model: selectedModel.value || undefined,
         });
         const newId = res?.session?.id;
@@ -753,7 +751,6 @@ export function ChatTab() {
                 agent: activeAgent.value || undefined,
                 providerSelection: activeAgent.value || undefined,
                 agentProfileId: activeManualAgentId.value || undefined,
-                yolo: yoloMode.peek(),
                 model: selectedModel.value || undefined,
                 ...(deliveryMode ? { deliveryMode } : {}),
                 attachments,
@@ -877,7 +874,6 @@ export function ChatTab() {
           agent: activeAgent.value || undefined,
           providerSelection: activeAgent.value || undefined,
           agentProfileId: activeManualAgentId.value || undefined,
-          yolo: yoloMode.peek(),
           model: selectedModel.value || undefined,
           attachments,
           deliveryMode: "queue",
@@ -1081,6 +1077,26 @@ export function ChatTab() {
       workspace: resolveWorkspaceForSessionId(safeTarget, fallbackWorkspace),
     });
   }, [resolveWorkspaceForSessionId]);
+  const handleSessionSurfaceUpdated = useCallback((nextSession) => {
+    if (!nextSession?.id) {
+      refreshPrimarySessions().catch(() => {});
+      return;
+    }
+    sessionsData.value = replaceSessionInList(sessionsData.peek(), nextSession);
+  }, [refreshPrimarySessions]);
+  const sessionWorkspaceScope = resolveWorkspaceForSessionId(sessionId, "active");
+  const sessionSurface = activeSession?.surface || null;
+  const sessionRepoLabel = String(
+    sessionSurface?.repository?.selected?.displayName
+    || sessionSurface?.repository?.selected?.name
+    || sessionSurface?.repository?.selected?.path
+    || "",
+  ).trim();
+  const sessionBranchLabel = String(
+    sessionSurface?.branch?.selected
+    || sessionSurface?.branch?.current
+    || "",
+  ).trim();
   const sessionTitle = activeSession?.title || activeSession?.taskId || "Session";
   const sessionLifecycle = getSessionLifecycleState(activeSession);
   const sessionRuntime = getSessionRuntimeState(activeSession);
@@ -1316,6 +1332,32 @@ export function ChatTab() {
                 <${Box} className="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
                   <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionId ? sessionTitle : "New chat"}<//>
                   <${Typography} variant="caption" color="text.secondary" noWrap>${sessionId ? (sessionMeta || "Session") : "Open sessions or start a new chat"}<//>
+                  ${sessionId && (sessionRepoLabel || sessionBranchLabel)
+                    ? html`
+                        <${Stack} direction="row" spacing=${0.75} sx=${{ mt: 0.75, flexWrap: "wrap" }}>
+                          ${sessionRepoLabel
+                            ? html`
+                                <${Chip}
+                                  size="small"
+                                  variant="outlined"
+                                  icon=${html`<span style="font-size:12px;line-height:1">${resolveIcon("box")}</span>`}
+                                  label=${sessionRepoLabel}
+                                />
+                              `
+                            : null}
+                          ${sessionBranchLabel
+                            ? html`
+                                <${Chip}
+                                  size="small"
+                                  variant="outlined"
+                                  icon=${html`<span style="font-size:12px;line-height:1">${resolveIcon("git-branch")}</span>`}
+                                  label=${sessionBranchLabel}
+                                />
+                              `
+                            : null}
+                        </${Stack}>
+                      `
+                    : null}
                 <//>
                 ${sessionId
                   ? html`
@@ -1400,7 +1442,12 @@ export function ChatTab() {
               />
             `}
             <${ChatSafeBoundary} label="Agent Toolbar">
-              <${ChatInputToolbar} />
+              <${ChatInputToolbar}
+                sessionId=${sessionId || ""}
+                sessionSurface=${sessionSurface}
+                sessionWorkspace=${sessionWorkspaceScope}
+                onSessionUpdated=${handleSessionSurfaceUpdated}
+              />
             <//>
             ${pendingAttachments.length > 0 && html`
               <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" className="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>

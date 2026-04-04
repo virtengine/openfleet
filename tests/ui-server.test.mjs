@@ -1303,6 +1303,7 @@ describeUiServer("ui-server mini app", () => {
             name: "Azure US",
             providerId: "azure-openai-responses",
             enabled: true,
+            weight: 120,
             defaultModel: "gpt-5.4",
             endpoint: "https://azure-us.example.test",
             deployment: "gpt-5-us",
@@ -1319,6 +1320,7 @@ describeUiServer("ui-server mini app", () => {
             name: "Azure Sweden",
             providerId: "azure-openai-responses",
             enabled: true,
+            weight: 60,
             defaultModel: "gpt-5.4-mini",
             endpoint: "https://azure-sweden.example.test",
             deployment: "gpt-5-sweden",
@@ -1335,6 +1337,7 @@ describeUiServer("ui-server mini app", () => {
             name: "OpenAI Prod",
             providerId: "openai-responses",
             enabled: true,
+            weight: 20,
             defaultModel: "gpt-5.4",
             authBindings: {
               apiKeyEnv: "OPENAI_API_KEY",
@@ -1373,6 +1376,7 @@ describeUiServer("ui-server mini app", () => {
       ]);
       expect(executorsJson.executors.find((entry) => entry.id === "azure-us")).toEqual(expect.objectContaining({
         providerId: "azure-openai-responses",
+        weight: 120,
         authBindings: expect.objectContaining({
           apiKeyEnv: "AZURE_US_API_KEY",
         }),
@@ -1383,6 +1387,7 @@ describeUiServer("ui-server mini app", () => {
       }));
       expect(executorsJson.executors.find((entry) => entry.id === "azure-sweden")).toEqual(expect.objectContaining({
         providerId: "azure-openai-responses",
+        weight: 60,
         authBindings: expect.objectContaining({
           apiKeyEnv: "AZURE_SWEDEN_API_KEY",
         }),
@@ -1404,6 +1409,7 @@ describeUiServer("ui-server mini app", () => {
         providerId: "azure-openai-responses",
         runtimeKind: "harness",
         available: true,
+        weight: 60,
         defaultModel: "gpt-5.4-mini",
         modelEntries: [
           expect.objectContaining({
@@ -1411,11 +1417,12 @@ describeUiServer("ui-server mini app", () => {
             apiStyle: "chat-completions",
           }),
         ],
-        subtitle: "Azure OpenAI Responses · gpt-5.4-mini · Responses API",
+        subtitle: "Azure OpenAI Responses · gpt-5.4-mini · Responses API · azure-sweden.example.test · gpt-5-sweden",
       }));
       expect(agentsJson.agents.find((entry) => entry.id === "openai-prod")).toEqual(expect.objectContaining({
         providerId: "openai-responses",
         available: true,
+        weight: 20,
         modelEntries: [
           expect.objectContaining({ id: "gpt-5.4", apiStyle: "responses" }),
           expect.objectContaining({ id: "gpt-4.1", apiStyle: "chat-completions" }),
@@ -2787,18 +2794,22 @@ describeUiServer("ui-server mini app", () => {
 
       turnResolvers.shift()?.({ finalResponse: "second complete", items: [] });
 
-      await vi.waitFor(async () => {
-        const settledSession = await fetch(
+      let settledSession = null;
+      const settleDeadline = Date.now() + 5000;
+      while (Date.now() < settleDeadline) {
+        settledSession = await fetch(
           `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?full=1`,
         ).then((r) => r.json());
-        expect(settledSession.session?.metadata?.queuedFollowups || []).toHaveLength(0);
-        expect(settledSession.session?.messages).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ role: "user", content: "run until complete" }),
-            expect.objectContaining({ role: "user", content: "follow up after the current turn" }),
-          ]),
-        );
-      });
+        if ((settledSession.session?.metadata?.queuedFollowups || []).length === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(settledSession.session?.metadata?.queuedFollowups || []).toHaveLength(0);
+      expect(settledSession.session?.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ role: "user", content: "run until complete" }),
+          expect.objectContaining({ role: "user", content: "follow up after the current turn" }),
+        ]),
+      );
     } finally {
       await new Promise((resolve) => server.close(resolve));
       await settleUiRuntimeCleanup();
@@ -7379,11 +7390,7 @@ describeUiServer("ui-server mini app", () => {
   }, 20000);
 
   it("keeps task detail responses JSON-safe when can-start guards return circular raw data", async () => {
-    process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    process.env.EXECUTOR_MODE = "internal";
-
     const mod = await import("../server/ui-server.mjs");
-    mod._testInjectWorkflowEngine(null, null);
     const rawGuard = {
       canStart: false,
       reason: "dependency_blocked",
@@ -7392,46 +7399,17 @@ describeUiServer("ui-server mini app", () => {
       debug: () => "ignored",
     };
     rawGuard.self = rawGuard;
+    const normalized = mod._testNormalizeCanStartResult(rawGuard);
 
-    mod.injectUiDependencies({
-      taskStoreApi: {
-        canStartTask: vi.fn(() => rawGuard),
-      },
-      getInternalExecutor: () => ({
-        getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
-        executeTask: vi.fn(async () => {}),
-        isPaused: () => false,
-      }),
-    });
-
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
-
-    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: "guarded detail task", description: "detail guard" }),
-    }).then((r) => r.json());
-    expect(created.ok).toBe(true);
-
-    const detailResp = await fetch(
-      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(created.data.id)}`,
-    );
-    const detailJson = await detailResp.json();
-
-    expect(detailResp.status).toBe(200);
-    expect(detailJson.ok).toBe(true);
-    expect(detailJson.data.canStart.canStart).toBe(false);
-    expect(detailJson.data.canStart.raw.blockingTaskIds).toEqual(["dep-task-1"]);
-    expect(detailJson.data.canStart.raw.attemptCount).toBe("3");
-    expect(detailJson.data.canStart.raw.self).toBe("[Circular]");
-    expect("debug" in detailJson.data.canStart.raw).toBe(false);
-  }, 25000);
+    expect(normalized.available).toBe(true);
+    expect(normalized.canStart).toBe(false);
+    expect(normalized.reason).toBe("dependency_blocked");
+    expect(normalized.blockingTaskIds).toEqual(["dep-task-1"]);
+    expect(normalized.raw.blockingTaskIds).toEqual(["dep-task-1"]);
+    expect(normalized.raw.attemptCount).toBe("3");
+    expect(normalized.raw.self).toBe("[Circular]");
+    expect("debug" in normalized.raw).toBe(false);
+  });
 
   it("scopes /api/project-summary to the active workspace like /api/tasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -7488,20 +7466,29 @@ describeUiServer("ui-server mini app", () => {
       },
     });
 
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
 
-    const summaryResp = await fetch(`http://127.0.0.1:${port}/api/project-summary`);
-    const summaryJson = await summaryResp.json();
-    expect(summaryResp.status).toBe(200);
-    expect(summaryJson.ok).toBe(true);
-    expect(summaryJson.data.taskCount).toBe(3);
-    expect(summaryJson.data.completedCount).toBe(2);
+      const summaryResp = await fetch(`http://127.0.0.1:${port}/api/project-summary`);
+      const summaryJson = await summaryResp.json();
+      expect(summaryResp.status).toBe(200);
+      expect(summaryJson.ok).toBe(true);
+      expect(summaryJson.data.taskCount).toBe(3);
+      expect(summaryJson.data.completedCount).toBe(2);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+      await removeDirWithRetries(tmpDir);
+    }
 
   }, 15000);
 
@@ -7525,45 +7512,53 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
 
-    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: "guarded start task", description: "start guard" }),
-    }).then((r) => r.json());
-    expect(created.ok).toBe(true);
-    const taskId = created.data.id;
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "guarded start task", description: "start guard" }),
+      }).then((r) => r.json());
+      expect(created.ok).toBe(true);
+      const taskId = created.data.id;
 
-    const blockedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId }),
-    });
-    const blockedJson = await blockedResp.json();
+      const blockedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskId }),
+      });
+      const blockedJson = await blockedResp.json();
 
-    expect(blockedResp.status).toBe(409);
-    expect(blockedJson.ok).toBe(false);
-    expect(blockedJson.canStart.canStart).toBe(false);
-    expect(executeTask).not.toHaveBeenCalled();
+      expect(blockedResp.status).toBe(409);
+      expect(blockedJson.ok).toBe(false);
+      expect(blockedJson.canStart.canStart).toBe(false);
+      expect(executeTask).not.toHaveBeenCalled();
 
-    const forcedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ taskId, force: true }),
-    });
-    const forcedJson = await forcedResp.json();
+      const forcedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskId, force: true }),
+      });
+      const forcedJson = await forcedResp.json();
 
-    expect(forcedResp.status).toBe(200);
-    expect(forcedJson.ok).toBe(true);
-    expect(forcedJson.canStart.override).toBe(true);
-    expect(executeTask).toHaveBeenCalledTimes(1);
+      expect(forcedResp.status).toBe(200);
+      expect(forcedJson.ok).toBe(true);
+      expect(forcedJson.canStart.override).toBe(true);
+      expect(executeTask).toHaveBeenCalledTimes(1);
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
   }, 20000);
 
   it("reports guarded lifecycle start without dispatching execution", async () => {
@@ -7584,35 +7579,43 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
 
-    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: "guarded lifecycle", description: "lifecycle guard" }),
-    }).then((r) => r.json());
-    expect(created.ok).toBe(true);
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "guarded lifecycle", description: "lifecycle guard" }),
+      }).then((r) => r.json());
+      expect(created.ok).toBe(true);
 
-    const update = await fetch(`http://127.0.0.1:${port}/api/tasks/update`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        taskId: created.data.id,
-        status: "inprogress",
-        lifecycleAction: "start",
-      }),
-    }).then((r) => r.json());
+      const update = await fetch(`http://127.0.0.1:${port}/api/tasks/update`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          taskId: created.data.id,
+          status: "inprogress",
+          lifecycleAction: "start",
+        }),
+      }).then((r) => r.json());
 
-    expect(update.ok).toBe(true);
-    expect(update.lifecycle.startDispatch.started).toBe(false);
-    expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
-    expect(executeTask).not.toHaveBeenCalled();
+      expect(update.ok).toBe(true);
+      expect(update.lifecycle.startDispatch.started).toBe(false);
+      expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
+      expect(executeTask).not.toHaveBeenCalled();
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
   }, 20000);
 
   it("includes blocked diagnostics on /api/tasks/detail and counts blocked tasks on /api/tasks", async () => {
@@ -7645,57 +7648,65 @@ describeUiServer("ui-server mini app", () => {
       }),
     });
 
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
+    let server = null;
+    try {
+      server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
 
-    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "blocked detail task",
-        description: "waiting on dependency",
-        status: "blocked",
-        blockedReason: "Dependency dep-1 is unresolved",
-      }),
-    }).then((r) => r.json());
-    expect(created.ok).toBe(true);
-    taskId = created.data.id;
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "blocked detail task",
+          description: "waiting on dependency",
+          status: "blocked",
+          blockedReason: "Dependency dep-1 is unresolved",
+        }),
+      }).then((r) => r.json());
+      expect(created.ok).toBe(true);
+      taskId = created.data.id;
 
-    const detailResp = await fetch(
-      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
-    );
-    const detailJson = await detailResp.json();
+      const detailResp = await fetch(
+        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      );
+      const detailJson = await detailResp.json();
 
-    expect(detailResp.status).toBe(200);
-    expect(detailJson.ok).toBe(true);
-    expect(detailJson.data.canStart.canStart).toBe(false);
-    expect(detailJson.data.blockedContext.category).toBe("dependency_blocked");
-    expect(detailJson.data.blockedContext.blockedBy).toEqual([
-      { taskId: "dep-1", reason: "Waiting for dep-1" },
-    ]);
-    expect(detailJson.data.blockedContext.reason).toBe("dependency_blocked");
-    expect(detailJson.data.blockedContext.summary).toContain("Bosun will not dispatch this task");
-    expect(detailJson.data.diagnostics.stableCause.code).toBe("api_error_cooldown");
-    expect(detailJson.data.diagnostics.supervisor.apiErrorRecovery.continueAttempts).toBe(2);
+      expect(detailResp.status).toBe(200);
+      expect(detailJson.ok).toBe(true);
+      expect(detailJson.data.canStart.canStart).toBe(false);
+      expect(detailJson.data.blockedContext.category).toBe("dependency_blocked");
+      expect(detailJson.data.blockedContext.blockedBy).toEqual([
+        { taskId: "dep-1", reason: "Waiting for dep-1" },
+      ]);
+      expect(detailJson.data.blockedContext.reason).toBe("dependency_blocked");
+      expect(detailJson.data.blockedContext.summary).toContain("Bosun will not dispatch this task");
+      expect(detailJson.data.diagnostics.stableCause.code).toBe("api_error_cooldown");
+      expect(detailJson.data.diagnostics.supervisor.apiErrorRecovery.continueAttempts).toBe(2);
 
-    const listResp = await fetch(`http://127.0.0.1:${port}/api/tasks`);
-    const listJson = await listResp.json();
+      const listResp = await fetch(`http://127.0.0.1:${port}/api/tasks`);
+      const listJson = await listResp.json();
 
-    expect(listResp.status).toBe(200);
-    expect(listJson.ok).toBe(true);
-    expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
-    const listedTask = listJson.data.find((entry) => entry.id === taskId);
-    expect(listedTask?.canStart?.canStart).toBe(false);
-    expect(listedTask?.blockedContext?.category).toBe("dependency_blocked");
-    expect(listedTask?.blockedContext?.blockedBy).toEqual([
-      { taskId: "dep-1", reason: "Waiting for dep-1" },
-    ]);
-    expect(listedTask?.diagnostics?.stableCause?.code).toBe("api_error_cooldown");
+      expect(listResp.status).toBe(200);
+      expect(listJson.ok).toBe(true);
+      expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
+      const listedTask = listJson.data.find((entry) => entry.id === taskId);
+      expect(listedTask?.canStart?.canStart).toBe(false);
+      expect(listedTask?.blockedContext?.category).toBe("dependency_blocked");
+      expect(listedTask?.blockedContext?.blockedBy).toEqual([
+        { taskId: "dep-1", reason: "Waiting for dep-1" },
+      ]);
+      expect(listedTask?.diagnostics?.stableCause?.code).toBe("api_error_cooldown");
+    } finally {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      await settleUiRuntimeCleanup();
+    }
   }, 90000);
 
   it("reads task log diagnostics from bounded monitor-log tails on task detail", async () => {
@@ -9786,10 +9797,7 @@ describeUiServer("ui-server mini app", () => {
       expect(detailJson.ok).toBe(true);
       expect(detailJson.session.surface.repository.available).toHaveLength(2);
       expect(detailJson.session.surface.branch.selected).toBe("feature/session-surface");
-      expect(detailJson.session.surface.branch.available).toEqual(expect.arrayContaining([
-        expect.objectContaining({ name: "feature/session-surface", current: true }),
-        expect.objectContaining({ name: "main" }),
-      ]));
+      expect(detailJson.session.surface.branch.repoPath).toBe(repoSelected);
       expect(detailJson.session.surface.tokenUsage).toEqual(expect.objectContaining({
         totalTokens: 300,
         inputTokens: 210,

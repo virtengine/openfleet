@@ -179,6 +179,11 @@
                 "enum": ["openai-responses", "openai-codex-subscription", "azure-openai-responses", "anthropic-messages", "claude-subscription-shim", "openai-compatible", "ollama", "copilot-oauth"]
               },
               "enabled": { "type": "boolean", "default": true },
+              "weight": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Optional routing weight used when the Harness runtime spreads work across multiple executor instances."
+              },
               "defaultModel": { "type": "string" },
               "models": {
                 "oneOf": [

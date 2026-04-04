@@ -3119,6 +3119,28 @@ async function buildTaskBlockedContext(task, options = {}) {
       || "",
     280,
   );
+  const isDependencyBlocked = canStart?.canStart === false && String(canStart?.reason || "") === "dependency_blocked";
+  if (isDependencyBlocked) {
+    return {
+      status: normalizedStatus,
+      category: "dependency_blocked",
+      headline: "This task cannot start because one or more dependencies are not done yet.",
+      summary: "Bosun will not dispatch this task until every blocking dependency below is resolved.",
+      recommendation: "Complete or unblock the listed dependencies, then dispatch this task again.",
+      reason: explicitReason || sanitizeTaskDiagnosticText(canStart?.reason || ""),
+      workflowRunCount: 0,
+      prePrValidationFailureCount: 0,
+      worktreeFailureCount: 0,
+      blockedTransitionCount: 0,
+      createPrFailureCount: 0,
+      blockedBy: Array.isArray(canStart?.blockedBy) ? canStart.blockedBy : [],
+      blockingTaskIds: Array.isArray(canStart?.blockingTaskIds) ? canStart.blockingTaskIds : [],
+      repairArtifacts: null,
+      timelineEvidence: [],
+      workflowRunEvidence: [],
+      logEvidence: [],
+    };
+  }
   const workflowRuns = Array.isArray(options.workflowRuns)
     ? options.workflowRuns
     : Array.isArray(currentTask?.workflowRuns)
@@ -3145,7 +3167,6 @@ async function buildTaskBlockedContext(task, options = {}) {
     workflowRunEvidence.length > 0 ||
     logDiagnostics.counts.worktreeFailed > 0 ||
     timelineEvidence.some((entry) => /worktree failed/i.test(String(entry?.message || "")));
-  const isDependencyBlocked = canStart?.canStart === false && String(canStart?.reason || "") === "dependency_blocked";
 
   let category = "";
   let headline = "";
@@ -3957,7 +3978,17 @@ function collectTaskDiffSessionIds(task) {
   return [...ids];
 }
 
-function collectTaskLinkedSessionIds(task, tracker = null) {
+function collectTaskLinkedSessionIdsFromSummaries(taskKeySet, sessions = [], ids = new Set()) {
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    const sessionTaskId = normalizeDiffTaskRef(session?.taskId);
+    if (!sessionTaskId || !taskKeySet.has(sessionTaskId)) continue;
+    const sessionId = normalizeDiffTaskRef(session?.id || session?.sessionId || sessionTaskId);
+    if (sessionId) ids.add(sessionId);
+  }
+  return ids;
+}
+
+function collectTaskLinkedSessionIds(task, tracker = null, options = {}) {
   const ids = new Set(collectTaskDiffSessionIds(task));
   const taskKeys = [
     task?.id,
@@ -3970,14 +4001,15 @@ function collectTaskLinkedSessionIds(task, tracker = null) {
 
   const taskKeySet = new Set(taskKeys);
   const sessionTracker = tracker || getSessionTracker();
-  const sessions = typeof sessionTracker?.listAllSessions === "function"
-    ? sessionTracker.listAllSessions({ includePersisted: true })
+  const includePersisted = options.includePersisted === true;
+  const liveSessions = typeof sessionTracker?.listAllSessions === "function"
+    ? sessionTracker.listAllSessions({ includePersisted: false, lightweight: true })
     : [];
-  for (const session of sessions) {
-    const sessionTaskId = normalizeDiffTaskRef(session?.taskId);
-    if (!sessionTaskId || !taskKeySet.has(sessionTaskId)) continue;
-    const sessionId = normalizeDiffTaskRef(session?.id || session?.sessionId || sessionTaskId);
-    if (sessionId) ids.add(sessionId);
+  collectTaskLinkedSessionIdsFromSummaries(taskKeySet, liveSessions, ids);
+
+  if (includePersisted && typeof sessionTracker?.listAllSessions === "function") {
+    const persistedSessions = sessionTracker.listAllSessions({ includePersisted: true, lightweight: true });
+    collectTaskLinkedSessionIdsFromSummaries(taskKeySet, persistedSessions, ids);
   }
 
   return [...ids];
@@ -7130,6 +7162,11 @@ function resolveDefaultRepositoryForWorkspaceContext(workspaceContext = {}) {
   ).trim();
 }
 
+const REPO_BRANCH_CACHE_TTL_MS = 5_000;
+const REPO_BRANCH_LIST_CACHE_TTL_MS = 15_000;
+const repoBranchCache = new Map();
+const repoBranchListCache = new Map();
+
 function runGitInRepo(repoDir, args, timeoutMs = 10000) {
   const cwd = normalizeCandidatePath(repoDir) || repoRoot;
   const argList = Array.isArray(args)
@@ -7154,10 +7191,23 @@ function runGitInRepo(repoDir, args, timeoutMs = 10000) {
 function readCurrentBranchForRepo(repoDir = "") {
   const normalizedRepoDir = normalizeCandidatePath(repoDir);
   if (!normalizedRepoDir || !existsSync(normalizedRepoDir)) return null;
+  const cached = repoBranchCache.get(normalizedRepoDir);
+  if (cached && (Date.now() - cached.readAt) < REPO_BRANCH_CACHE_TTL_MS) {
+    return cached.branch;
+  }
   try {
     const branch = runGitInRepo(normalizedRepoDir, ["branch", "--show-current"], 5000);
-    return String(branch || "").trim() || null;
+    const normalizedBranch = String(branch || "").trim() || null;
+    repoBranchCache.set(normalizedRepoDir, {
+      readAt: Date.now(),
+      branch: normalizedBranch,
+    });
+    return normalizedBranch;
   } catch {
+    repoBranchCache.set(normalizedRepoDir, {
+      readAt: Date.now(),
+      branch: null,
+    });
     return null;
   }
 }
@@ -7174,6 +7224,15 @@ function listGitBranchesForRepo(repoDir = "", options = {}) {
   const limit = Number.isFinite(Number(options.limit))
     ? Math.max(1, Math.min(Math.trunc(Number(options.limit)), 200))
     : 40;
+  const cacheKey = `${normalizedRepoDir}::${limit}`;
+  const cached = repoBranchListCache.get(cacheKey);
+  if (cached && (Date.now() - cached.readAt) < REPO_BRANCH_LIST_CACHE_TTL_MS) {
+    return {
+      repoPath: cached.value.repoPath,
+      current: cached.value.current,
+      branches: cached.value.branches.map((entry) => ({ ...entry })),
+    };
+  }
   const current = readCurrentBranchForRepo(normalizedRepoDir);
   let raw = "";
   try {
@@ -7222,10 +7281,19 @@ function listGitBranchesForRepo(repoDir = "", options = {}) {
     if (left.scope !== right.scope) return left.scope === "local" ? -1 : 1;
     return String(left.name || "").localeCompare(String(right.name || ""));
   });
-  return {
+  const value = {
     repoPath: normalizedRepoDir,
     current,
     branches: branches.slice(0, limit),
+  };
+  repoBranchListCache.set(cacheKey, {
+    readAt: Date.now(),
+    value,
+  });
+  return {
+    repoPath: value.repoPath,
+    current: value.current,
+    branches: value.branches.map((entry) => ({ ...entry })),
   };
 }
 
@@ -10966,7 +11034,44 @@ function formatAgentApiStyleLabel(value) {
   return normalized;
 }
 
-function buildAgentSubtitle(agent = {}, providerEntry = null) {
+function buildAgentRuntimeHint(agent = {}) {
+  const rawEndpoint = String(
+    agent?.endpoint
+    || agent?.baseUrl
+    || agent?.auth?.settings?.endpoint
+    || agent?.auth?.settings?.baseUrl
+    || "",
+  ).trim();
+  let endpointHost = "";
+  if (rawEndpoint) {
+    try {
+      const parsed = new URL(rawEndpoint);
+      endpointHost = String(parsed.host || parsed.hostname || "").trim();
+    } catch {
+      endpointHost = rawEndpoint
+        .replace(/^https?:\/\//i, "")
+        .split(/[/?#]/)[0]
+        .trim();
+    }
+  }
+  const deployment = String(
+    agent?.deployment
+    || agent?.auth?.settings?.deployment
+    || "",
+  ).trim();
+  const workspace = String(
+    agent?.workspace
+    || agent?.organization
+    || agent?.project
+    || agent?.auth?.settings?.workspace
+    || agent?.auth?.settings?.organization
+    || agent?.auth?.settings?.project
+    || "",
+  ).trim();
+  return [endpointHost, deployment, workspace].filter(Boolean).join(" · ");
+}
+
+function buildAgentSubtitle(agent = {}, providerEntry = null, options = {}) {
   const providerLabel =
     String(
       providerEntry?.label
@@ -10987,7 +11092,12 @@ function buildAgentSubtitle(agent = {}, providerEntry = null) {
     || providerEntry?.transport?.apiStyle
     || "",
   );
-  return [providerLabel, modelLabel, apiStyleLabel].filter(Boolean).join(" · ");
+  const parts = [providerLabel, modelLabel, apiStyleLabel].filter(Boolean);
+  if (options?.includeRuntimeHint) {
+    const runtimeHint = buildAgentRuntimeHint(agent);
+    if (runtimeHint) parts.push(runtimeHint);
+  }
+  return parts.join(" · ");
 }
 
 function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents = [], providerInventory = null) {
@@ -11005,6 +11115,12 @@ function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents =
       .map((entry) => [String(entry?.providerId || "").trim(), entry])
       .filter(([id]) => id),
   );
+  const providerExecutorCounts = new Map();
+  for (const executorEntry of executorFabric?.executors || []) {
+    const providerId = String(executorEntry?.providerId || "").trim();
+    if (!providerId) continue;
+    providerExecutorCounts.set(providerId, (providerExecutorCounts.get(providerId) || 0) + 1);
+  }
   return (executorFabric?.executors || [])
     .filter((entry) => entry?.enabled !== false)
     .map((entry) => {
@@ -11059,9 +11175,18 @@ function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents =
             ? runtimeEntry.available
             : (providerEntry?.auth?.canRun === true || providerEntry?.enabled !== false),
         busy: runtimeEntry?.busy === true,
+        authMode: String(entry?.authMode || runtimeEntry?.auth?.preferredMode || providerEntry?.auth?.preferredMode || "").trim() || null,
         defaultModel:
           String(entry?.defaultModel || runtimeEntry?.defaultModel || providerEntry?.modelCatalog?.defaultModel || "").trim()
           || null,
+        endpoint: String(entry?.endpoint || runtimeEntry?.endpoint || runtimeEntry?.auth?.settings?.endpoint || providerEntry?.auth?.settings?.endpoint || "").trim() || null,
+        baseUrl: String(entry?.baseUrl || runtimeEntry?.baseUrl || runtimeEntry?.auth?.settings?.baseUrl || providerEntry?.auth?.settings?.baseUrl || "").trim() || null,
+        deployment: String(entry?.deployment || runtimeEntry?.deployment || runtimeEntry?.auth?.settings?.deployment || providerEntry?.auth?.settings?.deployment || "").trim() || null,
+        apiVersion: String(entry?.apiVersion || runtimeEntry?.apiVersion || runtimeEntry?.auth?.settings?.apiVersion || providerEntry?.auth?.settings?.apiVersion || "").trim() || null,
+        workspace: String(entry?.workspace || runtimeEntry?.workspace || runtimeEntry?.auth?.settings?.workspace || providerEntry?.auth?.settings?.workspace || "").trim() || null,
+        organization: String(entry?.organization || runtimeEntry?.organization || runtimeEntry?.auth?.settings?.organization || providerEntry?.auth?.settings?.organization || "").trim() || null,
+        project: String(entry?.project || runtimeEntry?.project || runtimeEntry?.auth?.settings?.project || providerEntry?.auth?.settings?.project || "").trim() || null,
+        weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
         models: executorModels.length > 0 ? executorModels : (runtimeModels.length > 0 ? runtimeModels : providerModels),
         modelEntries: mergedModelEntries,
         capabilities: normalizeAgentCapabilitiesList(runtimeEntry?.capabilities || providerEntry?.capabilities),
@@ -11075,7 +11200,9 @@ function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents =
             String(entry?.defaultModel || runtimeEntry?.defaultModel || providerEntry?.modelCatalog?.defaultModel || "").trim()
             || null,
           apiStyle: entry?.apiStyle || runtimeEntry?.apiStyle || providerEntry?.transport?.apiStyle || null,
-        }, providerEntry),
+        }, providerEntry, {
+          includeRuntimeHint: (providerExecutorCounts.get(providerId) || 0) > 1,
+        }),
       };
     });
 }
@@ -13505,24 +13632,44 @@ function isStackLikeErrorText(value) {
   return (value.includes("\n") && lower.includes(" at ")) || lower.includes("error:\n    at ");
 }
 
-function scrubStackTraces(payload) {
+function scrubStackTraces(payload, options = {}) {
+  const depth = Number.isFinite(options.depth) ? options.depth : 0;
+  const maxDepth = Number.isFinite(options.maxDepth) ? options.maxDepth : 12;
+  const seen = options.seen instanceof WeakSet ? options.seen : new WeakSet();
   if (payload == null) return payload;
   if (payload instanceof Error) {
     const safeMessage = String(payload.message || "Internal server error");
-    return scrubStackTraces({ error: safeMessage });
+    return scrubStackTraces({ error: safeMessage }, { depth: depth + 1, maxDepth, seen });
   }
   if (typeof payload === "string") {
     return isStackLikeErrorText(payload) ? "Internal server error" : payload;
   }
-  if (Array.isArray(payload)) return payload.map((item) => scrubStackTraces(item));
-  if (typeof payload !== "object") return payload;
-  const out = {};
-  for (const [key, value] of Object.entries(payload)) {
-    const keyLower = key.toLowerCase();
-    if (keyLower === "stack") continue;
-    out[key] = scrubStackTraces(value);
+  if (depth >= maxDepth) return "[Truncated]";
+  if (Array.isArray(payload)) {
+    return payload.map((item) => scrubStackTraces(item, {
+      depth: depth + 1,
+      maxDepth,
+      seen,
+    }));
   }
-  return out;
+  if (typeof payload !== "object") return payload;
+  if (seen.has(payload)) return "[Circular]";
+  seen.add(payload);
+  const out = {};
+  try {
+    for (const [key, value] of Object.entries(payload)) {
+      const keyLower = key.toLowerCase();
+      if (keyLower === "stack") continue;
+      out[key] = scrubStackTraces(value, {
+        depth: depth + 1,
+        maxDepth,
+        seen,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(payload);
+  }
 }
 function normalizeJsonResponsePayload(payload) {
   return makeJsonSafe(scrubStackTraces(payload), { maxDepth: 12 });
@@ -13785,6 +13932,10 @@ function normalizeCanStartResult(result, { override = false } = {}) {
     blockingEpicIds,
     raw: makeJsonSafe(raw),
   };
+}
+
+export function _testNormalizeCanStartResult(result, options = {}) {
+  return normalizeCanStartResult(result, options);
 }
 
 function normalizeDependencyIds(task = {}) {
@@ -15897,13 +16048,17 @@ function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
 }
 
 async function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
-  const sessionIds = collectTaskLinkedSessionIds(task, tracker);
   const { value: storedRunsRaw } = await callTaskStoreFunction(TASK_STORE_RUN_EXPORTS.list, [task?.id]);
   const storedRuns = storedRunsRaw;
   const runs = Array.isArray(storedRuns) ? storedRuns.map((run) => ({
     ...run,
     summary: run.summary || buildTaskRunSummary(run.steps, run.status === "failed" ? "Run failed." : "Run completed."),
   })) : [];
+  if (runs.length >= Math.max(1, Number(limit) || 5) && collectTaskDiffSessionIds(task).length === 0) {
+    return runs.slice(0, Math.max(1, Number(limit) || 5));
+  }
+
+  const sessionIds = collectTaskLinkedSessionIds(task, tracker, { includePersisted: false });
   const seenRunIds = new Set(runs.map((entry) => String(entry?.runId || "")).filter(Boolean));
   for (const sessionId of sessionIds) {
     const session = tracker?.getSession?.(sessionId);
@@ -18970,7 +19125,7 @@ async function resolveTaskLinkedWorktreePath(task, tracker = null) {
   }
 
   const sessionTracker = tracker || getSessionTracker();
-  for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker)) {
+  for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker, { includePersisted: false })) {
     const session =
       sessionTracker?.getSessionById?.(sessionId) ||
       sessionTracker?.getSessionMessages?.(sessionId) ||

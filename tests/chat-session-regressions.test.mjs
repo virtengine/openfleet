@@ -130,6 +130,111 @@ describe("chat session regressions", () => {
     expect(source).toContain('secondary="Alt+Enter"');
   });
 
+  it("binds repo and branch selectors to structured session surface metadata", () => {
+    const source = read("ui/components/agent-selector.js");
+    const siteSource = read("site/ui/components/agent-selector.js");
+    expect(source).toContain("loadSessionBranches");
+    expect(source).toContain("updateSessionSurface");
+    expect(source).toContain("function SessionRepoPicker(");
+    expect(source).toContain("function SessionBranchPicker(");
+    expect(source).toContain("function SessionSurfaceOptionPicker(");
+    expect(source).toContain('tooltipTitle="Continue in"');
+    expect(source).toContain('tooltipTitle="Permissions"');
+    expect(source).toContain('fallbackLabel="Local project"');
+    expect(source).toContain('fallbackLabel="Default Permissions"');
+    expect(source).toContain('requestKey="executionTarget"');
+    expect(source).toContain('requestKey="permissionMode"');
+    expect(source).toContain('placeholder="Search branches"');
+    expect(source).toContain("selectedRepoPath: nextRepoPath");
+    expect(source).toContain("branch: nextBranch");
+    expect(source).toContain("Create and checkout");
+    expect(source).not.toContain("YoloToggle");
+    expect(source).not.toContain("ve-yolo-mode");
+    expect(siteSource).toContain("loadSessionBranches");
+    expect(siteSource).toContain("updateSessionSurface");
+    expect(siteSource).toContain("function SessionRepoPicker(");
+    expect(siteSource).toContain("function SessionBranchPicker(");
+    expect(siteSource).toContain("function SessionSurfaceOptionPicker(");
+    expect(siteSource).toContain('placeholder="Search branches"');
+    expect(siteSource).not.toContain("YoloToggle");
+    expect(siteSource).not.toContain("ve-yolo-mode");
+  });
+
+  it("passes session surface state into the chat toolbar and renders repo and branch chips in the header", () => {
+    const source = read("ui/tabs/chat.js");
+    const siteSource = read("site/ui/tabs/chat.js");
+    expect(source).toContain("replaceSessionInList");
+    expect(source).toContain("const sessionSurface = activeSession?.surface || null;");
+    expect(source).toContain("const sessionRepoLabel = String(");
+    expect(source).toContain("const sessionBranchLabel = String(");
+    expect(source).toContain('label=${sessionRepoLabel}');
+    expect(source).toContain('label=${sessionBranchLabel}');
+    expect(source).toContain("<${ChatInputToolbar}");
+    expect(source).toContain("sessionSurface=${sessionSurface}");
+    expect(source).toContain("sessionWorkspace=${sessionWorkspaceScope}");
+    expect(source).toContain("onSessionUpdated=${handleSessionSurfaceUpdated}");
+    expect(source).not.toContain("yolo:");
+    expect(siteSource).toContain("replaceSessionInList");
+    expect(siteSource).toContain("const sessionSurface = activeSession?.surface || null;");
+    expect(siteSource).toContain("sessionSurface=${sessionSurface}");
+    expect(siteSource).toContain("sessionWorkspace=${sessionWorkspaceScope}");
+    expect(siteSource).toContain("onSessionUpdated=${handleSessionSurfaceUpdated}");
+    expect(siteSource).not.toContain("yolo:");
+  });
+
+  it("renders inline turn-scoped files changed cards in chat history", () => {
+    const source = read("ui/components/chat-view.js");
+    const siteSource = read("site/ui/components/chat-view.js");
+    expect(source).toContain("function TurnFilesChangedCard(");
+    expect(source).toContain('label="Files Changed"');
+    expect(source).toContain("const turnSurfaceByIndex = useMemo(() => {");
+    expect(source).toContain("const shouldRenderTurnFilesCard =");
+    expect(source).toContain("summarizeTurnFileChanges(turn?.fileChanges)");
+    expect(source).toContain("turnId=${turnDiffRef.turnId || turn?.id || \"\"}");
+    expect(source).toContain("defaultExpandedFiles=${0}");
+    expect(source).toContain("hideSummary=${true}");
+    expect(siteSource).toContain("function TurnFilesChangedCard(");
+    expect(siteSource).toContain('label="Files Changed"');
+    expect(siteSource).toContain("const turnSurfaceByIndex = useMemo(() => {");
+    expect(siteSource).toContain("const shouldRenderTurnFilesCard =");
+    expect(siteSource).toContain("summarizeTurnFileChanges(turn?.fileChanges)");
+    expect(siteSource).toContain("turnId=${turnDiffRef.turnId || turn?.id || \"\"}");
+    expect(siteSource).toContain("defaultExpandedFiles=${0}");
+    expect(siteSource).toContain("hideSummary=${true}");
+  });
+
+  it("extends the diff viewer with turn-scoped embedded loading", () => {
+    const source = read("ui/components/diff-viewer.js");
+    const siteSource = read("site/ui/components/diff-viewer.js");
+    expect(source).toContain("turnId = \"\"");
+    expect(source).toContain("turnIndex = null");
+    expect(source).toContain("embedded = false");
+    expect(source).toContain("hideSummary = false");
+    expect(source).toContain("defaultExpandedFiles = 2");
+    expect(source).toContain("if (normalizedTurnId) params.turnId = normalizedTurnId;");
+    expect(source).toContain("if (normalizedTurnIndex != null) params.turnIndex = normalizedTurnIndex;");
+    expect(siteSource).toContain("turnId = \"\"");
+    expect(siteSource).toContain("turnIndex = null");
+    expect(siteSource).toContain("embedded = false");
+    expect(siteSource).toContain("hideSummary = false");
+    expect(siteSource).toContain("defaultExpandedFiles = 2");
+    expect(siteSource).toContain("if (normalizedTurnId) params.turnId = normalizedTurnId;");
+    expect(siteSource).toContain("if (normalizedTurnIndex != null) params.turnIndex = normalizedTurnIndex;");
+  });
+
+  it("exposes a dedicated session surface update route for repo and branch changes", () => {
+    const source = read("server/routes/harness-sessions.mjs");
+    expect(source).toContain('if (action === "surface" && req.method === "POST")');
+    expect(source).toContain("Selected repo is not available for this session");
+    expect(source).toContain('reason: "session-surface-updated"');
+    expect(source).toContain("selectedRepoPath: nextRepoPath");
+    expect(source).toContain("selectedRepoName: basename(nextRepoPath)");
+    expect(source).toContain('label: "Default Permissions"');
+    expect(source).toContain('label: "Full access"');
+    expect(source).toContain('label: "Local project"');
+    expect(source).toContain('label: "Connect Codex web"');
+  });
+
   it("stops hidden comparison sessions before resetting them and exposes executor controls", () => {
     const source = read("ui/tabs/context-compression-lab.js");
     expect(source).toContain("Stop & Reset Sessions");
