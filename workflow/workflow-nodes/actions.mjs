@@ -4635,6 +4635,25 @@ registerNodeType("action.create_pr", {
       stdio: ["pipe", "pipe", "pipe"],
     };
 
+    // Ensure Bosun-specific labels exist in the repo before attempting to apply them.
+    // gh pr create / gh pr edit silently fail if the label doesn't exist in the repo,
+    // causing bosun-pr-attach.yml to classify the PR as "public_observation_only".
+    const ensureBosunLabels = () => {
+      const labelDefs = [
+        { name: BOSUN_ATTACHED_PR_LABEL, description: "Bosun PR attachment marker", color: "7c3aed" },
+        { name: BOSUN_CREATED_PR_LABEL, description: "PR created by Bosun automation", color: "0075ca" },
+      ];
+      for (const { name, description, color } of labelDefs) {
+        try {
+          const createArgs = ["label", "create", name, "--description", description, "--color", color, "--force"];
+          if (repoSlug) createArgs.push("--repo", repoSlug);
+          execFileSync("gh", createArgs, { ...execOptions, cwd: cwd || process.cwd() });
+        } catch {
+          // Non-fatal — label may already exist or repo may not support it
+        }
+      }
+    };
+
     const findExistingPr = () => {
       if (!branch) return null;
       try {
@@ -4731,6 +4750,7 @@ registerNodeType("action.create_pr", {
     };
 
     // Build gh pr create command
+    ensureBosunLabels();
     const args = ["gh", "pr", "create"];
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
