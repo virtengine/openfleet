@@ -587,6 +587,17 @@ async function main() {
   } catch (err) {
     console.warn(`  :alert:  vendor-sync skipped: ${err.message}`);
   }
+
+  // Refresh generated demo defaults for both ui/ and site/ui/ artifacts.
+  try {
+    const { syncDemoDefaults } = await import("./tools/generate-demo-defaults.mjs");
+    const { changed } = await syncDemoDefaults({ silent: true });
+    if (changed.length > 0) {
+      console.log(`  :check: Demo defaults refreshed (${changed.length} files)`);
+    }
+  } catch (err) {
+    console.warn(`  :alert:  demo-default sync skipped: ${err.message}`);
+  }
 }
 
 main().catch((err) => {

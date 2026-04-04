@@ -4683,25 +4683,26 @@ describeUiServer("ui-server mini app", () => {
     );
 
     let notifyStarted = null;
+    let rejectHarnessTurn = null;
     const started = new Promise((resolve) => {
       notifyStarted = resolve;
     });
     mod.injectUiDependencies({
       harnessTurnExecutor: vi.fn(async (context) => {
-        notifyStarted?.();
         await new Promise((resolve, reject) => {
+          rejectHarnessTurn = reject;
           const signal = context?.signal;
-          if (signal?.aborted) {
+          const abort = () => {
             const err = new Error("aborted");
             err.name = "AbortError";
             reject(err);
+          };
+          if (signal?.aborted) {
+            abort();
             return;
           }
-          signal?.addEventListener?.("abort", () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          }, { once: true });
+          signal?.addEventListener?.("abort", abort, { once: true });
+          notifyStarted?.();
         });
         return { success: true, outcome: "success", status: "completed" };
       }),
@@ -4773,8 +4774,28 @@ describeUiServer("ui-server mini app", () => {
       expect(stopAgainJson.runId).toBe("stop-harness-run");
       expect(typeof stopAgainJson.stopped).toBe("boolean");
 
-      const runRes = await runPromise;
-      const runJson = await runRes.json();
+      let runOutcome = null;
+      void runPromise
+        .then(async (response) => {
+          runOutcome = {
+            response,
+            json: await response.json(),
+          };
+        })
+        .catch((error) => {
+          runOutcome = { error };
+        });
+
+      await vi.waitFor(() => {
+        expect(runOutcome).not.toBeNull();
+      }, { timeout: 20000, interval: 100 });
+
+      if (runOutcome?.error) {
+        throw runOutcome.error;
+      }
+
+      const runRes = runOutcome.response;
+      const runJson = runOutcome.json;
       expect(runRes.status).toBe(200);
       expect(runJson.ok).toBe(false);
       expect(runJson.status).toBe("aborted");
@@ -4798,6 +4819,12 @@ describeUiServer("ui-server mini app", () => {
         }),
       });
     } finally {
+      if (rejectHarnessTurn) {
+        const err = new Error("forced cleanup");
+        err.name = "AbortError";
+        rejectHarnessTurn(err);
+        rejectHarnessTurn = null;
+      }
       if (server) {
         await new Promise((resolve) => server.close(resolve));
       }
@@ -9775,7 +9802,15 @@ describeUiServer("ui-server mini app", () => {
           usedTokens: 41000,
           totalTokens: 380000,
           percent: 11,
+          reservedForResponseTokens: 32000,
         },
+        contextBreakdown: [
+          { label: "System Instructions", percent: 14 },
+          { label: "Tool Definitions", percent: 18 },
+          { label: "Messages", percent: 42 },
+          { label: "Tool Results", percent: 17 },
+          { label: "Other", percent: 9 },
+        ],
       };
 
       const listJson = await fetch(`http://127.0.0.1:${port}/api/sessions?workspace=all`).then((response) => response.json());
@@ -9808,6 +9843,16 @@ describeUiServer("ui-server mini app", () => {
         usedTokens: 41000,
         totalTokens: 380000,
         percent: 11,
+        remainingTokens: 339000,
+        reservedForResponseTokens: 32000,
+      }));
+      expect(detailJson.session.surface.contextBreakdown).toEqual(expect.arrayContaining([
+        expect.objectContaining({ label: "System Instructions", percent: 14 }),
+        expect.objectContaining({ label: "Messages", percent: 42 }),
+      ]));
+      expect(detailJson.session.surface.compaction).toEqual(expect.objectContaining({
+        canCompact: true,
+        state: "available",
       }));
       expect(detailJson.session.turns).toEqual([
         expect.objectContaining({

@@ -36,6 +36,230 @@ class ChatSafeBoundary extends Component {
   }
 }
 
+const CONTEXT_BREAKDOWN_ORDER = [
+  "system instructions",
+  "tool definitions",
+  "messages",
+  "tool results",
+  "other",
+];
+
+function formatContextCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0";
+  if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(numeric >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(numeric >= 100_000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  return String(Math.round(numeric));
+}
+
+function normalizeContextPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function formatContextTrackerSummary(contextWindow = null) {
+  const usedTokens = Number(contextWindow?.usedTokens || 0) || 0;
+  const totalTokens = Number.isFinite(Number(contextWindow?.totalTokens))
+    ? Math.max(0, Number(contextWindow.totalTokens))
+    : null;
+  const percent = normalizeContextPercent(contextWindow?.percent);
+  return {
+    usedTokens,
+    totalTokens,
+    percent,
+    percentLabel: percent != null ? `${percent}% used` : "Tracked",
+    usageLabel: totalTokens != null
+      ? `${formatContextCount(usedTokens)} / ${formatContextCount(totalTokens)}`
+      : `${formatContextCount(usedTokens)} tokens`,
+  };
+}
+
+function contextTrackerTone(percent) {
+  if (!Number.isFinite(Number(percent))) return "default";
+  const value = Number(percent);
+  if (value >= 95) return "error";
+  if (value >= 85) return "warning";
+  if (value >= 70) return "info";
+  return "success";
+}
+
+function normalizeContextBreakdownRows(rows = [], totalTokens = 0) {
+  const source = Array.isArray(rows) ? rows : [];
+  const normalized = source
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const percent = normalizeContextPercent(row.percent) ?? 0;
+      const label = String(row.label || "Other").trim() || "Other";
+      return {
+        label,
+        sortKey: CONTEXT_BREAKDOWN_ORDER.indexOf(label.toLowerCase()),
+        percent,
+        approxTokens: totalTokens > 0 ? Math.round((percent / 100) * totalTokens) : null,
+      };
+    })
+    .sort((left, right) => {
+      const leftKey = left.sortKey === -1 ? Number.MAX_SAFE_INTEGER : left.sortKey;
+      const rightKey = right.sortKey === -1 ? Number.MAX_SAFE_INTEGER : right.sortKey;
+      if (leftKey !== rightKey) return leftKey - rightKey;
+      return right.percent - left.percent;
+    });
+  return normalized;
+}
+
+function ContextTrackerPanel({
+  contextWindow = null,
+  tokenUsage = null,
+  compaction = null,
+  contextBreakdown = [],
+  expanded = false,
+  onToggle = null,
+  onCompactConversation = null,
+  canCompactConversation = false,
+}) {
+  const summary = formatContextTrackerSummary(contextWindow);
+  const tone = contextTrackerTone(summary.percent);
+  const breakdownRows = normalizeContextBreakdownRows(contextBreakdown, summary.totalTokens || 0);
+  const remainingTokens = Number.isFinite(Number(contextWindow?.remainingTokens))
+    ? Math.max(0, Number(contextWindow.remainingTokens))
+    : (summary.totalTokens != null ? Math.max(0, summary.totalTokens - summary.usedTokens) : null);
+  const reservedForResponseTokens = Number.isFinite(Number(contextWindow?.reservedForResponseTokens))
+    ? Math.max(0, Number(contextWindow.reservedForResponseTokens))
+    : null;
+  const compactEvents = Math.max(0, Number(compaction?.compactEvents || 0) || 0);
+  const compactionState = String(compaction?.state || "").trim() || (compaction?.canCompact ? "available" : "disabled");
+  return html`
+    <${Paper}
+      variant="outlined"
+      sx=${{
+        borderRadius: 2,
+        borderColor: tone === "error"
+          ? "error.light"
+          : tone === "warning"
+            ? "warning.light"
+            : "divider",
+        bgcolor: "background.paper",
+        overflow: "hidden",
+      }}
+    >
+      <${Box}
+        sx=${{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1.25,
+          py: 1,
+          flexWrap: "wrap",
+        }}
+      >
+        <${Chip}
+          size="small"
+          color=${tone === "default" ? "default" : tone}
+          variant="filled"
+          label=${`Context ${summary.percentLabel}`}
+          onClick=${onToggle}
+          sx=${{ fontWeight: 700 }}
+        />
+        <${Typography} variant="caption" sx=${{ fontWeight: 600 }}>
+          ${summary.usageLabel}
+          ${summary.totalTokens != null ? " tokens" : ""}
+        <//>
+        ${compactEvents > 0
+          ? html`<${Chip} size="small" variant="outlined" color="warning" label=${`${compactEvents} compact event${compactEvents === 1 ? "" : "s"}`} />`
+          : null}
+        <${Chip}
+          size="small"
+          variant="outlined"
+          color=${compactionState === "disabled" ? "default" : compactEvents > 0 ? "warning" : "success"}
+          label=${compactionState === "disabled" ? "Compaction off" : compactionState === "compacted" ? "Compacted" : "Compactable"}
+        />
+        <${Button}
+          size="small"
+          variant="text"
+          onClick=${onToggle}
+          sx=${{ ml: "auto", textTransform: "none" }}
+        >
+          ${expanded ? "Hide details" : "View details"}
+        </${Button}>
+        ${canCompactConversation
+          ? html`
+              <${Button}
+                size="small"
+                variant="outlined"
+                color="warning"
+                onClick=${onCompactConversation}
+                sx=${{ textTransform: "none" }}
+              >
+                Compact Conversation
+              </${Button}>
+            `
+          : null}
+      </${Box}>
+      <${Collapse} in=${expanded} unmountOnExit>
+        <${Divider} />
+        <${Box} sx=${{ px: 1.25, py: 1.1 }}>
+          <${Stack} spacing=${1}>
+            <${Stack} direction="row" spacing=${0.75} sx=${{ flexWrap: "wrap" }}>
+              ${summary.percent != null
+                ? html`<${Chip} size="small" variant="outlined" label=${`${summary.percent}% used`} />`
+                : null}
+              ${remainingTokens != null
+                ? html`<${Chip} size="small" variant="outlined" label=${`${formatContextCount(remainingTokens)} headroom`} />`
+                : null}
+              ${reservedForResponseTokens != null
+                ? html`<${Chip} size="small" variant="outlined" label=${`${formatContextCount(reservedForResponseTokens)} reserved for response`} />`
+                : null}
+              ${Number(tokenUsage?.cacheInputTokens || 0) > 0
+                ? html`<${Chip} size="small" variant="outlined" label=${`${formatContextCount(tokenUsage.cacheInputTokens)} cache in`} />`
+                : null}
+            </${Stack}>
+            ${breakdownRows.length > 0
+              ? html`
+                  <${Stack} spacing=${0.75}>
+                    ${breakdownRows.map((row) => html`
+                      <${Box}
+                        key=${row.label}
+                        sx=${{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 1,
+                        }}
+                      >
+                        <${Typography} variant="caption" color="text.secondary">${row.label}<//>
+                        <${Stack} direction="row" spacing=${0.75} alignItems="center">
+                          ${row.approxTokens != null
+                            ? html`<${Typography} variant="caption" color="text.secondary">${formatContextCount(row.approxTokens)} tok<//>`
+                            : null}
+                          <${Chip} size="small" variant="outlined" label=${`${row.percent}%`} sx=${{ height: 20 }} />
+                        </${Stack}>
+                      </${Box}>
+                    `)}
+                  </${Stack}>
+                `
+              : html`<${Typography} variant="caption" color="text.secondary">Context breakdown is not available for this session yet.<//>`}
+            <${Divider} />
+            <${Stack} direction="row" spacing=${1.5} sx=${{ flexWrap: "wrap" }}>
+              <${Typography} variant="caption" color="text.secondary">
+                Input ${formatContextCount(tokenUsage?.inputTokens || 0)}
+              <//>
+              <${Typography} variant="caption" color="text.secondary">
+                Output ${formatContextCount(tokenUsage?.outputTokens || 0)}
+              <//>
+              <${Typography} variant="caption" color="text.secondary">
+                Total ${formatContextCount(tokenUsage?.totalTokens || summary.usedTokens || 0)}
+              <//>
+              <${Typography} variant="caption" color="text.secondary">
+                Mode ${String(compaction?.mode || "normal").replace(/_/g, " ")}
+              <//>
+            </${Stack}>
+          </${Stack}>
+        </${Box}>
+      </${Collapse}>
+    </${Paper}>
+  `;
+}
+
 import {
   SessionList,
   SESSION_VIEW_FILTER,
@@ -1053,23 +1277,24 @@ export function ChatTab() {
     if (isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
+  const trackedSessions = sessionsData.value || [];
   const activeSession = useMemo(() => {
     try {
-      return (sessionsData.peek() || []).find((s) => s.id === sessionId) || null;
+      return trackedSessions.find((s) => s.id === sessionId) || null;
     } catch {
       return null;
     }
-  }, [sessionId]);
+  }, [trackedSessions, sessionId]);
   const resolveWorkspaceForSessionId = useCallback((targetSessionId, fallback = "active") => {
     const safeTarget = String(targetSessionId || "").trim();
     if (!safeTarget) return resolveSessionWorkspaceHint(activeSession, fallback);
-    const match = (sessionsData.peek() || []).find((s) => String(s?.id || "") === safeTarget) || null;
+    const match = trackedSessions.find((s) => String(s?.id || "") === safeTarget) || null;
     if (match) return resolveSessionWorkspaceHint(match, fallback);
     if (safeTarget === String(sessionId || "").trim()) {
       return resolveSessionWorkspaceHint(activeSession, fallback);
     }
     return resolveSessionWorkspaceHint(null, fallback);
-  }, [activeSession, sessionId]);
+  }, [activeSession, sessionId, trackedSessions]);
   const sessionApiPath = useCallback((targetSessionId, action = "", fallbackWorkspace = "active") => {
     const safeTarget = String(targetSessionId || "").trim();
     if (!safeTarget) return "";
@@ -1106,6 +1331,20 @@ export function ChatTab() {
     ? activeSession.metadata.queuedFollowups
     : [];
   const queuedFollowupCount = queuedFollowups.length;
+  const [contextTrackerOpen, setContextTrackerOpen] = useState(false);
+  const sessionContextWindow = sessionSurface?.contextWindow || activeSession?.insights?.contextWindow || null;
+  const sessionTokenUsage = sessionSurface?.tokenUsage || activeSession?.insights?.tokenUsage || null;
+  const sessionCompaction = sessionSurface?.compaction || null;
+  const sessionContextBreakdown = Array.isArray(sessionSurface?.contextBreakdown)
+    ? sessionSurface.contextBreakdown
+    : Array.isArray(activeSession?.insights?.contextBreakdown)
+      ? activeSession.insights.contextBreakdown
+      : [];
+  const sessionContextSummary = formatContextTrackerSummary(sessionContextWindow);
+  const showContextTracker = Boolean(
+    sessionId
+    && (sessionContextWindow || sessionTokenUsage || sessionCompaction || sessionContextBreakdown.length > 0),
+  );
   const sessionMeta = [
     activeSession?.type,
     `Lifecycle: ${sessionLifecycle.label}`,
@@ -1114,6 +1353,16 @@ export function ChatTab() {
   ]
     .filter(Boolean)
     .join(" · ");
+
+  useEffect(() => {
+    setContextTrackerOpen(false);
+  }, [sessionId]);
+
+  const handleCompactConversation = useCallback(async () => {
+    if (!sessionId) return;
+    await handleSend("/compact", composerBusy ? { deliveryMode: "queue" } : {});
+    setContextTrackerOpen(true);
+  }, [composerBusy, handleSend, sessionId]);
 
   useEffect(() => {
     const key = String(sessionId || DRAFT_SESSION_KEY);
@@ -1355,6 +1604,17 @@ export function ChatTab() {
                                 />
                               `
                             : null}
+                          ${showContextTracker
+                            ? html`
+                                <${Chip}
+                                  size="small"
+                                  color=${contextTrackerTone(sessionContextSummary.percent)}
+                                  variant="outlined"
+                                  label=${`Context ${sessionContextSummary.percentLabel}`}
+                                  onClick=${() => setContextTrackerOpen((prev) => !prev)}
+                                />
+                              `
+                            : null}
                         </${Stack}>
                       `
                     : null}
@@ -1442,6 +1702,20 @@ export function ChatTab() {
               />
             `}
             <${ChatSafeBoundary} label="Agent Toolbar">
+              ${showContextTracker && html`
+                <${Box} sx=${{ px: 1, pt: 0.75, pb: 0.5 }}>
+                  <${ContextTrackerPanel}
+                    contextWindow=${sessionContextWindow}
+                    tokenUsage=${sessionTokenUsage}
+                    compaction=${sessionCompaction}
+                    contextBreakdown=${sessionContextBreakdown}
+                    expanded=${contextTrackerOpen}
+                    onToggle=${() => setContextTrackerOpen((prev) => !prev)}
+                    onCompactConversation=${handleCompactConversation}
+                    canCompactConversation=${Boolean(sessionId && sessionCompaction?.canCompact)}
+                  />
+                </${Box}>
+              `}
               <${ChatInputToolbar}
                 sessionId=${sessionId || ""}
                 sessionSurface=${sessionSurface}

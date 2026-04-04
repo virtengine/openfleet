@@ -1380,20 +1380,27 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   const insightsTotals = insights?.totals || null;
   const insightsFileCounts = insights?.fileCounts || null;
   const insightsTopTools = Array.isArray(insights?.topTools) ? insights.topTools : [];
+  const surfaceContextBreakdown = Array.isArray(session?.surface?.contextBreakdown)
+    ? session.surface.contextBreakdown
+    : [];
   const insightsContextBreakdown = Array.isArray(insights?.contextBreakdown)
     ? insights.contextBreakdown
     : [];
-  const contextWindow = insights?.contextWindow || null;
-  const tokenUsage = insights?.tokenUsage || null;
+  const contextBreakdown = surfaceContextBreakdown.length > 0
+    ? surfaceContextBreakdown
+    : insightsContextBreakdown;
+  const contextWindow = session?.surface?.contextWindow || insights?.contextWindow || null;
+  const tokenUsage = session?.surface?.tokenUsage || insights?.tokenUsage || null;
+  const compaction = session?.surface?.compaction || null;
   const recentActions = Array.isArray(insights?.recentActions) ? insights.recentActions : [];
 
   // Context window breakdown grouping
   const _SYSTEM_CTX = new Set(["system instructions", "tool definitions", "system"]);
   const _USER_CTX = new Set(["messages", "files", "tool results", "user context"]);
   const ctxRefTokens = contextWindow?.totalTokens || tokenUsage?.totalTokens || 0;
-  const ctxSystemRows = insightsContextBreakdown.filter((r) => _SYSTEM_CTX.has(String(r.label || "").toLowerCase()));
-  const ctxUserRows = insightsContextBreakdown.filter((r) => _USER_CTX.has(String(r.label || "").toLowerCase()));
-  const ctxOtherRows = insightsContextBreakdown.filter(
+  const ctxSystemRows = contextBreakdown.filter((r) => _SYSTEM_CTX.has(String(r.label || "").toLowerCase()));
+  const ctxUserRows = contextBreakdown.filter((r) => _USER_CTX.has(String(r.label || "").toLowerCase()));
+  const ctxOtherRows = contextBreakdown.filter(
     (r) => !_SYSTEM_CTX.has(String(r.label || "").toLowerCase()) && !_USER_CTX.has(String(r.label || "").toLowerCase()),
   );
   const renderCtxRow = (row, idx) => {
@@ -1501,7 +1508,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                         <div class="inspector-metric"><span class="label">Messages</span><strong>${formatCompactCount(insightsTotals.messages)}</strong></div>
                         <div class="inspector-metric"><span class="label">Errors</span><strong>${formatCompactCount(insightsTotals.errors)}</strong></div>
                       </div>
-                      ${(contextWindow || tokenUsage || insightsContextBreakdown.length > 0 || insightsTopTools.length > 0) &&
+                      ${(contextWindow || tokenUsage || contextBreakdown.length > 0 || insightsTopTools.length > 0 || compaction) &&
                         html`
                           <div class="inspector-context">
                             <div class="inspector-ctx-header">
@@ -1517,6 +1524,25 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                             ${contextWindow?.usedTokens != null &&
                               html`<div class="inspector-ctx-summary">
                                 ${formatCompactCount(contextWindow.usedTokens)}${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)} tokens` : " tokens"}
+                              </div>`}
+                            ${(contextWindow?.remainingTokens != null || contextWindow?.reservedForResponseTokens != null || compaction) &&
+                              html`<div class="inspector-ctx-group">
+                                <div class="inspector-ctx-group-label">Headroom</div>
+                                ${contextWindow?.remainingTokens != null &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Remaining</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(contextWindow.remainingTokens)}</span></span>
+                                  </div>`}
+                                ${contextWindow?.reservedForResponseTokens != null &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Reserved for Response</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(contextWindow.reservedForResponseTokens)}</span></span>
+                                  </div>`}
+                                ${compaction &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Compaction</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(compaction.compactEvents || 0)}</span><span class="inspector-ctx-pct">${String(compaction.state || compaction.mode || "normal").replaceAll("_", " ")}</span></span>
+                                  </div>`}
                               </div>`}
                             ${ctxSystemRows.length > 0 &&
                               html`<div class="inspector-ctx-group">
@@ -1540,6 +1566,11 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                                   <span>Output</span>
                                   <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.outputTokens)}</span></span>
                                 </div>
+                                ${Number(tokenUsage.cacheInputTokens || 0) > 0 &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Cache In</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.cacheInputTokens)}</span></span>
+                                  </div>`}
                               </div>`}
                             ${insightsTopTools.length > 0 &&
                               html`<div class="inspector-ctx-group">

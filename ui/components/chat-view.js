@@ -416,6 +416,164 @@ function AttachmentList({ attachments }) {
   `;
 }
 
+const CONTEXT_BREAKDOWN_LABEL_ORDER = [
+  "system instructions",
+  "tool definitions",
+  "messages",
+  "tool results",
+  "other",
+];
+
+function formatContextMetric(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0";
+  if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(numeric >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(numeric >= 100_000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  return String(Math.round(numeric));
+}
+
+function normalizeContextUsagePercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function contextUsageTone(percent) {
+  if (!Number.isFinite(Number(percent))) return "default";
+  const value = Number(percent);
+  if (value >= 95) return "error";
+  if (value >= 85) return "warning";
+  if (value >= 70) return "info";
+  return "success";
+}
+
+function normalizeContextUsageSummary(contextWindow = null) {
+  const usedTokens = Number(contextWindow?.usedTokens || 0) || 0;
+  const totalTokens = Number.isFinite(Number(contextWindow?.totalTokens))
+    ? Math.max(0, Number(contextWindow.totalTokens))
+    : null;
+  const percent = normalizeContextUsagePercent(contextWindow?.percent);
+  return {
+    usedTokens,
+    totalTokens,
+    percent,
+    percentLabel: percent != null ? `${percent}%` : "Tracked",
+    usageLabel: totalTokens != null
+      ? `${formatContextMetric(usedTokens)} / ${formatContextMetric(totalTokens)}`
+      : `${formatContextMetric(usedTokens)} tokens`,
+  };
+}
+
+function normalizeContextBreakdownEntries(rows = [], totalTokens = 0) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const label = String(row.label || "Other").trim() || "Other";
+      const percent = normalizeContextUsagePercent(row.percent) ?? 0;
+      return {
+        label,
+        percent,
+        sortIndex: CONTEXT_BREAKDOWN_LABEL_ORDER.indexOf(label.toLowerCase()),
+        approxTokens: totalTokens > 0 ? Math.round((percent / 100) * totalTokens) : null,
+      };
+    })
+    .sort((left, right) => {
+      const leftIndex = left.sortIndex === -1 ? Number.MAX_SAFE_INTEGER : left.sortIndex;
+      const rightIndex = right.sortIndex === -1 ? Number.MAX_SAFE_INTEGER : right.sortIndex;
+      if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+      return right.percent - left.percent;
+    });
+}
+
+function ContextTrackerSummary({
+  contextWindow = null,
+  tokenUsage = null,
+  compaction = null,
+  contextBreakdown = [],
+  expanded = false,
+  onToggle = null,
+}) {
+  const summary = normalizeContextUsageSummary(contextWindow);
+  const tone = contextUsageTone(summary.percent);
+  const breakdownRows = normalizeContextBreakdownEntries(contextBreakdown, summary.totalTokens || 0);
+  const remainingTokens = Number.isFinite(Number(contextWindow?.remainingTokens))
+    ? Math.max(0, Number(contextWindow.remainingTokens))
+    : (summary.totalTokens != null ? Math.max(0, summary.totalTokens - summary.usedTokens) : null);
+  const reservedForResponseTokens = Number.isFinite(Number(contextWindow?.reservedForResponseTokens))
+    ? Math.max(0, Number(contextWindow.reservedForResponseTokens))
+    : null;
+  const compactEvents = Math.max(0, Number(compaction?.compactEvents || 0) || 0);
+  const compactionState = String(compaction?.state || "").trim() || (compaction?.canCompact ? "available" : "disabled");
+
+  return html`
+    <${Box}>
+      <${Chip}
+        label=${`Context ${summary.percentLabel} · ${summary.usageLabel}${summary.totalTokens != null ? " tokens" : ""}`}
+        size="small"
+        color=${tone === "default" ? "default" : tone}
+        variant=${expanded ? "filled" : "outlined"}
+        onClick=${onToggle}
+        sx=${{ height: 24, fontWeight: 700, cursor: "pointer" }}
+      />
+      <${Collapse} in=${expanded} unmountOnExit>
+        <${Paper}
+          variant="outlined"
+          sx=${{
+            mt: 0.75,
+            p: 1.1,
+            borderRadius: 2,
+            bgcolor: "rgba(15,23,42,0.03)",
+          }}
+        >
+          <${Stack} spacing=${0.9}>
+            <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: "wrap" }}>
+              ${remainingTokens != null
+                ? html`<${Chip} size="small" variant="outlined" label=${`${formatContextMetric(remainingTokens)} headroom`} />`
+                : null}
+              ${reservedForResponseTokens != null
+                ? html`<${Chip} size="small" variant="outlined" label=${`${formatContextMetric(reservedForResponseTokens)} reserved`} />`
+                : null}
+              ${compactEvents > 0
+                ? html`<${Chip} size="small" color="warning" variant="outlined" label=${`${compactEvents} compact`} />`
+                : null}
+              <${Chip}
+                size="small"
+                variant="outlined"
+                color=${compactionState === "disabled" ? "default" : compactEvents > 0 ? "warning" : "success"}
+                label=${compactionState === "disabled" ? "Compaction off" : compactionState === "compacted" ? "Compacted" : "Compactable"}
+              />
+            </${Stack}>
+            ${breakdownRows.length > 0
+              ? html`
+                  <${Stack} spacing=${0.65}>
+                    ${breakdownRows.map((row) => html`
+                      <${Box} key=${row.label} sx=${{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+                        <${Typography} variant="caption" color="text.secondary">${row.label}<//>
+                        <${Stack} direction="row" spacing=${0.75} alignItems="center">
+                          ${row.approxTokens != null
+                            ? html`<${Typography} variant="caption" color="text.secondary">${formatContextMetric(row.approxTokens)} tok<//>`
+                            : null}
+                          <${Chip} size="small" variant="outlined" label=${`${row.percent}%`} sx=${{ height: 19 }} />
+                        </${Stack}>
+                      </${Box}>
+                    `)}
+                  </${Stack}>
+                `
+              : html`<${Typography} variant="caption" color="text.secondary">Context breakdown unavailable.<//>`}
+            <${Stack} direction="row" spacing=${1.25} sx=${{ flexWrap: "wrap" }}>
+              <${Typography} variant="caption" color="text.secondary">Input ${formatContextMetric(tokenUsage?.inputTokens || 0)}<//>
+              <${Typography} variant="caption" color="text.secondary">Output ${formatContextMetric(tokenUsage?.outputTokens || 0)}<//>
+              ${Number(tokenUsage?.cacheInputTokens || 0) > 0
+                ? html`<${Typography} variant="caption" color="text.secondary">Cache ${formatContextMetric(tokenUsage.cacheInputTokens)}<//>`
+                : null}
+            </${Stack}>
+          </${Stack}>
+        </${Paper}>
+      </${Collapse}>
+    </${Box}>
+  `;
+}
+
 function summarizeTurnFileChanges(fileChanges = null) {
   if (!fileChanges || typeof fileChanges !== "object") return null;
   const files = Array.isArray(fileChanges.files)
@@ -971,6 +1129,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [visibleCount, setVisibleCount] = useState(CHAT_PAGE_SIZE);
   const [showStreamMeta, setShowStreamMeta] = useState(false);
+  const [showContextTracker, setShowContextTracker] = useState(false);
   const [traceVerbosity, setTraceVerbosity] = useState(() => {
     try {
       return globalThis.localStorage?.getItem(TRACE_VERBOSITY_STORAGE_KEY) === "full" ? "full" : "compact";
@@ -1043,6 +1202,18 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   }
   const isActive =
     session?.status === "active" || session?.status === "running";
+  const contextSurface = session?.surface || null;
+  const sessionContextWindow = contextSurface?.contextWindow || session?.insights?.contextWindow || null;
+  const sessionTokenUsage = contextSurface?.tokenUsage || session?.insights?.tokenUsage || null;
+  const sessionCompaction = contextSurface?.compaction || null;
+  const sessionContextBreakdown = Array.isArray(contextSurface?.contextBreakdown)
+    ? contextSurface.contextBreakdown
+    : Array.isArray(session?.insights?.contextBreakdown)
+      ? session.insights.contextBreakdown
+      : [];
+  const canShowContextTracker = Boolean(
+    sessionContextWindow || sessionTokenUsage || sessionCompaction || sessionContextBreakdown.length > 0,
+  );
   const resumeLabel =
     session?.status === "archived" ? "Unarchive" : "Resume Session";
   const sessionPath = useCallback(
@@ -1709,6 +1880,20 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       </${Paper}>
       `}
 
+      ${canShowContextTracker && html`
+        <${Collapse} in=${showContextTracker} unmountOnExit>
+          <${Box} sx=${{ px: embedded ? 1.5 : 2, py: 0.75, borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'rgba(15,23,42,0.018)' }}>
+            <${ContextTrackerSummary}
+              contextWindow=${sessionContextWindow}
+              tokenUsage=${sessionTokenUsage}
+              compaction=${sessionCompaction}
+              contextBreakdown=${sessionContextBreakdown}
+              expanded=${true}
+            />
+          </${Box}>
+        </${Collapse}>
+      `}
+
       ${!embedded && html`
       <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 0.75, borderBottom: '1px solid', borderColor: 'divider', flexWrap: 'wrap', gap: 0.5 }}>
         <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
@@ -1746,6 +1931,15 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           />
           ${paused &&
           html`<${Chip} label="Paused" size="small" color="warning" variant="filled" sx=${{ height: 22, fontSize: '0.6875rem' }} />`}
+          ${canShowContextTracker &&
+          html`<${ContextTrackerSummary}
+            contextWindow=${sessionContextWindow}
+            tokenUsage=${sessionTokenUsage}
+            compaction=${sessionCompaction}
+            contextBreakdown=${sessionContextBreakdown}
+            expanded=${false}
+            onToggle=${() => setShowContextTracker((prev) => !prev)}
+          />`}
         </${Stack}>
         <${Stack} direction="row" spacing=${0.5}>
           <${ButtonGroup} size="small" variant="outlined" sx=${{ mr: 0.5 }}>
@@ -1778,12 +1972,21 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
       ${embedded && html`
         <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-          <${Stack} direction="row" spacing=${1} alignItems="center">
+          <${Stack} direction="row" spacing=${1} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
             <${Box} sx=${{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusState === 'idle' ? 'text.disabled' : statusState === 'paused' ? 'warning.main' : 'success.main' }} />
             <${Box}>
               <${Typography} variant="caption" sx=${{ fontWeight: 600, display: 'block', lineHeight: 1.2 }}>Status</${Typography}>
               <${Typography} variant="caption" color="text.secondary" sx=${{ lineHeight: 1.2 }}>${statusText}</${Typography}>
             </${Box}>
+            ${canShowContextTracker &&
+            html`<${ContextTrackerSummary}
+              contextWindow=${sessionContextWindow}
+              tokenUsage=${sessionTokenUsage}
+              compaction=${sessionCompaction}
+              contextBreakdown=${sessionContextBreakdown}
+              expanded=${false}
+              onToggle=${() => setShowContextTracker((prev) => !prev)}
+            />`}
           </${Stack}>
           <${Stack} direction="row" spacing=${0.5}>
             <${ButtonGroup} size="small" variant="outlined">

@@ -397,13 +397,40 @@ function buildSessionContextSurface(session = null, metrics = null, events = [])
   const percent = Number.isFinite(Number(contextWindow.percent))
     ? Math.max(0, Math.min(100, Number(contextWindow.percent)))
     : (totalTokens && totalTokens > 0 ? Math.round((usedTokens / totalTokens) * 100) : null);
+  const remainingTokens = totalTokens != null
+    ? Math.max(0, totalTokens - usedTokens)
+    : null;
+  const reservedForResponseTokens = [
+    contextWindow.reservedForResponseTokens,
+    contextWindow.responseReservedTokens,
+    contextWindow.reservedOutputTokens,
+    contextWindow.reservedTokens,
+  ].find((value) => Number.isFinite(Number(value)) && Number(value) >= 0);
+  const contextBreakdown = Array.isArray(insights.contextBreakdown)
+    ? insights.contextBreakdown
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        label: toTrimmedString(row.label || "") || "Other",
+        percent: Math.max(0, Math.min(100, Number(row.percent || 0) || 0)),
+      }))
+    : [];
+  const compactionMode = metrics?.compressionMode || "normal";
+  const compactEvents = Math.max(0, Number(metrics?.compactEvents || 0) || 0);
+  const canCompact = compactionMode !== "disabled";
   return {
     contextWindow: {
       ...contextWindow,
       usedTokens,
       totalTokens,
       percent,
+      remainingTokens,
+      headroomTokens: remainingTokens,
+      reservedForResponseTokens:
+        reservedForResponseTokens != null
+          ? Math.max(0, Number(reservedForResponseTokens) || 0)
+          : null,
     },
+    contextBreakdown,
     tokenUsage: {
       totalTokens: Math.max(0, Number(tokenUsage.totalTokens || 0) || 0),
       inputTokens: Math.max(0, Number(tokenUsage.inputTokens || 0) || 0),
@@ -411,10 +438,15 @@ function buildSessionContextSurface(session = null, metrics = null, events = [])
       cacheInputTokens: Math.max(0, Number(tokenUsage.cacheInputTokens || 0) || 0),
     },
     compaction: {
-      mode: metrics?.compressionMode || "normal",
-      compactEvents: Math.max(0, Number(metrics?.compactEvents || 0) || 0),
+      mode: compactionMode,
+      compactEvents,
       recentEventCount: Array.isArray(events) ? events.length : 0,
-      canCompact: metrics?.compressionMode !== "disabled",
+      canCompact,
+      state: !canCompact
+        ? "disabled"
+        : compactEvents > 0
+          ? "compacted"
+          : "available",
     },
   };
 }
@@ -529,6 +561,7 @@ async function buildSessionSurfacePayload(session = null, workspaceContext = {},
     executionTarget: buildExecutionTargetSurface(session),
     permissionMode: buildPermissionModeSurface(session),
     contextWindow: context.contextWindow,
+    contextBreakdown: context.contextBreakdown,
     tokenUsage: context.tokenUsage,
     compaction: context.compaction,
   };
