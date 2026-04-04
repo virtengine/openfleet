@@ -24711,8 +24711,10 @@ if (path === "/api/agent-logs/context") {
         : providerAgents;
       let activeSelection = getPrimaryAgentSelection() || getPrimaryAgentName();
       if (executorFabric.primaryExecutorId && agents.some((entry) => entry.id === executorFabric.primaryExecutorId)) {
-        const activeInInventory = agents.some((entry) => entry.id === activeSelection);
-        if (!activeInInventory || activeSelection !== executorFabric.primaryExecutorId) {
+        // Only switch when the active selection differs from the configured primary.
+        // The original `!activeInInventory` branch unconditionally reset `initialized`
+        // in primary-agent and triggered a redundant second initCodexShell with stale env.
+        if (activeSelection !== executorFabric.primaryExecutorId) {
           const switched = await switchPrimaryAgent(executorFabric.primaryExecutorId).catch(() => null);
           activeSelection =
             switched?.ok === false
@@ -30775,9 +30777,9 @@ export function stopTelegramUiServer() {
   _wfRecommendedInstalledByWorkspace.clear();
   _wfEngineByWorkspace.clear();
   _wfEngineInitByWorkspace.clear();
-  // Clear injected configDir so it does not leak between server lifecycles
-  // (tests start/stop servers repeatedly with different config directories).
-  delete uiDeps.configDir;
+  // Clear injected dependencies so restart cycles do not inherit stale mocks,
+  // caches, or runtime handles from an earlier server instance.
+  uiDeps = {};
   tuiStatsEmitter?.stop?.();
   tuiStatsEmitter = null;
   removeSessionEventListener?.();

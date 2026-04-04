@@ -1702,6 +1702,11 @@ export async function createSession(id) {
 // ── Initialisation ──────────────────────────────────────────────────────────
 
 export async function initCodexShell() {
+  if (codexInstance) {
+    // Already initialised — skip to avoid double-init when switchPrimaryAgent
+    // resets the primary-agent `initialized` flag and triggers a second call.
+    return;
+  }
   await loadState();
 
   // Pre-load SDK

@@ -1,3 +1,5 @@
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { resolve } from "node:path";
 
 import { resolveTuiAuthToken as resolveSharedTuiAuthToken } from "../../infra/tui-bridge.mjs";
@@ -15,6 +17,25 @@ function resolveWebSocketProtocol({ protocol, configDir } = {}) {
 	}
 	const instance = readUiInstanceLock(configDir);
 	return String(instance?.protocol || "").trim().toLowerCase() === "https" ? "wss" : "ws";
+}
+
+function isPrivateOrLoopbackHost(host) {
+	const normalized = String(host || "").trim().toLowerCase();
+	if (!normalized) return false;
+	if (normalized === "localhost" || normalized === "::1") return true;
+	if (/^127\./.test(normalized)) return true;
+	if (/^10\./.test(normalized)) return true;
+	if (/^192\.168\./.test(normalized)) return true;
+	if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(normalized)) return true;
+	return false;
+}
+
+function shouldSkipTlsVerification({ host, protocol } = {}) {
+	if (String(protocol || "").trim().toLowerCase() !== "wss") return false;
+	if (["1", "true", "yes"].includes(String(process.env.BOSUN_TUI_INSECURE_TLS || "").toLowerCase())) {
+		return true;
+	}
+	return isPrivateOrLoopbackHost(host);
 }
 
 function resolveTuiAuthToken(options = {}) {
@@ -75,6 +96,10 @@ class TuiWsBridge {
 			protocol: resolveWebSocketProtocol({ protocol, configDir: this.configDir }),
 			token: this.apiKey ? "" : resolveTuiAuthToken({ configDir: this.configDir }),
 		});
+		this._insecureTls = shouldSkipTlsVerification({
+			host,
+			protocol: resolveWebSocketProtocol({ protocol, configDir: this.configDir }),
+		});
 	}
 
 	connect() {
@@ -93,6 +118,10 @@ class TuiWsBridge {
 				protocol: resolveWebSocketProtocol({ protocol: this.protocol, configDir: this.configDir }),
 				token: this.apiKey ? "" : resolveTuiAuthToken({ configDir: this.configDir }),
 			});
+			this._insecureTls = shouldSkipTlsVerification({
+				host: this.host,
+				protocol: resolveWebSocketProtocol({ protocol: this.protocol, configDir: this.configDir }),
+			});
 			const headers = {};
 			if (this.apiKey) {
 				headers["x-api-key"] = this.apiKey;
@@ -100,8 +129,15 @@ class TuiWsBridge {
 				const token = resolveTuiAuthToken({ configDir: this.configDir });
 				if (token) headers.Authorization = `Bearer ${token}`;
 			}
-			this.ws = Object.keys(headers).length > 0
-				? new this.WebSocketImpl(this._url, { headers })
+			const wsOptions = {};
+			if (Object.keys(headers).length > 0) {
+				wsOptions.headers = headers;
+			}
+			if (this._insecureTls) {
+				wsOptions.rejectUnauthorized = false;
+			}
+			this.ws = Object.keys(wsOptions).length > 0
+				? new this.WebSocketImpl(this._url, wsOptions)
 				: new this.WebSocketImpl(this._url);
 
 			this.ws.onopen = () => {
@@ -304,22 +340,67 @@ class TuiWsBridge {
 			}
 		}
 
-		const response = await fetch(buildTuiHttpUrl({
+		const url = buildTuiHttpUrl({
 			host: this.host,
 			port: this.port,
 			path,
 			protocol: resolveWebSocketProtocol({ protocol: this.protocol, configDir: this.configDir }),
-		}), {
+		});
+		const skipTlsVerification = shouldSkipTlsVerification({
+			host: this.host,
+			protocol: resolveWebSocketProtocol({ protocol: this.protocol, configDir: this.configDir }),
+		});
+		if (typeof globalThis.fetch === "function" && !(url.startsWith("https:") && skipTlsVerification)) {
+			const response = await globalThis.fetch(url, {
+				method: options.method || (options.body ? "POST" : "GET"),
+				headers,
+				body: options.body ? JSON.stringify(options.body) : undefined,
+			});
+			const payload = await parseJsonResponse(response);
+			if (!response.ok || payload?.ok === false) {
+				const message = String(payload?.error || payload?.message || response.statusText || "Request failed").trim();
+				throw new Error(message || `HTTP ${response.status}`);
+			}
+			return payload;
+		}
+		const requestOptions = {
 			method: options.method || (options.body ? "POST" : "GET"),
 			headers,
-			body: options.body ? JSON.stringify(options.body) : undefined,
+			rejectUnauthorized: !skipTlsVerification,
+		};
+		const requester = url.startsWith("https:") ? httpsRequest : httpRequest;
+		const payload = await new Promise((resolvePayload, rejectPayload) => {
+			const req = requester(url, requestOptions, (res) => {
+				let text = "";
+				res.setEncoding("utf8");
+				res.on("data", (chunk) => {
+					text += chunk;
+				});
+				res.on("end", () => {
+					let parsed = null;
+					if (text) {
+						try {
+							parsed = JSON.parse(text);
+						} catch {
+							rejectPayload(new Error(`Expected JSON response but received: ${text.slice(0, 160)}`));
+							return;
+						}
+					}
+					if (res.statusCode >= 200 && res.statusCode < 300 && parsed?.ok !== false) {
+						resolvePayload(parsed);
+						return;
+					}
+					const message = String(parsed?.error || parsed?.message || res.statusMessage || "Request failed").trim();
+					rejectPayload(new Error(message || `HTTP ${res.statusCode}`));
+				});
+			});
+			req.on("error", rejectPayload);
+			req.on("timeout", () => req.destroy(new Error("Request timed out")));
+			if (options.body) {
+				req.write(JSON.stringify(options.body));
+			}
+			req.end();
 		});
-
-		const payload = await parseJsonResponse(response);
-		if (!response.ok || payload?.ok === false) {
-			const message = String(payload?.error || payload?.message || response.statusText || "Request failed").trim();
-			throw new Error(message || `HTTP ${response.status}`);
-		}
 		return payload;
 	}
 

@@ -182,6 +182,54 @@ describe("chat session regressions", () => {
     expect(siteSource).not.toContain("yolo:");
   });
 
+  it("renders a visible context tracker in the chat header and toolbar from structured session surface metrics", () => {
+    const source = read("ui/tabs/chat.js");
+    const siteSource = read("site/ui/tabs/chat.js");
+    expect(source).toContain("function ContextTrackerPanel(");
+    expect(source).toContain("const [contextTrackerOpen, setContextTrackerOpen] = useState(false);");
+    expect(source).toContain("const sessionContextWindow = sessionSurface?.contextWindow || activeSession?.insights?.contextWindow || null;");
+    expect(source).toContain("const sessionContextBreakdown = Array.isArray(sessionSurface?.contextBreakdown)");
+    expect(source).toContain("const showContextTracker = Boolean(");
+    expect(source).toContain("Context ${summary.percentLabel}");
+    expect(source).toContain("reserved for response");
+    expect(source).toContain("headroom");
+    expect(source).toContain("Compact Conversation");
+    expect(source).toContain("contextBreakdown=${sessionContextBreakdown}");
+    expect(siteSource).toContain("function ContextTrackerPanel(");
+    expect(siteSource).toContain("const [contextTrackerOpen, setContextTrackerOpen] = useState(false);");
+    expect(siteSource).toContain("const sessionContextWindow = sessionSurface?.contextWindow || activeSession?.insights?.contextWindow || null;");
+    expect(siteSource).toContain("const sessionContextBreakdown = Array.isArray(sessionSurface?.contextBreakdown)");
+    expect(siteSource).toContain("const showContextTracker = Boolean(");
+    expect(siteSource).toContain("Context ${summary.percentLabel}");
+    expect(siteSource).toContain("reserved for response");
+    expect(siteSource).toContain("headroom");
+    expect(siteSource).toContain("Compact Conversation");
+    expect(siteSource).toContain("contextBreakdown=${sessionContextBreakdown}");
+  });
+
+  it("shows the inline transcript context tracker and breakdown details in both chat views", () => {
+    const source = read("ui/components/chat-view.js");
+    const siteSource = read("site/ui/components/chat-view.js");
+    expect(source).toContain("function ContextTrackerSummary(");
+    expect(source).toContain("const [showContextTracker, setShowContextTracker] = useState(false);");
+    expect(source).toContain("const canShowContextTracker = Boolean(");
+    expect(source).toContain("Context ${summary.percentLabel} · ${summary.usageLabel}");
+    expect(source).toContain("Context breakdown unavailable.");
+    expect(source).toContain("compactEvents > 0");
+    expect(source).toContain("remainingTokens != null");
+    expect(source).toContain("reservedForResponseTokens != null");
+    expect(source).toContain("Input ${formatContextMetric(tokenUsage?.inputTokens || 0)}");
+    expect(siteSource).toContain("function ContextTrackerSummary(");
+    expect(siteSource).toContain("const [showContextTracker, setShowContextTracker] = useState(false);");
+    expect(siteSource).toContain("const canShowContextTracker = Boolean(");
+    expect(siteSource).toContain("Context ${summary.percentLabel} · ${summary.usageLabel}");
+    expect(siteSource).toContain("Context breakdown unavailable.");
+    expect(siteSource).toContain("compactEvents > 0");
+    expect(siteSource).toContain("remainingTokens != null");
+    expect(siteSource).toContain("reservedForResponseTokens != null");
+    expect(siteSource).toContain("Input ${formatContextMetric(tokenUsage?.inputTokens || 0)}");
+  });
+
   it("renders inline turn-scoped files changed cards in chat history", () => {
     const source = read("ui/components/chat-view.js");
     const siteSource = read("site/ui/components/chat-view.js");
