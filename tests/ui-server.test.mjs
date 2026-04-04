@@ -1270,6 +1270,166 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 15000);
 
+  it("supports multiple Harness runtime instances from the same provider family with executor-specific auth bindings", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-multi-instance-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
+    const savedAzureApiKey = process.env.AZURE_OPENAI_API_KEY;
+    const savedAzureUsApiKey = process.env.AZURE_US_API_KEY;
+    const savedAzureSwedenApiKey = process.env.AZURE_SWEDEN_API_KEY;
+    const savedOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    process.env.AZURE_OPENAI_API_KEY = "";
+    process.env.AZURE_US_API_KEY = "azure-us-secret";
+    process.env.AZURE_SWEDEN_API_KEY = "azure-sweden-secret";
+    process.env.OPENAI_API_KEY = "openai-primary-secret";
+    writeFileSync(configPath, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      agentRuntime: "harness",
+      harness: {
+        primaryExecutor: "azure-us",
+        routingMode: "spread",
+        executors: [
+          {
+            id: "azure-us",
+            name: "Azure US",
+            providerId: "azure-openai-responses",
+            enabled: true,
+            defaultModel: "gpt-5.4",
+            endpoint: "https://azure-us.example.test",
+            deployment: "gpt-5-us",
+            apiVersion: "2025-03-01-preview",
+            authBindings: {
+              apiKeyEnv: "AZURE_US_API_KEY",
+            },
+            models: [
+              { id: "gpt-5.4", label: "GPT-5.4 US", apiStyle: "responses" },
+            ],
+          },
+          {
+            id: "azure-sweden",
+            name: "Azure Sweden",
+            providerId: "azure-openai-responses",
+            enabled: true,
+            defaultModel: "gpt-5.4-mini",
+            endpoint: "https://azure-sweden.example.test",
+            deployment: "gpt-5-sweden",
+            apiVersion: "2025-03-01-preview",
+            authBindings: {
+              apiKeyEnv: "AZURE_SWEDEN_API_KEY",
+            },
+            models: [
+              { id: "gpt-5.4-mini", label: "GPT-5.4 Mini Sweden", apiStyle: "chat-completions" },
+            ],
+          },
+          {
+            id: "openai-prod",
+            name: "OpenAI Prod",
+            providerId: "openai-responses",
+            enabled: true,
+            defaultModel: "gpt-5.4",
+            authBindings: {
+              apiKeyEnv: "OPENAI_API_KEY",
+            },
+            models: [
+              { id: "gpt-5.4", label: "GPT-5.4", apiStyle: "responses" },
+              { id: "gpt-4.1", label: "GPT-4.1", apiStyle: "chat-completions" },
+            ],
+          },
+        ],
+      },
+    }, null, 2));
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const [executorsResponse, agentsResponse] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/harness/executors`),
+        fetch(`http://127.0.0.1:${port}/api/agents/available`),
+      ]);
+      const executorsJson = await executorsResponse.json();
+      const agentsJson = await agentsResponse.json();
+
+      expect(executorsResponse.status).toBe(200);
+      expect(executorsJson.ok).toBe(true);
+      expect(executorsJson.executors.map((entry) => entry.id)).toEqual([
+        "azure-us",
+        "azure-sweden",
+        "openai-prod",
+      ]);
+      expect(executorsJson.executors.find((entry) => entry.id === "azure-us")).toEqual(expect.objectContaining({
+        providerId: "azure-openai-responses",
+        authBindings: expect.objectContaining({
+          apiKeyEnv: "AZURE_US_API_KEY",
+        }),
+        auth: expect.objectContaining({
+          authenticated: true,
+          canRun: true,
+        }),
+      }));
+      expect(executorsJson.executors.find((entry) => entry.id === "azure-sweden")).toEqual(expect.objectContaining({
+        providerId: "azure-openai-responses",
+        authBindings: expect.objectContaining({
+          apiKeyEnv: "AZURE_SWEDEN_API_KEY",
+        }),
+        auth: expect.objectContaining({
+          authenticated: true,
+          canRun: true,
+        }),
+      }));
+
+      expect(agentsResponse.status).toBe(200);
+      expect(agentsJson.ok).toBe(true);
+      expect(agentsJson.active).toBe("azure-us");
+      expect(agentsJson.agents.map((entry) => entry.id)).toEqual([
+        "azure-us",
+        "azure-sweden",
+        "openai-prod",
+      ]);
+      expect(agentsJson.agents.find((entry) => entry.id === "azure-sweden")).toEqual(expect.objectContaining({
+        providerId: "azure-openai-responses",
+        runtimeKind: "harness",
+        available: true,
+        defaultModel: "gpt-5.4-mini",
+        modelEntries: [
+          expect.objectContaining({
+            id: "gpt-5.4-mini",
+            apiStyle: "chat-completions",
+          }),
+        ],
+        subtitle: "Azure OpenAI Responses · gpt-5.4-mini · Responses API",
+      }));
+      expect(agentsJson.agents.find((entry) => entry.id === "openai-prod")).toEqual(expect.objectContaining({
+        providerId: "openai-responses",
+        available: true,
+        modelEntries: [
+          expect.objectContaining({ id: "gpt-5.4", apiStyle: "responses" }),
+          expect.objectContaining({ id: "gpt-4.1", apiStyle: "chat-completions" }),
+        ],
+      }));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
+      if (savedAzureApiKey === undefined) delete process.env.AZURE_OPENAI_API_KEY;
+      else process.env.AZURE_OPENAI_API_KEY = savedAzureApiKey;
+      if (savedAzureUsApiKey === undefined) delete process.env.AZURE_US_API_KEY;
+      else process.env.AZURE_US_API_KEY = savedAzureUsApiKey;
+      if (savedAzureSwedenApiKey === undefined) delete process.env.AZURE_SWEDEN_API_KEY;
+      else process.env.AZURE_SWEDEN_API_KEY = savedAzureSwedenApiKey;
+      if (savedOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedOpenAiApiKey;
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 15000);
+
   it("serves the TUI config tree and saves schema-validated config edits atomically", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-tui-config-"));
     const configPath = join(tmpDir, "bosun.config.json");

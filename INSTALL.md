@@ -286,10 +286,12 @@ bosun --setup-terminal     # Legacy terminal wizard
 
 | File | Purpose |
 |---|---|
-| `.env` | Environment-based settings (API keys, tokens). |
+| `.env` | Canonical Bosun runtime env in the resolved config directory (`bosun --where`). Repo-root `.env` is legacy/bootstrap fallback only. |
 | `bosun.config.json` | Structured config (executor, routing, profiles). |
 | `bosun.config.example.json` | Canonical reference for config shape. |
-| `.env.example` | Canonical reference for environment variables. |
+| `.env.example` | Canonical reference for environment variables and bootstrap template. |
+
+The runtime reads the config-dir `.env` first. If that file does not exist yet, Bosun may fall back to a repo-root `.env` for compatibility, but new setups should keep the canonical file in the config directory.
 
 Find all config paths:
 

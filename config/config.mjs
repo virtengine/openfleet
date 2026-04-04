@@ -1225,10 +1225,6 @@ export function loadConfig(argv = process.argv, options = {}) {
   const explicitConfigDirRaw =
     cli["config-dir"] || process.env.BOSUN_HOME || process.env.BOSUN_DIR || "";
   const hasExplicitConfigDir = String(explicitConfigDirRaw || "").trim() !== "";
-  const allowRepoEnvWithExplicitConfig = isEnvEnabled(
-    process.env.BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG,
-    false,
-  );
   const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
   let detectedRepoRoot = "";
   const getFallbackRepoRoot = () => {
@@ -1241,9 +1237,13 @@ export function loadConfig(argv = process.argv, options = {}) {
   let configDir =
     explicitConfigDirRaw ||
     resolveConfigDir(normalizedRepoRootOverride);
+  const canonicalEnvPath = resolve(configDir, ".env");
+  const repoEnvPath = resolve(normalizedRepoRootOverride || getFallbackRepoRoot(), ".env");
+  const canonicalEnvExists = existsSync(canonicalEnvPath);
 
-  // If BOSUN_HOME/BOSUN_DIR is declared in the repo-local .env, load that first
-  // and then pivot into the explicit config dir before reading config files.
+  // If BOSUN_HOME/BOSUN_DIR is declared in the canonical config-dir .env,
+  // load that first and then pivot into the explicit config dir before reading
+  // config files.
   if (!hasExplicitConfigDir) {
     loadDotEnv(configDir, { override: envOverride });
     const envConfigDirRaw = process.env.BOSUN_HOME || process.env.BOSUN_DIR || "";
@@ -1310,19 +1310,23 @@ export function loadConfig(argv = process.argv, options = {}) {
   // but honor explicit repo-root/REPO_ROOT overrides.
   const agentRepoRoot = explicitRepoRoot || resolveAgentRepoRoot();
 
-  // Load .env from config dir — Bosun's .env is the primary source of truth
-  // for Bosun-specific configuration, so it should override any stale shell
-  // env vars.  Users who want shell vars to take precedence can use profiles
-  // or set BOSUN_ENV_NO_OVERRIDE=1.
+  // Load .env from the canonical config dir — Bosun's runtime .env is the
+  // primary source of truth for Bosun-specific configuration, so it should
+  // override any stale shell env vars. Users who want shell vars to take
+  // precedence can use profiles or set BOSUN_ENV_NO_OVERRIDE=1.
   loadDotEnv(configDir, { override: envOverride });
 
+  const allowRepoEnvWithExplicitConfig = isEnvEnabled(
+    process.env.BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG,
+    false,
+  );
   const shouldLoadRepoEnv =
-    resolve(repoRoot) !== resolve(configDir) &&
-    (!hasExplicitConfigDir || allowRepoEnvWithExplicitConfig);
+    (!hasExplicitConfigDir || allowRepoEnvWithExplicitConfig) &&
+    !canonicalEnvExists &&
+    resolve(repoRoot) !== resolve(configDir);
 
-  // Also load .env from repo root if different.
-  // When config-dir/BOSUN_HOME is explicit, keep that environment isolated
-  // from the repo root unless explicitly re-enabled.
+  // Legacy compatibility: fall back to the repo-root .env only when the
+  // canonical config-dir .env does not exist yet.
   if (shouldLoadRepoEnv) {
     loadDotEnv(repoRoot, { override: envOverride });
   }

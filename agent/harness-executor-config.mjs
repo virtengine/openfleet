@@ -29,6 +29,13 @@ function normalizeModelEntryId(value, fallback = "model") {
   return toTrimmedString(value) || fallback;
 }
 
+function normalizeEnvBindingKey(value) {
+  return toTrimmedString(value)
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/__+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function parseBooleanLike(value, fallback = true) {
   if (typeof value === "boolean") return value;
   const normalized = toTrimmedString(value).toLowerCase();
@@ -154,6 +161,29 @@ function buildExecutorOverrideSettings(executor = {}) {
   return settings;
 }
 
+function normalizeExecutorAuthBindings(rawExecutor = {}) {
+  const input =
+    rawExecutor.authBindings && typeof rawExecutor.authBindings === "object"
+      ? rawExecutor.authBindings
+      : rawExecutor.auth && typeof rawExecutor.auth === "object"
+        ? rawExecutor.auth
+        : {};
+  const bindings = {
+    apiKeyEnv: normalizeEnvBindingKey(
+      input.apiKeyEnv || input.apiKey || rawExecutor.apiKeyEnv || rawExecutor.apiKeyRef || "",
+    ),
+    oauthTokenEnv: normalizeEnvBindingKey(
+      input.oauthTokenEnv || input.oauthEnv || input.oauthToken || rawExecutor.oauthTokenEnv || rawExecutor.oauthTokenRef || "",
+    ),
+    subscriptionEnv: normalizeEnvBindingKey(
+      input.subscriptionEnv || input.subscriptionTokenEnv || input.subscription || rawExecutor.subscriptionEnv || rawExecutor.subscriptionRef || "",
+    ),
+  };
+  return Object.fromEntries(
+    Object.entries(bindings).filter(([, value]) => value),
+  );
+}
+
 export function normalizeHarnessExecutor(rawExecutor = {}, index = 0) {
   const providerId = resolveProviderId(
     rawExecutor.providerId
@@ -183,6 +213,7 @@ export function normalizeHarnessExecutor(rawExecutor = {}, index = 0) {
   const enabled = parseBooleanLike(rawExecutor.enabled, true);
   const weight = Math.max(0, Number.parseInt(toTrimmedString(rawExecutor.weight), 10) || 0);
   const authMode = toTrimmedString(rawExecutor.authMode || rawExecutor.mode || rawExecutor.auth?.mode || "");
+  const authBindings = normalizeExecutorAuthBindings(rawExecutor);
   const apiStyle = normalizeApiStyle(
     rawExecutor.apiStyle || rawExecutor.transport?.apiStyle || rawExecutor.transportStyle,
     defaultApiStyleForProvider(providerId),
@@ -207,6 +238,7 @@ export function normalizeHarnessExecutor(rawExecutor = {}, index = 0) {
     organization: toTrimmedString(rawExecutor.organization || "") || null,
     project: toTrimmedString(rawExecutor.project || "") || null,
     apiStyle,
+    authBindings,
     weight,
     transport: normalizeExecutorTransport({ ...rawExecutor, providerId }),
     settingsOverrides: buildExecutorOverrideSettings({
@@ -250,6 +282,7 @@ export function buildDerivedHarnessExecutors(providerInventory = null) {
       workspace: item?.auth?.settings?.workspace || null,
       organization: item?.auth?.settings?.organization || null,
       project: item?.auth?.settings?.project || null,
+      authBindings: item?.authBindings || null,
       transport: item?.transport || null,
       apiStyle: item?.transport?.apiStyle || null,
       description: item?.description || "",

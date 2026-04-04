@@ -228,6 +228,7 @@ import { getBosunSessionManager } from "../agent/session-manager.mjs";
 import { normalizeProviderAuthState } from "../agent/provider-auth-manager.mjs";
 import { getProviderCapabilities } from "../agent/provider-capabilities.mjs";
 import { getProviderModelCatalog } from "../agent/provider-model-catalog.mjs";
+import { createProviderRegistry } from "../agent/provider-registry.mjs";
 import { listBuiltInProviderDrivers, normalizeProviderDefinitionId } from "../agent/providers/index.mjs";
 import { withTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import { resolveAgentPrompts } from "../agent/agent-prompts.mjs";
@@ -10700,8 +10701,31 @@ function buildHarnessExecutorInventory(configData = null, rawSettings = null, pr
     providerInventory: effectiveProviderInventory,
     providerRoutingMode: effectiveProviderInventory?.routingMode || effectiveSettings?.BOSUN_PROVIDER_ROUTING_MODE,
   });
+  const runtimeRegistry = createProviderRegistry({
+    configExecutors: fabric.executors,
+    env: process.env,
+    includeBuiltins: false,
+    settings: effectiveSettings,
+  });
+  const runtimeProvidersById = new Map(
+    runtimeRegistry
+      .listProviders()
+      .map((entry) => [String(entry?.id || "").trim(), entry])
+      .filter(([id]) => id),
+  );
   return {
     ...fabric,
+    executors: fabric.executors.map((entry) => {
+      const runtimeEntry = runtimeProvidersById.get(String(entry?.id || "").trim()) || null;
+      return runtimeEntry
+        ? {
+            ...entry,
+            auth: runtimeEntry.auth || null,
+            modelCatalog: runtimeEntry.modelCatalog || null,
+            available: runtimeEntry.available !== false,
+          }
+        : entry;
+    }),
     providerOptions: listHarnessExecutorProviderOptions(),
     providers: effectiveProviderInventory,
   };

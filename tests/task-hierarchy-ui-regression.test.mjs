@@ -87,6 +87,8 @@ for (const { relPath, source } of taskTabSources) {
       expect(source).toContain('role="tree" aria-label="Task hierarchy list"');
       expect(source).toContain('class="task-tree-row');
       expect(source).toContain('class="task-tree-disclosure"');
+      expect(source).toContain('aria-expanded=${row.hasChildren ? String(row.isExpanded) : undefined}');
+      expect(source).toContain('aria-label=${row.isExpanded ? "Collapse children" : "Expand children"}');
       expect(source).toContain('className="task-tree-status-select"');
       expect(source).toContain("Matched child");
       expect(source).toContain("+ Child");
@@ -95,8 +97,11 @@ for (const { relPath, source } of taskTabSources) {
 
     it("keeps task detail hierarchy panels and child-work controls aligned", () => {
       expect(source).toContain("task-hierarchy-summary");
+      expect(source).toContain("task-hierarchy-crumb");
       expect(source).toContain("Child Work");
       expect(source).toContain("handleInlineSubtaskUpdate");
+      expect(source).toContain("task-subtask-controls");
+      expect(source).toContain("task-subtask-open");
       expect(source).toContain("task-sidebar-group-title");
       expect(source).toContain("Planning Adjustments");
       expect(source).toContain("Execution Activity");
@@ -122,6 +127,8 @@ for (const { relPath, source } of kanbanSources) {
       expect(source).toContain("kanban-group-shell");
       expect(source).toContain("kanban-group-children");
       expect(source).toContain("forceExpanded");
+      expect(source).toContain("kanban-group-shell-toggle");
+      expect(source).toContain("kanban-group-shell-open");
       expect(source).toContain("compact=${group?.kind !== \"epic\"}");
     });
   });

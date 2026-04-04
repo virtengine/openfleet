@@ -1097,6 +1097,17 @@ function describeHarnessExecutorEndpoint(entry = {}) {
   return [endpoint, deployment, workspace, project].filter(Boolean).join(" · ");
 }
 
+function describeHarnessExecutorAuthBindings(entry = {}) {
+  const bindings = entry?.authBindings && typeof entry.authBindings === "object"
+    ? entry.authBindings
+    : {};
+  return [
+    bindings.apiKeyEnv ? `API key: ${bindings.apiKeyEnv}` : "",
+    bindings.oauthTokenEnv ? `OAuth: ${bindings.oauthTokenEnv}` : "",
+    bindings.subscriptionEnv ? `Subscription: ${bindings.subscriptionEnv}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function HarnessExecutorsEditor() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -1128,6 +1139,12 @@ function HarnessExecutorsEditor() {
     organization: String(entry.organization || "").trim(),
     project: String(entry.project || "").trim(),
     apiStyle: String(entry.apiStyle || "provider-default").trim() || "provider-default",
+    authBindings: {
+      apiKeyEnv: String(entry.authBindings?.apiKeyEnv || entry.apiKeyEnv || "").trim(),
+      oauthTokenEnv: String(entry.authBindings?.oauthTokenEnv || entry.oauthTokenEnv || "").trim(),
+      subscriptionEnv: String(entry.authBindings?.subscriptionEnv || entry.subscriptionEnv || "").trim(),
+    },
+    auth: entry.auth && typeof entry.auth === "object" ? { ...entry.auth } : null,
   }), []);
 
   const snapshotState = useCallback((state) => JSON.stringify(state), []);
@@ -1291,6 +1308,22 @@ function HarnessExecutorsEditor() {
     markDirty(nextExecutors, nextPrimary, routingMode);
   }, [executors, getProviderInventoryEntry, getProviderOption, markDirty, primaryExecutor, routingMode]);
 
+  const updateExecutorAuthBinding = useCallback((_id, field, value) => {
+    const nextExecutors = executors.map((entry) => (
+      entry._id === _id
+        ? {
+            ...entry,
+            authBindings: {
+              ...(entry.authBindings || {}),
+              [field]: String(value || "").trim(),
+            },
+          }
+        : entry
+    ));
+    setExecutors(nextExecutors);
+    markDirty(nextExecutors, primaryExecutor, routingMode);
+  }, [executors, markDirty, primaryExecutor, routingMode]);
+
   const updateExecutorModel = useCallback((executorId, modelInternalId, field, value) => {
     const nextExecutors = executors.map((entry) => {
       if (entry._id !== executorId) return entry;
@@ -1333,30 +1366,36 @@ function HarnessExecutorsEditor() {
   }, [executors, markDirty, primaryExecutor, routingMode]);
 
   const handleSave = useCallback(async () => {
-    const payload = executors.map((entry) => ({
-      id: entry.id,
-      name: entry.name,
-      providerId: entry.providerId,
-      enabled: entry.enabled !== false,
-      defaultModel: entry.defaultModel || undefined,
-      models: (Array.isArray(entry.modelEntries) ? entry.modelEntries : [])
-        .map((model) => ({
-          id: String(model.id || "").trim(),
-          ...(String(model.label || "").trim() ? { label: String(model.label || "").trim() } : {}),
-          ...(String(model.apiStyle || "").trim() ? { apiStyle: String(model.apiStyle || "").trim() } : {}),
-          ...(model.enabled === false ? { enabled: false } : {}),
-        }))
-        .filter((model) => model.id),
-      authMode: entry.authMode || undefined,
-      endpoint: entry.endpoint || undefined,
-      baseUrl: entry.baseUrl || undefined,
-      deployment: entry.deployment || undefined,
-      apiVersion: entry.apiVersion || undefined,
-      workspace: entry.workspace || undefined,
-      organization: entry.organization || undefined,
-      project: entry.project || undefined,
-      apiStyle: entry.apiStyle || undefined,
-    }));
+    const payload = executors.map((entry) => {
+      const authBindings = Object.fromEntries(
+        Object.entries(entry.authBindings || {}).map(([key, rawValue]) => [key, String(rawValue || "").trim()]).filter(([, value]) => value),
+      );
+      return {
+        id: entry.id,
+        name: entry.name,
+        providerId: entry.providerId,
+        enabled: entry.enabled !== false,
+        defaultModel: entry.defaultModel || undefined,
+        models: (Array.isArray(entry.modelEntries) ? entry.modelEntries : [])
+          .map((model) => ({
+            id: String(model.id || "").trim(),
+            ...(String(model.label || "").trim() ? { label: String(model.label || "").trim() } : {}),
+            ...(String(model.apiStyle || "").trim() ? { apiStyle: String(model.apiStyle || "").trim() } : {}),
+            ...(model.enabled === false ? { enabled: false } : {}),
+          }))
+          .filter((model) => model.id),
+        authMode: entry.authMode || undefined,
+        endpoint: entry.endpoint || undefined,
+        baseUrl: entry.baseUrl || undefined,
+        deployment: entry.deployment || undefined,
+        apiVersion: entry.apiVersion || undefined,
+        workspace: entry.workspace || undefined,
+        organization: entry.organization || undefined,
+        project: entry.project || undefined,
+        apiStyle: entry.apiStyle || undefined,
+        authBindings: Object.keys(authBindings).length > 0 ? authBindings : undefined,
+      };
+    });
     const res = await apiFetch("/api/harness/executors", {
       method: "POST",
       body: JSON.stringify({
@@ -1465,7 +1504,7 @@ function HarnessExecutorsEditor() {
       ${executors.map((entry, index) => {
         const providerInfo = getProviderInventoryEntry(entry.providerId);
         const providerOption = getProviderOption(entry.providerId);
-        const authState = providerInfo?.auth || {};
+        const authState = entry.auth || providerInfo?.auth || {};
         const supportsEndpoint = ["azure-openai-responses", "openai-responses", "openai-compatible", "ollama"].includes(entry.providerId);
         const supportsWorkspace = ["openai-codex-subscription", "claude-subscription-shim"].includes(entry.providerId);
         const supportsOrgProject = entry.providerId === "openai-responses";
@@ -1473,6 +1512,7 @@ function HarnessExecutorsEditor() {
         const isPrimary = entry.id === primaryExecutor;
         const routingLabel = deriveHarnessExecutorRoutingLabel(entry, primaryExecutor, routingMode);
         const endpointSummary = describeHarnessExecutorEndpoint(entry);
+        const authBindingSummary = describeHarnessExecutorAuthBindings(entry);
         return html`
           <div key=${entry._id} style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
@@ -1518,10 +1558,43 @@ function HarnessExecutorsEditor() {
                 <div class="setting-row-label">Default Model</div>
                 <${TextField} size="small" variant="outlined" value=${entry.defaultModel} onInput=${(e) => updateExecutor(entry._id, "defaultModel", e.target.value)} placeholder="gpt-5.4 / claude-sonnet-4.6 / ..." fullWidth />
               </div>
-              <div>
-                <div class="setting-row-label">Auth Mode</div>
-                <${TextField} size="small" variant="outlined" value=${entry.authMode} onInput=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} placeholder=${authState.preferredMode || "provider default"} fullWidth />
-              </div>
+                <div>
+                  <div class="setting-row-label">Auth Mode</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.authMode} onInput=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} placeholder=${authState.preferredMode || "provider default"} fullWidth />
+                </div>
+                <div>
+                  <div class="setting-row-label">API Key Env Binding</div>
+                  <${TextField}
+                    size="small"
+                    variant="outlined"
+                    value=${entry.authBindings?.apiKeyEnv || ""}
+                    onInput=${(e) => updateExecutorAuthBinding(entry._id, "apiKeyEnv", e.target.value)}
+                    placeholder="OPENAI_API_KEY / AZURE_US_API_KEY / ..."
+                    fullWidth
+                  />
+                </div>
+                <div>
+                  <div class="setting-row-label">OAuth Token Env Binding</div>
+                  <${TextField}
+                    size="small"
+                    variant="outlined"
+                    value=${entry.authBindings?.oauthTokenEnv || ""}
+                    onInput=${(e) => updateExecutorAuthBinding(entry._id, "oauthTokenEnv", e.target.value)}
+                    placeholder="OPENAI_ACCESS_TOKEN / COPILOT_OAUTH_TOKEN / ..."
+                    fullWidth
+                  />
+                </div>
+                <div>
+                  <div class="setting-row-label">Subscription Env Binding</div>
+                  <${TextField}
+                    size="small"
+                    variant="outlined"
+                    value=${entry.authBindings?.subscriptionEnv || ""}
+                    onInput=${(e) => updateExecutorAuthBinding(entry._id, "subscriptionEnv", e.target.value)}
+                    placeholder="CHATGPT_SUBSCRIPTION_TOKEN / ..."
+                    fullWidth
+                  />
+                </div>
               ${supportsEndpoint && html`
                 <div>
                   <div class="setting-row-label">${supportsAzureDeployment ? "Endpoint URL" : "Base URL / Endpoint"}</div>
@@ -1601,6 +1674,7 @@ function HarnessExecutorsEditor() {
               Provider auth: <strong>${authState.status || "unknown"}</strong>
               ${authState.authenticated ? " · connected" : authState.requiresAction ? " · needs auth" : ""}
               ${authState.canRun ? " · runnable" : ""}
+              ${authBindingSummary ? ` · bindings ${authBindingSummary}` : ""}
               ${authState.connection?.accountId ? ` · account ${authState.connection.accountId}` : ""}
               ${authState.preferredMode ? ` · ${authState.preferredMode}` : ""}
               ${providerInfo?.description ? ` · ${providerInfo.description}` : ""}

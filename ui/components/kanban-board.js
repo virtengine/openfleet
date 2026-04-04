@@ -386,7 +386,7 @@ function summarizeChildStatusRollup(tasks = []) {
   ].filter(Boolean);
 }
 
-function buildKanbanColumnItems(tasks = [], hierarchyView = null, hierarchyModel = null) {
+export function buildKanbanColumnItems(tasks = [], hierarchyView = null, hierarchyModel = null) {
   const rows = Array.isArray(tasks) ? [...tasks] : [];
   const groupedTaskIds = new Set();
   const coveredHeaderTaskIds = new Set();
@@ -415,6 +415,7 @@ function buildKanbanColumnItems(tasks = [], hierarchyView = null, hierarchyModel
         title: parentTask?.title || parentId,
         children: [],
       }));
+      if (parentTask?.id) coveredHeaderTaskIds.add(String(parentTask.id));
       if (taskId === parentId) {
         coveredHeaderTaskIds.add(taskId);
         continue;
@@ -438,6 +439,7 @@ function buildKanbanColumnItems(tasks = [], hierarchyView = null, hierarchyModel
         title: epicGroup.label || epicId,
         children: [],
       }));
+      if (anchorTask?.id) coveredHeaderTaskIds.add(String(anchorTask.id));
       if (anchorTask?.id && taskId === String(anchorTask.id)) {
         coveredHeaderTaskIds.add(taskId);
         continue;

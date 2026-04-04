@@ -69,8 +69,50 @@ function buildCapabilities(adapter, providerId, getAdapterCapabilities) {
   };
 }
 
+function normalizeAuthBindings(bindings = {}) {
+  if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) return {};
+  return Object.fromEntries(
+    Object.entries({
+      apiKeyEnv: bindings.apiKeyEnv,
+      oauthTokenEnv: bindings.oauthTokenEnv,
+      subscriptionEnv: bindings.subscriptionEnv,
+    }).map(([key, value]) => [key, toTrimmedString(value)]).filter(([, value]) => value),
+  );
+}
+
+function applyBoundCredentialEnv(providerId, envInput = {}, bindings = {}) {
+  const driver = getBuiltInProviderDriver(providerId);
+  const env = envInput && typeof envInput === "object" ? envInput : process.env;
+  const normalizedBindings = normalizeAuthBindings(bindings);
+  if (!driver || Object.keys(normalizedBindings).length === 0) return env;
+  const nextEnv = { ...env };
+  const authHints = driver.auth?.env && typeof driver.auth.env === "object" ? driver.auth.env : {};
+  const bindingMap = [
+    ["apiKeyEnv", Array.isArray(authHints.apiKey) ? authHints.apiKey : []],
+    ["oauthTokenEnv", Array.isArray(authHints.oauth) ? authHints.oauth : []],
+    ["subscriptionEnv", Array.isArray(authHints.subscription) ? authHints.subscription : []],
+  ];
+  for (const [bindingKey, hintKeys] of bindingMap) {
+    const sourceEnvKey = normalizedBindings[bindingKey];
+    if (!sourceEnvKey) continue;
+    const resolvedValue = toTrimmedString(env[sourceEnvKey]);
+    if (!resolvedValue) continue;
+    for (const hintKey of hintKeys) {
+      const normalizedHintKey = toTrimmedString(hintKey);
+      if (!normalizedHintKey) continue;
+      nextEnv[normalizedHintKey] = resolvedValue;
+    }
+  }
+  return nextEnv;
+}
+
 function resolveProviderAuth(providerId, fields, options) {
-  const authManager = createProviderAuthManager({ env: options.env || process.env });
+  const resolvedEnv = applyBoundCredentialEnv(
+    providerId,
+    options.env || process.env,
+    fields?.authBindings,
+  );
+  const authManager = createProviderAuthManager({ env: resolvedEnv });
   const readAuthState = typeof options.readAuthState === "function"
     ? options.readAuthState
     : () => ({});
@@ -78,7 +120,7 @@ function resolveProviderAuth(providerId, fields, options) {
     capabilities: buildCapabilities({}, providerId, null),
     enabled: fields.enabled,
     settings: options.settings || options.env || process.env,
-    env: options.env || process.env,
+    env: resolvedEnv,
   });
   const settings = {
     ...(resolved?.settings && typeof resolved.settings === "object" ? resolved.settings : {}),
@@ -106,19 +148,20 @@ function resolveProviderAuth(providerId, fields, options) {
   return {
     ...resolved,
     preferredMode: toTrimmedString(fields?.authMode) || resolved?.preferredMode || null,
+    authBindings: normalizeAuthBindings(fields?.authBindings),
     settings,
   };
 }
 
 function resolveProviderEnabled(providerId, explicitEnabled, options = {}) {
+  if (explicitEnabled !== undefined) {
+    return explicitEnabled === true;
+  }
   const authManager = createProviderAuthManager({ env: options.env || process.env });
   const resolved = authManager.resolve(providerId, {}, {
     settings: options.settings || options.env || process.env,
     env: options.env || process.env,
   });
-  if (resolved?.settings?.enabledSource === "default" && explicitEnabled !== undefined) {
-    return explicitEnabled === true;
-  }
   return resolved?.enabled !== false;
 }
 
@@ -163,6 +206,7 @@ function buildProviderEntry(providerId, definition, adapter, fields, options) {
     baseUrl: fields.baseUrl || null,
     deployment: fields.deployment || null,
     apiVersion: fields.apiVersion || null,
+    authBindings: normalizeAuthBindings(fields.authBindings),
     modelCatalog,
     auth: resolveProviderAuth(providerId, fields, options),
     capabilities,
@@ -229,6 +273,7 @@ function buildConfiguredProviders(options = {}) {
         workspace: entry?.workspace || null,
         organization: entry?.organization || null,
         project: entry?.project || null,
+        authBindings: entry?.authBindings || null,
         source: entry?.source || "configured",
         weight: entry?.weight || 0,
         apiStyle: entry?.apiStyle || null,
@@ -415,8 +460,13 @@ export function createProviderRegistry(options = {}) {
         ? provider.auth.settings
         : {};
       const modelCatalog = this.getModelCatalog(provider.providerId);
+      const resolvedEnv = applyBoundCredentialEnv(
+        provider.providerId,
+        options.env || process.env,
+        provider.authBindings,
+      );
       const sessionConfig = driver.createSessionConfig({
-        env: options.env || process.env,
+        env: resolvedEnv,
         settings,
         model:
           overrides.model

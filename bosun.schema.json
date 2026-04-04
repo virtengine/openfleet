@@ -217,6 +217,15 @@
               "workspace": { "type": "string" },
               "organization": { "type": "string" },
               "project": { "type": "string" },
+              "authBindings": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "apiKeyEnv": { "type": "string" },
+                  "oauthTokenEnv": { "type": "string" },
+                  "subscriptionEnv": { "type": "string" }
+                }
+              },
               "apiStyle": {
                 "type": "string",
                 "enum": ["provider-default", "responses", "chat-completions"]

@@ -647,11 +647,20 @@ export function runConfigDoctor(options = {}) {
     });
   }
 
+  if (existsSync(repoEnvPath) && !existsSync(configEnvPath)) {
+    issues.warnings.push({
+      code: "ENV_LEGACY_REPO_ROOT",
+      message:
+        "Found a legacy repo-root .env, but the canonical Bosun runtime .env lives in the resolved config directory.",
+      fix: `Run bosun --setup or copy ${repoEnvPath} to ${configEnvPath} to consolidate runtime env settings.`,
+    });
+  }
+
   if (!existsSync(configEnvPath) && !existsSync(repoEnvPath)) {
     issues.warnings.push({
       code: "ENV_MISSING",
-      message: "No .env file found in config directory or repo root.",
-      fix: "Run bosun --setup to generate .env",
+      message: "No Bosun runtime .env file found.",
+      fix: "Run bosun --setup to generate the canonical .env in the Bosun config directory.",
     });
   }
 

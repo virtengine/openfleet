@@ -84,6 +84,10 @@ export function normalizeProviderInventoryEntry(entry = {}) {
     baseUrl: toTrimmedString(entry.baseUrl) || null,
     deployment: toTrimmedString(entry.deployment) || null,
     apiVersion: toTrimmedString(entry.apiVersion) || null,
+    authBindings:
+      entry.authBindings && typeof entry.authBindings === "object"
+        ? cloneJson(entry.authBindings)
+        : null,
     modelCatalog:
       entry.modelCatalog && typeof entry.modelCatalog === "object"
         ? cloneJson(entry.modelCatalog)

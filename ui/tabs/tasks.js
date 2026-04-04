@@ -433,7 +433,7 @@ function normalizeTaskDueDateInput(task) {
   return date.toISOString().slice(0, 10);
 }
 
-function normalizeSubtaskRow(entry, fallbackParentTaskId = "") {
+export function normalizeSubtaskRow(entry, fallbackParentTaskId = "") {
   if (!entry || typeof entry !== "object") return null;
   return {
     id: toText(entry.id || entry.taskId),
@@ -483,7 +483,7 @@ function mergeSubtaskLists(...lists) {
   return [...merged.values()];
 }
 
-function buildTaskHierarchyPath(task, hierarchyModel = null) {
+export function buildTaskHierarchyPath(task, hierarchyModel = null) {
   const taskById = hierarchyModel?.taskById || new Map();
   const path = [];
   const seen = new Set();
@@ -560,7 +560,7 @@ function compareTasksForHierarchicalList(a, b, listSortCol = "", listSortDir = "
   return dir * String(av).localeCompare(String(bv));
 }
 
-function buildHierarchicalTaskRows(rootNodes = [], options = {}) {
+export function buildHierarchicalTaskRows(rootNodes = [], options = {}) {
   const rows = [];
   const sortChildren = typeof options?.sortChildren === "function" ? options.sortChildren : (items) => items;
   const collapsedState = options?.collapsedState || {};
