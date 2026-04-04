@@ -2914,7 +2914,7 @@ function runMonitor({ restartReason = "" } = {}) {
         const spawnMonitorChild = (forceWindowsShell = false) => {
           if (forceWindowsShell && process.platform === "win32") {
             const command = [process.execPath, ...monitorArgs]
-              .map((part) => `"${String(part).replace(/"/g, '\\"')}"`)
+              .map((part) => `"${String(part).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
               .join(" ");
             return spawn(
               process.env.ComSpec || "cmd.exe",

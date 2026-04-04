@@ -958,7 +958,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     try {
       const body = await readJsonBody(req);
       const type = body?.type || "manual";
-      const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const id = `${type}-${Date.now()}-${randomBytes(4).toString("hex")}`;
       const requestedWorkspaceId = toTrimmedString(body?.workspaceId || "");
       const requestedWorkspaceDir = normalizeCandidatePath(body?.selectedRepoPath || body?.repoPath || body?.workspaceDir);
       const requestedWorkspaceRoot = normalizeCandidatePath(body?.workspaceRoot);
@@ -1815,7 +1815,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           return true;
         }
 
-        const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const messageId = `msg-${Date.now()}-${randomBytes(4).toString("hex")}`;
         await runInteractiveTurn({
           turnContent: messageContent,
           turnAttachments: attachments,

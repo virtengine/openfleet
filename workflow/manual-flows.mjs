@@ -83,7 +83,8 @@ function getManualFlowWorkflowId(templateId) {
   const normalized = String(templateId || "custom")
     .trim()
     .replace(/[^a-zA-Z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
   return `manual-flow.${normalized || "custom"}`;
 }
 
