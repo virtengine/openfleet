@@ -41,7 +41,11 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     timeoutMs: 1800000,
   },
   nodes: [
-    node("trigger", "trigger.manual", "Start Continuation Loop", {}, { x: 420, y: 60 }),
+    node("trigger", "trigger.task_available", "Task Available", {
+      maxParallel: 1,
+      pollIntervalMs: "{{pollIntervalMs}}",
+      status: "inprogress",
+    }, { x: 420, y: 60 }),
 
     node("init-turn", "action.set_variable", "Initialize Turn Counter", {
       key: "continuationTurn",

@@ -24,6 +24,7 @@ import {
   getNodeType,
 } from "../workflow/workflow-nodes.mjs";
 import { registerCustomTool } from "../agent/agent-custom-tools.mjs";
+import { listApprovalRequests } from "../workflow/approval-queue.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -242,6 +243,53 @@ describe("action.bosun_tool", () => {
       }),
     );
   });
+
+  it("queues workflow-action approval requests before running an approval-gated Bosun tool", async () => {
+    const handler = getNodeType("action.bosun_tool");
+    const repoRoot = makeTmpDir();
+    registerCustomTool(repoRoot, {
+      id: "approval-tool",
+      title: "Approval Tool",
+      description: "Should be blocked until approved",
+      category: "utility",
+      lang: "mjs",
+      script: "console.log('should-not-run');",
+    });
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _runId: "run-approval-1",
+      _workflowId: "wf-approval-1",
+    });
+    const node = {
+      id: "t-approval",
+      type: "action.bosun_tool",
+      config: {
+        toolId: "approval-tool",
+        requireApproval: true,
+        approvalReason: "operator review required",
+      },
+    };
+
+    const result = await handler.execute(node, ctx);
+    const approvals = listApprovalRequests({
+      repoRoot,
+      scopeType: "workflow-action",
+      status: "pending",
+      includeResolved: true,
+      limit: 10,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/requires operator approval/i);
+    expect(approvals.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scopeType: "workflow-action",
+        runId: "run-approval-1",
+        nodeId: "t-approval",
+        status: "pending",
+      }),
+    ]));
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -430,6 +478,40 @@ describe("action.build_task_prompt", () => {
 describe("action.continue_session", () => {
   it("prepends issue-advisor guidance to continuation prompts", async () => {
     const handler = getNodeType("action.continue_session");
+    const repoRoot = makeTmpDir();
+    const {
+      initSharedKnowledge,
+      buildKnowledgeEntry,
+      appendKnowledgeEntry,
+    } = await import("../workspace/shared-knowledge.mjs");
+    initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
+    mkdirSync(join(repoRoot, ".bosun", "context-index"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".bosun", "context-index", "agent-index.json"),
+      JSON.stringify({
+        relations: [
+          {
+            relationType: "file_imports_file",
+            fromPath: "src/auth/login.mjs",
+            toPath: "src/auth/session-store.mjs",
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    const memoryResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+      content: "Workspace memory: reseed fixtures in src/auth/login.mjs before resuming retry work.",
+      scope: "testing",
+      scopeLevel: "workspace",
+      teamId: "team-a",
+      workspaceId: "workspace-1",
+      sessionId: "session-0",
+      runId: "run-0",
+      agentId: "agent-memory",
+      relatedPaths: ["src/auth/login.mjs"],
+    }));
+    expect(memoryResult.success).toBe(true);
+
     const continueSession = vi.fn().mockResolvedValue({
       success: true,
       output: "continued",
@@ -440,7 +522,17 @@ describe("action.continue_session", () => {
         agentPool: { continueSession },
       },
     };
-    const ctx = new WorkflowContext({ sessionId: "thread-1" });
+    const ctx = new WorkflowContext({
+      sessionId: "thread-1",
+      repoRoot,
+      taskId: "TASK-CONT-1",
+      taskTitle: "Resume auth retry work",
+      taskDescription: "Resume retry work without losing fixture state.",
+      workspaceId: "workspace-1",
+      runId: "run-1",
+    });
+    ctx.data.teamId = "team-a";
+    ctx.data._changedFiles = ["src/auth/login.mjs"];
     ctx.data._issueAdvisor = {
       recommendedAction: "spawn_fix_step",
       summary: "Review feedback requested a targeted patch before resuming.",
@@ -460,6 +552,12 @@ describe("action.continue_session", () => {
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(continueSession.mock.calls[0][1]).toContain("Issue-advisor continuation context");
     expect(continueSession.mock.calls[0][1]).toContain("spawn_fix_step");
+    expect(continueSession.mock.calls[0][1]).toContain("## Persistent Memory Briefing");
+    expect(continueSession.mock.calls[0][1]).toContain("reseed fixtures in src/auth/login.mjs");
+    expect(continueSession.mock.calls[0][1]).toContain("matched=src/auth/login.mjs");
+    expect(ctx.data._continuedSessionRetrievedMemory?.[0]).toEqual(expect.objectContaining({
+      directPathHits: ["src/auth/login.mjs"],
+    }));
   });
 });
 
@@ -905,6 +1003,7 @@ describe("action.bosun_function", () => {
     expect(handler).toBeDefined();
     expect(handler.execute).toBeInstanceOf(Function);
     expect(handler.describe()).toMatch(/bosun.*function/i);
+    expect(handler.outputs.map((port) => port.name)).toEqual(["default", "error"]);
     expect(handler.schema.required).toContain("function");
     expect(handler.schema.properties.function).toBeDefined();
     expect(handler.schema.properties.args).toBeDefined();
@@ -1509,10 +1608,19 @@ describe("self-improvement workflow nodes", () => {
     const ctx = new WorkflowContext({
       repoRoot,
       _workspaceId: "workspace-1",
+      _changedFiles: ["workflow/workflow-engine.mjs"],
       sessionId: "session-1",
       runId: "run-1",
       _workflowId: "wf-self-improvement-pass",
       taskId: "TASK-SI-2",
+      task: {
+        id: "TASK-SI-2",
+        title: "Promote self-improvement baseline",
+        filePaths: ["workflow/workflow-engine.mjs"],
+        meta: {
+          filePaths: ["workflow/workflow-engine.mjs"],
+        },
+      },
       _lastRunEvaluation: {
         runId: "run-1",
         workflowId: "wf-self-improvement-pass",
@@ -1570,7 +1678,9 @@ describe("self-improvement workflow nodes", () => {
     expect(existsSync(registryPath)).toBe(true);
     const registry = JSON.parse(readFileSync(registryPath, "utf8"));
     expect(Array.isArray(registry.entries)).toBe(true);
-    expect(registry.entries.some((entry) => entry.strategyId === result.strategyId)).toBe(true);
+    const promotedEntry = registry.entries.find((entry) => entry.strategyId === result.strategyId);
+    expect(promotedEntry).toBeTruthy();
+    expect(promotedEntry.relatedPaths).toContain("workflow/workflow-engine.mjs");
     const skillbookPath = join(repoRoot, ".bosun", "skillbook", "strategies.json");
     expect(existsSync(skillbookPath)).toBe(true);
     const skillbook = JSON.parse(readFileSync(skillbookPath, "utf8"));
@@ -1588,6 +1698,21 @@ describe("self-improvement workflow nodes", () => {
     expect(result.skillbookPath).toContain(".bosun");
     expect(result.ledgerPath).toContain(".sqlite");
     expect(ctx.data.promotionResult.strategyId).toBe(result.strategyId);
+    const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
+    const retrieved = await retrieveKnowledgeEntries({
+      repoRoot,
+      workspaceId: "workspace-1",
+      sessionId: "session-9",
+      runId: "run-9",
+      taskId: "TASK-SI-2",
+      changedFiles: ["workflow/workflow-engine.mjs"],
+      query: "workflow reliability baseline",
+      limit: 5,
+    });
+    expect(retrieved).toContainEqual(expect.objectContaining({
+      strategyId: result.strategyId,
+      directPathHits: ["workflow/workflow-engine.mjs"],
+    }));
   });
 
   it("action.load_skillbook_strategies ranks reusable strategies for the current workflow", async () => {
@@ -1608,6 +1733,20 @@ describe("self-improvement workflow nodes", () => {
           recommendation: "Retry by running targeted validation before wider retries.",
           rationale: "This pattern recovered recent validation failures without reopening unrelated work.",
           tags: ["recovery", "validation"],
+          relatedPaths: ["src/billing/invoice-runner.mjs"],
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          strategyId: "wf-self-improvement-pass:path-matched",
+          workflowId: "wf-self-improvement-pass",
+          category: "strategy",
+          scopeLevel: "workspace",
+          status: "promoted",
+          confidence: 0.78,
+          recommendation: "Retry by validating the workflow engine path before wider retries.",
+          rationale: "This path-specific strategy should outrank generic guidance when the same file is active.",
+          tags: ["recovery", "validation"],
+          relatedPaths: ["workflow/workflow-engine.mjs"],
           updatedAt: new Date().toISOString(),
         },
         {
@@ -1629,6 +1768,7 @@ describe("self-improvement workflow nodes", () => {
     const ctx = new WorkflowContext({
       repoRoot,
       _workflowId: "wf-self-improvement-pass",
+      _changedFiles: ["workflow/workflow-engine.mjs"],
       taskTitle: "Recover validation failures",
       lastError: "validation step failed on retry",
     });
@@ -1638,15 +1778,17 @@ describe("self-improvement workflow nodes", () => {
       config: {
         repoRoot,
         query: "validation retry recovery",
+        limit: 1,
         outputVariable: "loadedGuidance",
       },
     }, ctx);
 
     expect(result.success).toBe(true);
     expect(result.matched).toBe(1);
-    expect(result.strategyIds).toEqual(["wf-self-improvement-pass:preferred"]);
-    expect(result.guidanceSummary).toContain("Retry by running targeted validation before wider retries.");
-    expect(ctx.data.loadedGuidance.strategyIds).toEqual(["wf-self-improvement-pass:preferred"]);
+    expect(result.strategyIds).toEqual(["wf-self-improvement-pass:path-matched"]);
+    expect(result.guidanceSummary).toContain("Retry by validating the workflow engine path before wider retries.");
+    expect(result.guidanceSummary).toContain("matched=workflow/workflow-engine.mjs");
+    expect(ctx.data.loadedGuidance.strategyIds).toEqual(["wf-self-improvement-pass:path-matched"]);
   });
 
   it("agent.run_planner injects reusable skillbook guidance into the planner prompt", async () => {
@@ -1707,6 +1849,61 @@ describe("self-improvement workflow nodes", () => {
     const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
     expect(sentPrompt).toContain("Reusable strategy guidance:");
     expect(sentPrompt).toContain("Break reliability work into targeted validation-first tasks.");
+  });
+
+  it("agent.run_planner refreshes repo topology from source files when the index is missing", async () => {
+    const repoRoot = makeTmpDir();
+    mkdirSync(join(repoRoot, "agent"), { recursive: true });
+    mkdirSync(join(repoRoot, "workflow"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, "agent", "primary-agent.mjs"),
+      "import { runWorkflowNode } from '../workflow/workflow-nodes.mjs';\nexport function buildArchitectEditorFrame(options) { return runWorkflowNode(options); }\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(repoRoot, "workflow", "workflow-nodes.mjs"),
+      "export function runWorkflowNode(options) { return options; }\n",
+      "utf8",
+    );
+
+    const handler = getNodeType("agent.run_planner");
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: '```json\n{"tasks":[]}\n```',
+      sdk: "codex",
+      items: [],
+      threadId: "planner-thread-repomap-refresh",
+    });
+    const engine = {
+      services: {
+        agentPool: { launchEphemeralThread },
+        prompts: { planner: "Plan the next backlog tasks." },
+      },
+    };
+    const ctx = new WorkflowContext({
+      repoRoot,
+      _workflowId: "wf-plan",
+      taskTitle: "Improve planner topology",
+      taskDescription: "Use repository structure to plan the next steps.",
+      changedFiles: ["agent/primary-agent.mjs"],
+    });
+
+    const result = await handler.execute({
+      id: "planner-with-repomap-refresh",
+      type: "agent.run_planner",
+      config: {
+        taskCount: 2,
+        context: "Focus on the primary agent execution path.",
+        repoMapQuery: "primary agent execution path",
+      },
+    }, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+    expect(sentPrompt).toContain("## Repo Topology");
+    expect(sentPrompt).toContain("agent/primary-agent.mjs");
+    expect(sentPrompt).toContain("adjacent: workflow/workflow-nodes.mjs");
   });
 
   it("workflow proof bundles surface skillbook guidance captured during execution", async () => {

@@ -33,14 +33,9 @@ let testIsolatedStorePath = null;
 
 function isLikelyTestRuntime() {
   if (process.env.VITEST) return true;
-  if (process.env.VITEST_POOL_ID) return true;
-  if (process.env.VITEST_WORKER_ID) return true;
-  if (process.env.JEST_WORKER_ID) return true;
-  if (process.env.NODE_ENV === "test") return true;
-  const argv = Array.isArray(process.argv)
-    ? process.argv.join(" ").toLowerCase()
-    : "";
-  return argv.includes("vitest") || argv.includes("jest");
+  if (process.env.NODE_TEST_CONTEXT) return true;
+  if (process.env.BOSUN_TEST_CACHE_DIR) return true;
+  return false;
 }
 
 function pathsEqual(a, b) {
@@ -117,13 +112,13 @@ function resolvePersistentStorePath() {
   if (explicitRepoRoot) {
     return resolve(explicitRepoRoot, ".bosun", ".cache", "kanban-state.json");
   }
-  const bosunHome = resolveBosunHomeDir();
-  if (bosunHome) {
-    return resolve(bosunHome, ".cache", "kanban-state.json");
-  }
   const repoRoot = inferRepoRoot(process.cwd());
   if (repoRoot) {
     return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  }
+  const bosunHome = resolveBosunHomeDir();
+  if (bosunHome) {
+    return resolve(bosunHome, ".cache", "kanban-state.json");
   }
   return resolve(__dirname, "..", ".cache", "kanban-state.json");
 }
@@ -142,6 +137,17 @@ function resolveStorePathForRuntime(candidatePath) {
 
 function resolveDefaultStorePath() {
   return resolveStorePathForRuntime(resolvePersistentStorePath());
+}
+
+function maybeRefreshDefaultStorePathForRuntimeSignals() {
+  if (_loaded) return;
+  const nextPath = resolveDefaultStorePath();
+  if (nextPath === storePath) return;
+  storePath = nextPath;
+  storeTmpPath = storePath + ".tmp";
+  _didLogInitialLoad = false;
+  _lastLoadedMtimeMs = 0;
+  _lastLoadedSizeBytes = 0;
 }
 
 let storePath = resolveDefaultStorePath();
@@ -254,6 +260,31 @@ export function configureTaskStore(options = {}) {
   }
 
   return storePath;
+}
+
+export async function _resetForTests() {
+  await _writeChain.catch(() => null);
+  _store = { _meta: defaultMeta(), tasks: {}, sprints: {} };
+  _loaded = true;
+  _writeChain = Promise.resolve();
+  _writeScheduled = false;
+  _writeDirty = false;
+  _didLogInitialLoad = false;
+  _lastLoadedMtimeMs = 0;
+  _lastLoadedSizeBytes = 0;
+
+  if (isLikelyTestRuntime() || isTestIsolatedStorePath(storePath)) {
+    try {
+      unlinkSync(storePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    try {
+      unlinkSync(storeTmpPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1115,10 @@ function normalizeTaskStructure(rawTask = {}) {
   if (normalized.status === "draft") {
     normalized.draft = true;
   }
+  normalized.meta = {
+    ...(normalized.meta || {}),
+    draft: normalized.draft === true,
+  };
   return normalized;
 }
 
@@ -1423,6 +1458,7 @@ function recalcStats() {
 }
 
 function ensureLoaded() {
+  maybeRefreshDefaultStorePathForRuntimeSignals();
   if (_loaded) {
     maybeReloadStoreFromDisk();
     return;
@@ -3026,6 +3062,7 @@ export function recoverAutoBlockedTasks(options = {}) {
     if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
     const autoRecovery = task.meta?.autoRecovery;
     const worktreeFailure = task.meta?.worktreeFailure;
+    const failureKind = String(worktreeFailure?.failureKind || autoRecovery?.failureKind || "").trim();
     const hasPlaceholder = hasStaleWorktreePlaceholders(task);
     const isWorktreeRecovery = (
       autoRecovery &&
@@ -3037,6 +3074,7 @@ export function recoverAutoBlockedTasks(options = {}) {
       typeof worktreeFailure === "object"
     ) || hasPlaceholder;
     if (!isWorktreeRecovery) continue;
+    if (failureKind === "branch_refresh_conflict" && !hasPlaceholder) continue;
 
     const retryAtMs = resolveRetryAtMs(task, autoRecovery);
     if (Number.isFinite(retryAtMs) && retryAtMs > recoveredAtMs) continue;

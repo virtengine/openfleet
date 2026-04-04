@@ -22,6 +22,7 @@ import {
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
+import { createShellSessionCompat } from "./shell-session-compat.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -57,6 +58,10 @@ let activeSessionId = null;
 let activeTurn = false;
 let turnCount = 0;
 let workspacePath = null;
+const copilotSessionCompat = createShellSessionCompat({
+  adapterName: "copilot",
+  providerSelection: "copilot",
+});
 
 function envFlagEnabled(value) {
   const raw = String(value ?? "")
@@ -652,10 +657,20 @@ async function loadState() {
     console.log(
       `[copilot-shell] loaded state: sessionId=${activeSessionId}, turns=${turnCount}`,
     );
+    copilotSessionCompat.hydrate({
+      sessionId: activeSessionId,
+      status: activeSessionId ? "idle" : "inactive",
+      cwd: workspacePath || "",
+      metadata: {
+        workspacePath,
+        turnCount,
+      },
+    });
   } catch {
     activeSessionId = null;
     turnCount = 0;
     workspacePath = null;
+    copilotSessionCompat.reset({ keepManagedRecord: false });
   }
 }
 
@@ -914,10 +929,36 @@ export async function execCopilotPrompt(userMessage, options = {}) {
   const items = [];
   let finalResponse = "";
   let responseFromMessage = false;
+  const logicalSessionId =
+    String(options.sessionId || activeSessionId || "").trim()
+    || "primary-copilot";
+  const providerRuntime = copilotSessionCompat.resolveProvider({
+    providerSelection: options.providerSelection || "copilot",
+    model: process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+  });
+  copilotSessionCompat.beginTurn(logicalSessionId, {
+    activate: Boolean(options.sessionId || activeSessionId),
+    status: "running",
+    cwd: workspacePath || REPO_ROOT,
+    providerSelection: providerRuntime.providerId || "copilot",
+    model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+    metadata: {
+      workspacePath,
+      turnCount,
+      persistent,
+      mode: mode || null,
+    },
+  });
 
   const handleEvent = async (event) => {
     if (!event) return;
     logSessionEvent(logPath, event);
+    copilotSessionCompat.recordStreamEvent(activeSessionId || logicalSessionId, event, {
+      activate: Boolean(options.sessionId || activeSessionId),
+      cwd: workspacePath || REPO_ROOT,
+      providerSelection: providerRuntime.providerId || "copilot",
+      model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+    });
     items.push(event);
     if (event.type === "assistant.message" && event.data?.content) {
       finalResponse = event.data.content;
@@ -933,6 +974,19 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     if (event.type === "session.idle") {
       turnCount += 1;
       await saveState();
+      copilotSessionCompat.completeTurn(activeSessionId || logicalSessionId, {
+        activate: Boolean(activeSessionId || options.sessionId),
+        status: "completed",
+        cwd: workspacePath || REPO_ROOT,
+        providerSelection: providerRuntime.providerId || "copilot",
+        model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+        metadata: {
+          workspacePath,
+          turnCount,
+          persistent,
+          mode: mode || null,
+        },
+      });
     }
     if (onEvent) {
       try {
@@ -1051,6 +1105,20 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         reason === "user_stop"
           ? ":close: Agent stopped by user."
           : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
+      copilotSessionCompat.abortTurn(activeSessionId || logicalSessionId, {
+        activate: Boolean(activeSessionId || options.sessionId),
+        status: reason === "user_stop" ? "aborted" : "timeout",
+        cwd: workspacePath || REPO_ROOT,
+        error: msg,
+        providerSelection: providerRuntime.providerId || "copilot",
+        model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+        metadata: {
+          workspacePath,
+          turnCount,
+          persistent,
+          mode: mode || null,
+        },
+      });
       return { finalResponse: msg, items: [], usage: null };
     }
     // ── Transient stream retry ──────────────────────────────────────────────────
@@ -1076,12 +1144,40 @@ export async function execCopilotPrompt(userMessage, options = {}) {
       console.error(
         `[copilot-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
       );
+      copilotSessionCompat.failTurn(activeSessionId || logicalSessionId, {
+        activate: Boolean(activeSessionId || options.sessionId),
+        status: "failed",
+        cwd: workspacePath || REPO_ROOT,
+        error: err.message,
+        providerSelection: providerRuntime.providerId || "copilot",
+        model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+        metadata: {
+          workspacePath,
+          turnCount,
+          persistent,
+          mode: mode || null,
+        },
+      });
       return {
         finalResponse: `:close: Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
         items: [],
         usage: null,
       };
     }
+    copilotSessionCompat.failTurn(activeSessionId || logicalSessionId, {
+      activate: Boolean(activeSessionId || options.sessionId),
+      status: "failed",
+      cwd: workspacePath || REPO_ROOT,
+      error: err?.message || String(err),
+      providerSelection: providerRuntime.providerId || "copilot",
+      model: providerRuntime.providerConfig?.model || process.env.COPILOT_MODEL || process.env.COPILOT_SDK_MODEL || null,
+      metadata: {
+        workspacePath,
+        turnCount,
+        persistent,
+        mode: mode || null,
+      },
+    });
     throw err;
   } finally {
     // Only the outermost invocation (or the final retry) cleans up.
@@ -1116,13 +1212,14 @@ export function isCopilotBusy() {
 }
 
 export function getSessionInfo() {
-  return {
+  return copilotSessionCompat.getSessionInfo({
     sessionId: activeSessionId,
     turnCount,
     isActive: !!activeSession,
     isBusy: !!activeTurn,
     workspacePath,
-  };
+    cwd: workspacePath || REPO_ROOT,
+  });
 }
 
 export async function resetSession() {
@@ -1131,6 +1228,14 @@ export async function resetSession() {
   workspacePath = null;
   turnCount = 0;
   activeTurn = false;
+  copilotSessionCompat.reset({
+    status: "idle",
+    cwd: "",
+    metadata: {
+      workspacePath: null,
+      turnCount: 0,
+    },
+  });
   await saveState();
   console.log("[copilot-shell] session reset");
 }

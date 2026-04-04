@@ -107,22 +107,39 @@ function ensureWorktreeRuntimeReady(repoRoot, worktreePath) {
  */
 function fixGitConfigCorruption(repoRoot) {
   try {
+    const worktreeDirExists = existsSync(resolve(repoRoot, ".git", "worktrees"));
     const bareResult = spawnSync("git", ["config", "--bool", "--get", "core.bare"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 5000,
       env: gitEnv(),
     });
-    if (bareResult.stdout?.trim() === "true") {
+    const coreWorktreeResult = spawnSync("git", ["config", "--local", "--get", "core.worktree"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5000,
+      env: gitEnv(),
+    });
+    const configuredWorktree = coreWorktreeResult.stdout?.trim() || "";
+    const bareCorrupt = bareResult.stdout?.trim() === "true";
+    const sharedWorktreeCorrupt = worktreeDirExists && configuredWorktree.length > 0;
+
+    if (bareCorrupt || sharedWorktreeCorrupt) {
+      const reasons = [
+        bareCorrupt ? "core.bare=true" : null,
+        sharedWorktreeCorrupt ? `shared core.worktree=${configuredWorktree}` : null,
+      ].filter(Boolean);
       console.warn(
-        `${TAG} :alert: Detected core.bare=true on main repo — fixing git config corruption`,
+        `${TAG} :alert: Detected git config corruption (${reasons.join(", ")}) — repairing common repo config`,
       );
-      spawnSync("git", ["config", "--local", "core.bare", "false"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 5000,
-        env: gitEnv(),
-      });
+      if (bareCorrupt) {
+        spawnSync("git", ["config", "--local", "core.bare", "false"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 5000,
+          env: gitEnv(),
+        });
+      }
       spawnSync("git", ["config", "--local", "--unset-all", "core.worktree"], {
         cwd: repoRoot,
         encoding: "utf8",

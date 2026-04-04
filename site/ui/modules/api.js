@@ -8,6 +8,9 @@ import { getInitData } from "./telegram.js";
 
 /** Map of in-flight GET request promises, keyed by path */
 const _inflight = new Map();
+const MAX_CONCURRENT_GET_REQUESTS = 6;
+const _queuedGetRequests = [];
+let _activeGetRequestCount = 0;
 
 /** Reactive signal: whether the WebSocket is currently connected */
 export const wsConnected = signal(false);
@@ -23,6 +26,8 @@ export const wsReconnectCount = signal(0);
 export const wsLastReconnectAt = signal(null);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);
+/** Reactive signal: whether the backend is currently reachable */
+export const backendReachability = signal("online");
 
 let _loadingSuppressionDepth = 0;
 let _loadingForceDepth = 0;
@@ -49,14 +54,71 @@ export function withLoadingTracked(fn) {
   return withDepthCounter("force", fn);
 }
 
-async function readApiErrorBody(response) {
-  const text = await response.text().catch(() => "");
-  if (!text) return { text: "", payload: null };
-  try {
-    return { text, payload: JSON.parse(text) };
-  } catch {
-    return { text, payload: null };
+function createAbortError() {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+function drainGetRequestQueue() {
+  while (
+    _activeGetRequestCount < MAX_CONCURRENT_GET_REQUESTS
+    && _queuedGetRequests.length > 0
+  ) {
+    const next = _queuedGetRequests.shift();
+    next?.start?.();
   }
+}
+
+function scheduleGetRequest(task, signal) {
+  if (signal?.aborted) {
+    return Promise.reject(createAbortError());
+  }
+
+  return new Promise((resolve, reject) => {
+    const entry = {
+      started: false,
+      abortListener: null,
+      start: async () => {
+        if (entry.started) return;
+        entry.started = true;
+        if (typeof signal?.removeEventListener === "function" && entry.abortListener) {
+          signal.removeEventListener("abort", entry.abortListener);
+          entry.abortListener = null;
+        }
+        if (signal?.aborted) {
+          reject(createAbortError());
+          drainGetRequestQueue();
+          return;
+        }
+
+        _activeGetRequestCount += 1;
+        try {
+          resolve(await task());
+        } catch (error) {
+          reject(error);
+        } finally {
+          _activeGetRequestCount = Math.max(0, _activeGetRequestCount - 1);
+          drainGetRequestQueue();
+        }
+      },
+    };
+
+    if (typeof signal?.addEventListener === "function") {
+      entry.abortListener = () => {
+        if (entry.started) return;
+        const index = _queuedGetRequests.indexOf(entry);
+        if (index >= 0) {
+          _queuedGetRequests.splice(index, 1);
+        }
+        reject(createAbortError());
+      };
+      signal.addEventListener("abort", entry.abortListener, { once: true });
+    }
+
+    _queuedGetRequests.push(entry);
+    drainGetRequestQueue();
+  });
 }
 
 function resolveApiErrorMessage(status, text, payload) {
@@ -81,9 +143,140 @@ function resolveApiErrorMessage(status, text, payload) {
  * @param {RequestInit & {_silent?: boolean}} options
  * @returns {Promise<any>} parsed JSON body
  */
+const MAX_FETCH_RETRIES = 2;
+const FETCH_RETRY_BASE_MS = 800;
+const NETWORK_ERROR_COOLDOWN_MS = 4000;
+const API_ERROR_DEDUPE_MS = 4000;
+const DEFAULT_GET_TIMEOUT_MS = 12000;
+const DEFAULT_MUTATION_TIMEOUT_MS = 25000;
+let _sessionRecoveryPromise = null;
+let _backendUnavailableUntil = 0;
+let _lastApiErrorAt = 0;
+let _lastApiErrorMessage = "";
+
+function buildSessionRecoveryPath() {
+  try {
+    const current = new URL(globalThis.location?.href || "/", globalThis.location?.origin || "http://localhost");
+    return `${current.pathname}${current.search}` || "/";
+  } catch {
+    return "/";
+  }
+}
+
+async function readApiErrorBody(response) {
+  const text = await response.text().catch(() => "");
+  if (!text) return { text: "", payload: null };
+  try {
+    return { text, payload: JSON.parse(text) };
+  } catch {
+    return { text, payload: null };
+  }
+}
+
+function createApiError(status, body = {}) {
+  const error = new Error(resolveApiErrorMessage(status, body.text, body.payload));
+  error.status = status;
+  error.payload = body.payload || null;
+  error.responseText = body.text || "";
+  error.isAuthError = status === 401 || status === 403;
+  return error;
+}
+
+function isNetworkConnectivityError(error) {
+  const message = String(error?.message || error || "");
+  const name = String(error?.name || "");
+  return (
+    name === "TypeError"
+    || /Failed to fetch/i.test(message)
+    || /NetworkError/i.test(message)
+    || /Load failed/i.test(message)
+    || /ERR_CONNECTION_REFUSED/i.test(message)
+    || /ERR_TIMED_OUT/i.test(message)
+  );
+}
+
+function getBackendCooldownRemainingMs() {
+  return Math.max(0, _backendUnavailableUntil - Date.now());
+}
+
+function markBackendUnavailable(cooldownMs = NETWORK_ERROR_COOLDOWN_MS) {
+  const nextUntil = Date.now() + Math.max(500, Number(cooldownMs) || NETWORK_ERROR_COOLDOWN_MS);
+  _backendUnavailableUntil = Math.max(_backendUnavailableUntil, nextUntil);
+  backendReachability.value = "offline";
+}
+
+function clearBackendUnavailable() {
+  _backendUnavailableUntil = 0;
+  backendReachability.value = "online";
+}
+
+function createBackendUnavailableError(retryInMs = getBackendCooldownRemainingMs()) {
+  const seconds = Math.max(1, Math.ceil(Math.max(0, retryInMs) / 1000));
+  const error = new Error(`Bosun backend is unavailable. Retrying in about ${seconds}s.`);
+  error.status = 0;
+  error.isNetworkError = true;
+  error.isBackendUnavailable = true;
+  return error;
+}
+
+function createRequestTimeoutError(timeoutMs) {
+  const seconds = Math.max(1, Math.ceil(Math.max(0, Number(timeoutMs) || 0) / 1000));
+  const error = new Error(`Bosun backend timed out after about ${seconds}s.`);
+  error.name = "AbortError";
+  error.status = 0;
+  error.isNetworkError = true;
+  error.isTimeout = true;
+  return error;
+}
+
+function shouldDispatchApiError(message) {
+  const now = Date.now();
+  if (
+    message
+    && message === _lastApiErrorMessage
+    && (now - _lastApiErrorAt) < API_ERROR_DEDUPE_MS
+  ) {
+    return false;
+  }
+  _lastApiErrorMessage = message;
+  _lastApiErrorAt = now;
+  return true;
+}
+
+async function recoverUiSession() {
+  if (_sessionRecoveryPromise) return _sessionRecoveryPromise;
+  _sessionRecoveryPromise = (async () => {
+    const headers = {};
+    const initData = getInitData();
+    if (initData) {
+      headers["X-Telegram-InitData"] = initData;
+    }
+    const response = await fetch(buildSessionRecoveryPath(), {
+      method: "GET",
+      headers,
+      redirect: "follow",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw createApiError(response.status, await readApiErrorBody(response));
+    }
+    return true;
+  })().finally(() => {
+    _sessionRecoveryPromise = null;
+  });
+  return _sessionRecoveryPromise;
+}
+
 export function apiFetch(path, options = {}) {
-  const headers = { ...options.headers };
-  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const {
+    _silent: silentOption = false,
+    _trackLoading: trackLoadingOption,
+    _sessionRecoveryAttempted: sessionRecoveryAttempted = false,
+    _timeoutMs: timeoutOverrideMs,
+    ...requestInit
+  } = options || {};
+  const headers = { ...requestInit.headers };
+  const isFormData = typeof FormData !== "undefined" && requestInit.body instanceof FormData;
   if (!isFormData) {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
   }
@@ -93,60 +286,112 @@ export function apiFetch(path, options = {}) {
     headers["X-Telegram-InitData"] = initData;
   }
 
-  const silent = Boolean(options._silent);
-  const trackLoadingOption = options._trackLoading;
-  const method = String(options.method || "GET").toUpperCase();
-  delete options._silent;
-  delete options._trackLoading;
+  const silent = Boolean(silentOption);
+  const method = String(requestInit.method || "GET").toUpperCase();
+  const timeoutMs = Math.max(
+    1000,
+    Number(timeoutOverrideMs)
+      || Number(requestInit.timeoutMs)
+      || (method === "GET" ? DEFAULT_GET_TIMEOUT_MS : DEFAULT_MUTATION_TIMEOUT_MS),
+  );
 
   const forceLoading = trackLoadingOption === true || _loadingForceDepth > 0;
   const suppressLoading = trackLoadingOption === false || _loadingSuppressionDepth > 0;
-  // Default behavior: only non-GET requests show global loading unless explicitly forced.
   const defaultTrackLoading = !silent && method !== "GET";
   const trackLoading =
     !suppressLoading &&
     (forceLoading || trackLoadingOption === true || defaultTrackLoading);
 
-  // Deduplicate concurrent identical GETs
   const isGet = method === "GET";
-  if (isGet && !options.body) {
+  const requestOptions = { ...requestInit, method, headers };
+  if (isGet && !requestOptions.body && !sessionRecoveryAttempted) {
     if (_inflight.has(path)) {
       return _inflight.get(path);
     }
   }
 
-  // Retry config for network-level failures only (not 4xx/5xx HTTP errors)
-  const MAX_FETCH_RETRIES = 2;
-  const FETCH_RETRY_BASE_MS = 800;
-
   const promise = (async () => {
     if (trackLoading) loadingCount.value += 1;
-    let res;
-    let fetchAttempt = 0;
     try {
-      while (fetchAttempt <= MAX_FETCH_RETRIES) {
-        try {
-          res = await fetch(path, { ...options, headers });
-          break; // success — exit retry loop
-        } catch (networkErr) {
-          fetchAttempt++;
-          if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
-          await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
+      const performRequest = async (allowSessionRecovery = true) => {
+        const cooldownRemainingMs = getBackendCooldownRemainingMs();
+        if (cooldownRemainingMs > 0 && isGet) {
+          throw createBackendUnavailableError(cooldownRemainingMs);
         }
+        let response;
+        let fetchAttempt = 0;
+        while (fetchAttempt <= MAX_FETCH_RETRIES) {
+          const timeoutController = typeof AbortController !== "undefined"
+            ? new AbortController()
+            : null;
+          const requestSignal = requestOptions.signal;
+          const signal = timeoutController?.signal || requestSignal;
+          let timeoutId = null;
+          let cleanupTimeout = null;
+          try {
+            if (timeoutController && requestSignal) {
+              const abortFromCaller = () => timeoutController.abort(requestSignal.reason);
+              if (requestSignal.aborted) {
+                abortFromCaller();
+              } else {
+                requestSignal.addEventListener("abort", abortFromCaller, { once: true });
+                cleanupTimeout = () => requestSignal.removeEventListener("abort", abortFromCaller);
+              }
+            }
+            if (timeoutController) {
+              timeoutId = setTimeout(() => {
+                timeoutController.abort(createRequestTimeoutError(timeoutMs));
+              }, timeoutMs);
+            }
+            response = await fetch(path, { ...requestOptions, signal });
+            clearBackendUnavailable();
+            break;
+          } catch (networkErr) {
+            fetchAttempt += 1;
+            const isTimeout = networkErr?.name === "AbortError"
+              && timeoutController?.signal?.aborted === true;
+            if (isTimeout || isNetworkConnectivityError(networkErr)) {
+              markBackendUnavailable();
+              if (isGet || fetchAttempt > MAX_FETCH_RETRIES || silent) {
+                throw isTimeout
+                  ? createRequestTimeoutError(timeoutMs)
+                  : createBackendUnavailableError();
+              }
+            }
+            if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
+            await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
+          } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+            cleanupTimeout?.();
+          }
+        }
+        if (!response.ok) {
+          const body = await readApiErrorBody(response);
+          if (allowSessionRecovery && (response.status === 401 || response.status === 403)) {
+            await recoverUiSession();
+            return performRequest(false);
+          }
+          throw createApiError(response.status, body);
+        }
+        return await response.json();
+      };
+
+      if (isGet && !requestOptions.body) {
+        return await scheduleGetRequest(
+          () => performRequest(!sessionRecoveryAttempted),
+          requestOptions.signal,
+        );
       }
-      if (!res.ok) {
-        const body = await readApiErrorBody(res);
-        throw new Error(resolveApiErrorMessage(res.status, body.text, body.payload));
-      }
-      return await res.json();
+      return await performRequest(!sessionRecoveryAttempted);
     } catch (err) {
-      // Re-throw so callers can catch, but don't toast on silent requests
       if (!silent) {
-        // Dispatch a custom event so the state layer can show a toast
         try {
-          globalThis.dispatchEvent(
-            new CustomEvent("ve:api-error", { detail: { message: err.message } }),
-          );
+          const message = String(err?.message || "Request failed");
+          if (shouldDispatchApiError(message)) {
+            globalThis.dispatchEvent(
+              new CustomEvent("ve:api-error", { detail: { message } }),
+            );
+          }
         } catch {
           /* noop */
         }
@@ -156,11 +401,11 @@ export function apiFetch(path, options = {}) {
       if (trackLoading) {
         loadingCount.value = Math.max(0, loadingCount.value - 1);
       }
-      if (isGet && !options.body) _inflight.delete(path);
+      if (isGet && !requestOptions.body) _inflight.delete(path);
     }
   })();
 
-  if (isGet && !options.body) _inflight.set(path, promise);
+  if (isGet && !requestOptions.body && !sessionRecoveryAttempted) _inflight.set(path, promise);
   return promise;
 }
 
@@ -228,6 +473,16 @@ function startCountdown(ms) {
   }, 1000);
 }
 
+function scheduleReconnect(ms) {
+  const delayMs = Math.max(250, Math.ceil(Number(ms) || retryMs));
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  startCountdown(delayMs);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWebSocket();
+  }, delayMs);
+}
+
 /** Start the client-side ping interval (every 30s) */
 function startPing() {
   stopPing();
@@ -257,6 +512,14 @@ export function connectWebSocket() {
     return;
   }
 
+  const cooldownRemainingMs = getBackendCooldownRemainingMs();
+  if (cooldownRemainingMs > 0) {
+    wsConnected.value = false;
+    wsStatus.value = "reconnecting";
+    scheduleReconnect(cooldownRemainingMs);
+    return;
+  }
+
   const proto = globalThis.location.protocol === "https:" ? "wss" : "ws";
   const wsUrl = new URL(`${proto}://${globalThis.location.host}/ws`);
 
@@ -283,6 +546,7 @@ export function connectWebSocket() {
     wsStatus.value = "connected";
     wsLatency.value = null;
     retryMs = 1000; // reset backoff on successful connect
+    clearBackendUnavailable();
     clearCountdown();
     startPing();
   });
@@ -336,19 +600,15 @@ export function connectWebSocket() {
     ws = null;
     stopPing();
     wsReconnectCount.value += 1;
-    // Auto-reconnect with exponential backoff (max 15 s)
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    startCountdown(retryMs);
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connectWebSocket();
-    }, retryMs);
+    const delayMs = Math.max(retryMs, getBackendCooldownRemainingMs());
+    scheduleReconnect(delayMs);
     retryMs = Math.min(15000, retryMs * 2);
   });
 
   socket.addEventListener("error", () => {
     wsConnected.value = false;
     wsStatus.value = "reconnecting";
+    markBackendUnavailable(retryMs);
   });
 }
 

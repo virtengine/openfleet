@@ -362,7 +362,6 @@ registerNodeType("transform.mcp_extract", {
 
 /** Module-scope lazy caches for task lifecycle imports. */
 let _taskClaimsMod = null;
-let _taskClaimsInitPromise = null;
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
@@ -467,18 +466,22 @@ function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
 }
 async function ensureTaskClaimsInitialized(ctx, claims) {
   if (typeof claims?.initTaskClaims !== "function") return;
-  if (!_taskClaimsInitPromise) {
-    const repoRoot = pickTaskString(
-      ctx?.data?.repoRoot,
-      ctx?.data?.workspace,
-      process.cwd(),
-    );
-    _taskClaimsInitPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {
-      _taskClaimsInitPromise = null;
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.taskClaimsInitPromises || typeof runtimeState.taskClaimsInitPromises !== "object") {
+    runtimeState.taskClaimsInitPromises = {};
+  }
+  const repoRoot = resolve(pickTaskString(
+    ctx?.data?.repoRoot,
+    ctx?.data?.workspace,
+    process.cwd(),
+  ));
+  if (!runtimeState.taskClaimsInitPromises[repoRoot]) {
+    runtimeState.taskClaimsInitPromises[repoRoot] = claims.initTaskClaims({ repoRoot }).catch((err) => {
+      delete runtimeState.taskClaimsInitPromises[repoRoot];
       throw err;
     });
   }
-  await _taskClaimsInitPromise;
+  await runtimeState.taskClaimsInitPromises[repoRoot];
 }
 async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../../task/task-complexity.mjs");

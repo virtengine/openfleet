@@ -30,6 +30,8 @@ const ROUTE_TABS = new Set([
   "marketplace",
   "telemetry",
   "settings",
+  "guardrails",
+  "context-compression-lab",
 ]);
 
 function getParentTab(tabId) {
@@ -70,6 +72,9 @@ function buildPath(tab, params = {}) {
     const workflowId = String(clean.workflowId || "").trim();
     return workflowId ? `/workflows/${encodeURIComponent(workflowId)}` : "/workflows";
   }
+  if (tab === "context-compression-lab") {
+    return "/test-context-compression";
+  }
   return `/${tab}`;
 }
 
@@ -77,6 +82,9 @@ function parsePath(pathname) {
   const path = normalizePath(pathname);
   if (path === "/" || path === "/dashboard") {
     return { tab: "dashboard", params: {} };
+  }
+  if (path === "/test-context-compression") {
+    return { tab: "context-compression-lab", params: {} };
   }
   const segments = path.split("/").filter(Boolean);
   const [head, second, third] = segments;
@@ -263,6 +271,7 @@ export const TAB_CONFIG = [
   { id: "manual-flows", label: "Run Flows", icon: "zap" },
   { id: "telemetry", label: "Telemetry", icon: "chart" },
   { id: "benchmarks", label: "Bench", icon: "chart" },
+  { id: "guardrails", label: "Guardrails", icon: "shield" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 

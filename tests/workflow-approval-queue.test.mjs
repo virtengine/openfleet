@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -6,11 +6,21 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   expireApprovalRequest,
+  getApprovalRequest,
   getHarnessRunApprovalRequest,
+  reconcileHarnessRunApprovalRequests,
+  reconcileWorkflowRunApprovalRequests,
   resolveApprovalQueuePath,
   resolveApprovalRequest,
+  upsertWorkflowRunApprovalRequest,
   upsertHarnessRunApprovalRequest,
 } from "../workflow/approval-queue.mjs";
+import {
+  resetStateLedgerCache,
+  getWorkflowRunDetailFromStateLedger,
+  writeHarnessRunToStateLedger,
+  writeWorkflowRunDetailToStateLedger,
+} from "../lib/state-ledger-sqlite.mjs";
 
 const tempRoots = [];
 
@@ -37,10 +47,27 @@ function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
-afterEach(() => {
+async function removeDirWithRetries(dirPath) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      rmSync(dirPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "EPERM") throw error;
+      resetStateLedgerCache();
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+afterEach(async () => {
+  resetStateLedgerCache();
   while (tempRoots.length > 0) {
     const repoRoot = tempRoots.pop();
-    rmSync(repoRoot, { recursive: true, force: true });
+    await removeDirWithRetries(repoRoot);
   }
 });
 
@@ -167,6 +194,218 @@ describe("workflow approval queue", () => {
           decision: "expired",
         }),
       ],
+    });
+  });
+
+  it("reads approvals from SQL first and resolves harness approvals when the legacy queue file is missing", () => {
+    const { repoRoot, runPath } = createHarnessRunFixture();
+    writeHarnessRunToStateLedger(readJson(runPath), {
+      anchorPath: resolve(repoRoot, ".cache", "harness", "runs"),
+    });
+
+    upsertHarnessRunApprovalRequest({
+      runId: "run-123",
+      taskId: "TASK-123",
+      stageId: "gate",
+      reason: "SQL-backed harness approval.",
+      timeoutMs: 1_000,
+    }, { repoRoot });
+
+    const queuePath = resolveApprovalQueuePath(repoRoot);
+    expect(existsSync(queuePath)).toBe(true);
+    unlinkSync(queuePath);
+
+    expect(getHarnessRunApprovalRequest("run-123", { repoRoot })).toMatchObject({
+      requestId: "harness-run:run-123",
+      status: "pending",
+    });
+
+    unlinkSync(runPath);
+    const resolved = resolveApprovalRequest("harness-run:run-123", {
+      repoRoot,
+      decision: "approved",
+      actorId: "sql-reviewer",
+      note: "resolved from SQL state",
+    });
+
+    expect(resolved.request).toMatchObject({
+      requestId: "harness-run:run-123",
+      status: "approved",
+    });
+    expect(resolved.updateResult).toMatchObject({
+      runId: "run-123",
+      latestApproval: expect.objectContaining({
+        decision: "approved",
+        actorId: "sql-reviewer",
+      }),
+    });
+  });
+
+  it("reconciles stale harness approvals when the run no longer exists", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-harness-approval-stale-"));
+    tempRoots.push(repoRoot);
+    upsertHarnessRunApprovalRequest({
+      runId: "ghost-run",
+      requestedBy: "voice",
+      reason: "Stale voice approval.",
+      timeoutMs: 0,
+    }, { repoRoot });
+
+    const reconciled = reconcileHarnessRunApprovalRequests({ repoRoot });
+
+    expect(reconciled.repaired).toEqual([
+      expect.objectContaining({
+        requestId: "harness-run:ghost-run",
+        runId: "ghost-run",
+        status: "expired",
+      }),
+    ]);
+    expect(getHarnessRunApprovalRequest("ghost-run", { repoRoot })).toMatchObject({
+      requestId: "harness-run:ghost-run",
+      status: "expired",
+      resolution: expect.objectContaining({
+        actorId: "system:reconcile",
+      }),
+    });
+  });
+
+  it("resolves workflow-run approvals from SQL detail when the legacy detail file is missing", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-workflow-approval-queue-"));
+    tempRoots.push(repoRoot);
+    const runsDir = resolve(repoRoot, ".bosun", "workflow-runs");
+    mkdirSync(runsDir, { recursive: true });
+
+    writeWorkflowRunDetailToStateLedger("run-wf-1", {
+      startedAt: Date.now() - 5000,
+      endedAt: Date.now() - 1000,
+      data: {
+        _workflowId: "wf-1",
+        _workflowName: "Workflow SQL Approval",
+        _executionPolicy: {
+          mode: "manual",
+          approvalRequired: true,
+          approvalState: "pending",
+          blocked: true,
+        },
+        _workflowGovernance: {
+          policyOutcome: {
+            blocked: true,
+            status: "blocked",
+          },
+        },
+      },
+      executionPolicy: {
+        mode: "manual",
+        approvalRequired: true,
+        approvalState: "pending",
+        blocked: true,
+      },
+      policyOutcome: {
+        blocked: true,
+        status: "blocked",
+      },
+      nodeStatuses: {},
+      logs: [],
+      errors: [],
+    }, { anchorPath: runsDir });
+
+    const created = upsertWorkflowRunApprovalRequest({
+      runId: "run-wf-1",
+      workflowId: "wf-1",
+      workflowName: "Workflow SQL Approval",
+      executionPolicy: {
+        mode: "manual",
+        approvalRequired: true,
+        approvalState: "pending",
+        blocked: true,
+      },
+      policyOutcome: {
+        blocked: true,
+        status: "blocked",
+      },
+    }, { repoRoot });
+
+    expect(created.request).toMatchObject({
+      requestId: "workflow-run:run-wf-1",
+      status: "pending",
+    });
+    unlinkSync(resolveApprovalQueuePath(repoRoot));
+
+    expect(getApprovalRequest("workflow-run", "run-wf-1", { repoRoot })).toMatchObject({
+      requestId: "workflow-run:run-wf-1",
+      status: "pending",
+    });
+
+    const resolved = resolveApprovalRequest("workflow-run:run-wf-1", {
+      repoRoot,
+      decision: "approved",
+      actorId: "workflow-sql-reviewer",
+      note: "approved from SQL detail",
+    });
+
+    expect(resolved.request).toMatchObject({
+      requestId: "workflow-run:run-wf-1",
+      status: "approved",
+    });
+    expect(getWorkflowRunDetailFromStateLedger("run-wf-1", { anchorPath: runsDir })).toMatchObject({
+      data: {
+        _workflowApproval: expect.objectContaining({
+          requestId: "workflow-run:run-wf-1",
+          decision: "approved",
+          actorId: "workflow-sql-reviewer",
+        }),
+        _executionPolicy: expect.objectContaining({
+          approvalState: "approved",
+          blocked: false,
+        }),
+      },
+    });
+  });
+
+  it("expires orphaned workflow-run approvals during reconciliation when the run detail is gone", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bosun-workflow-approval-reconcile-"));
+    tempRoots.push(repoRoot);
+
+    const created = upsertWorkflowRunApprovalRequest({
+      runId: "run-missing-1",
+      workflowId: "wf-missing-1",
+      workflowName: "Missing Approval Workflow",
+      taskId: "task-missing-1",
+      taskTitle: "Missing approval task",
+      executionPolicy: {
+        mode: "manual",
+        approvalRequired: true,
+        approvalState: "pending",
+        blocked: true,
+      },
+      policyOutcome: {
+        blocked: true,
+        status: "blocked",
+      },
+    }, { repoRoot });
+
+    expect(created.request).toMatchObject({
+      requestId: "workflow-run:run-missing-1",
+      status: "pending",
+    });
+
+    const reconciled = reconcileWorkflowRunApprovalRequests({ repoRoot });
+    const reconciledRequest = reconciled.requests.find((entry) => entry.requestId === "workflow-run:run-missing-1");
+
+    expect(reconciled.repaired).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestId: "workflow-run:run-missing-1",
+        runId: "run-missing-1",
+        status: "expired",
+      }),
+    ]));
+    expect(reconciledRequest).toMatchObject({
+      requestId: "workflow-run:run-missing-1",
+      status: "expired",
+      resolution: expect.objectContaining({
+        actorId: "system:reconcile",
+        note: "Workflow run run-missing-1 no longer exists.",
+      }),
     });
   });
 });

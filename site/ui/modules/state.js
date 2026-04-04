@@ -346,6 +346,7 @@ export function classifyTaskLifecycleAction(currentStatus, nextStatus) {
 // ── Agents
 export const agentsData = signal([]);
 export const agentWorkspaceTarget = signal(null);
+export const guardrailsData = signal(null);
 
 // ── Infra
 export const worktreeData = signal([]);
@@ -1053,6 +1054,17 @@ export async function loadBenchmarks(providerId = "") {
   _markFresh("benchmarks");
 }
 
+export async function loadGuardrails() {
+  const url = "/api/guardrails";
+  const cached = _cacheGet(url);
+  if (_cacheFresh(url, "config")) return;
+  if (cached) guardrailsData.value = cached.data;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false }));
+  guardrailsData.value = res?.snapshot ?? null;
+  _cacheSet(url, guardrailsData.value);
+  _markFresh("config");
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  TAB REFRESH — map tab names to their required loaders
  * ═══════════════════════════════════════════════════════════════ */
@@ -1069,6 +1081,7 @@ const TAB_LOADERS = {
   tasks: () => loadTasks({ pageSize: KANBAN_PAGE_SIZE }),
   benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
+  guardrails: () => loadGuardrails(),
   infra: () =>
     Promise.all([
       loadWorktrees(),

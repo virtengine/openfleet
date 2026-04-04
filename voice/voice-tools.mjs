@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveAgentRepoRoot } from "../config/repo-root.mjs";
+import { createToolOrchestrator } from "../agent/tool-orchestrator.mjs";
 import { getVisionSessionState } from "./vision-session-state.mjs";
 import { TOOL_DEFS } from "./voice-tool-definitions.mjs";
 
@@ -556,6 +557,81 @@ export function getToolDefinitions() {
   return TOOL_DEFS;
 }
 
+const VOICE_APPROVAL_REQUIRED_TOOLS = new Set([
+  "create_task",
+  "update_task_status",
+  "delegate_to_agent",
+  "run_command",
+  "run_workspace_command",
+  "bosun_slash_command",
+  "invoke_mcp_tool",
+  "create_workflow",
+  "update_workflow_definition",
+  "execute_workflow",
+  "retry_workflow_run",
+  "sync_prompt_defaults",
+]);
+
+function buildVoiceToolRegistryDefinitions() {
+  return TOOL_DEFS.map((definition) => {
+    const name = String(definition?.name || "").trim();
+    return {
+      id: name,
+      name,
+      description: String(definition?.description || "").trim() || null,
+      requiresApproval: VOICE_APPROVAL_REQUIRED_TOOLS.has(name),
+      networkAccess: name === "invoke_mcp_tool" ? "restricted" : "inherit",
+      handler: async (toolArgs, toolContext) => {
+        const handler = TOOL_HANDLERS[name];
+        if (typeof handler !== "function") {
+          throw new Error(`Unknown tool: ${name}`);
+        }
+        return await handler(toolArgs, toolContext);
+      },
+    };
+  }).filter((entry) => entry.id);
+}
+
+async function buildVoiceToolRuntimeContext(toolName, context = {}) {
+  const cwd = await resolveToolCwd(context);
+  const privileged = isPrivilegedVoiceContext(context);
+  const defaultApprovalMode = (
+    context?.approval?.mode
+    || context?.approvalMode
+    || (context?.executionPolicy?.approvalRequired === true || context?.requireApproval === true
+      ? "manual"
+      : "auto")
+  );
+  return {
+    ...context,
+    cwd,
+    repoRoot: String(context?.repoRoot || resolveAgentRepoRoot(cwd)).trim() || cwd,
+    sessionId: String(context?.sessionId || "").trim() || null,
+    runId: String(context?.runId || context?.sessionId || "").trim() || null,
+    surface: String(context?.surface || "voice").trim() || "voice",
+    sessionType: String(context?.sessionType || "voice").trim() || "voice",
+    requestedBy: String(context?.requestedBy || context?.userId || "voice").trim() || "voice",
+    approval: {
+      ...(context?.approval && typeof context.approval === "object" ? context.approval : {}),
+      mode: String(defaultApprovalMode).trim() || "auto",
+      ...(privileged
+        ? {
+            decision: String(context?.approval?.decision || "approved").trim() || "approved",
+            state: String(context?.approval?.state || "approved").trim() || "approved",
+          }
+        : {}),
+      scopeType: String(context?.approval?.scopeType || context?.approvalScopeType || "harness-run").trim() || "harness-run",
+      scopeId: String(
+        context?.approval?.scopeId
+        || context?.approvalScopeId
+        || context?.runId
+        || context?.sessionId
+        || `${String(toolName || "").trim() || "tool"}:${String(context?.turnId || "").trim() || "voice"}`,
+      ).trim() || null,
+    },
+  };
+}
+
 /**
  * Execute a tool call by name with given arguments.
  * @param {string} toolName
@@ -564,16 +640,41 @@ export function getToolDefinitions() {
  * @returns {Promise<{ result: string, error?: string }>}
  */
 export async function executeToolCall(toolName, args = {}, context = {}) {
-  const handler = TOOL_HANDLERS[toolName];
+  const normalizedToolName = String(toolName || "").trim();
+  const handler = TOOL_HANDLERS[normalizedToolName];
   if (!handler) {
     return { result: null, error: `Unknown tool: ${toolName}` };
   }
   try {
-    const result = await handler(args, context);
+    const runtimeContext = await buildVoiceToolRuntimeContext(normalizedToolName, context);
+    const orchestrator = createToolOrchestrator({
+      cwd: runtimeContext.cwd,
+      repoRoot: runtimeContext.repoRoot,
+      approvalOptions: {
+        repoRoot: runtimeContext.repoRoot,
+        approvalScopeType: runtimeContext?.approval?.scopeType || "harness-run",
+        approvalScopeId: runtimeContext?.approval?.scopeId || runtimeContext?.runId || runtimeContext?.sessionId || normalizedToolName,
+      },
+      toolSources: [{
+        source: "voice",
+        definitions: buildVoiceToolRegistryDefinitions(),
+      }],
+      truncation: {
+        maxChars: 4000,
+        tailChars: 400,
+      },
+      onEvent: context?.onEvent,
+    });
+    const result = await orchestrator.execute(normalizedToolName, args, runtimeContext);
     return { result: typeof result === "string" ? result : JSON.stringify(result, null, 2) };
   } catch (err) {
     console.error("[voice-tools] %s error: %s", String(toolName || "unknown"), String(err?.message || err || "unknown"));
-    return { result: null, error: err.message };
+    return {
+      result: null,
+      error: err.message,
+      approvalRequestId: String(err?.request?.requestId || err?.approval?.requestId || "").trim() || null,
+      approval: err?.approval || null,
+    };
   }
 }
 
@@ -826,6 +927,8 @@ const TOOL_HANDLERS = {
       const fallback = await execPrimaryPrompt(message, {
         mode: "instant",
         model,
+        sessionId,
+        scope: `voice-ask:${sessionId}`,
         sessionType: "voice-ask",
         cwd,
       });

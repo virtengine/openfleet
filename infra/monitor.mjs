@@ -39,6 +39,15 @@ const heartbeatRuntimeState = {
   current: null,
 };
 
+const HELPER_PROCESS_REAP_INTERVAL_MS = Math.max(
+  60_000,
+  Number(process.env.BOSUN_HELPER_PROCESS_REAP_INTERVAL_MS || "300000") || 300000,
+);
+const HELPER_PROCESS_MAX_AGE_MS = Math.max(
+  60_000,
+  Number(process.env.BOSUN_HELPER_PROCESS_MAX_AGE_MS || "600000") || 600000,
+);
+
 /**
  * Non-blocking async shell exec — avoids blocking the HTTP server event loop.
  * Use instead of execSync/spawnSync in timer callbacks and request handlers.
@@ -62,7 +71,10 @@ function execAsync(cmd, { cwd, timeout = 30_000, encoding = "utf8" } = {}) {
 }
 
 
-import { acquireMonitorLock } from "./maintenance.mjs";
+import {
+  acquireMonitorLock,
+  reapStaleBosunHelperProcesses,
+} from "./maintenance.mjs";
 
 import {
   attemptAutoFix,
@@ -81,7 +93,13 @@ import {
   stopStatusFileWriter,
   initStatusBoard,
   pushStatusBoardUpdate,
+  handleUiCommand,
 } from "../telegram/telegram-bot.mjs";
+import {
+  createTelegramUiRuntime,
+  startTelegramSurfaceRuntime,
+  stopTelegramSurfaceRuntime,
+} from "../telegram/telegram-surface-runtime.mjs";
 import { startAnalyzer, stopAnalyzer } from "../agent/agent-work-analyzer.mjs";
 import {
   generateWeeklyAgentWorkReport,
@@ -110,7 +128,11 @@ import {
   hasActiveSession,
 } from "../agent/agent-pool.mjs";
 import { loadConfig } from "../config/config.mjs";
-import { formatPreflightReport, runPreflightChecks } from "./preflight.mjs";
+import {
+  checkChildProcessLaunch,
+  formatPreflightReport,
+  runPreflightChecks,
+} from "./preflight.mjs";
 import { startAutoUpdateLoop, stopAutoUpdateLoop } from "./update-check.mjs";
 import { createHeartbeatMonitor } from "./heartbeat-monitor.mjs";
 import {
@@ -399,7 +421,7 @@ function formatAgentAlert(alert) {
   if (alert.task_id) lines.push(`Task: ${alert.task_id}`);
   if (alert.executor) lines.push(`Executor: ${alert.executor}`);
   if (alert.recommendation) lines.push(`Recommendation: ${alert.recommendation}`);
-  if (alert.error_count) lines.push(`Errors: ${alert.error_count}`);
+      if (alert.error_count) lines.push(`Errors: ${alert.error_count} (merge conflicts)`);
   if (alert.idle_time_ms) {
     lines.push(`Idle: ${Math.round(alert.idle_time_ms / 1000)}s`);
   }
@@ -481,28 +503,28 @@ function syncAgentEndpointPortEnv(port) {
   process.env.AGENT_ENDPOINT_PORT = value;
 }
 
-let workflowAutomationEnabled = false;
-let workflowEventDedupWindowMs = 15_000;
-const workflowEventDedup = new Map();
-const workflowTaskStatusSnapshot = new Map();
-let workflowAutomationEngine = null;
-let workflowAutomationInitPromise = null;
-let workflowAutomationInitDone = false;
-let workflowAutomationReadyLogged = false;
-let workflowAutomationUnavailableLogged = false;
-let workflowConflictResolverPausedLogged = false;
-let workflowTaskReconcilePausedLogged = false;
-let workflowTaskReconcileInFlight = false;
-let workflowTaskReconcileLastAt = 0;
-const WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS = 45 * 1000;
+var workflowAutomationEnabled = false;
+var workflowEventDedupWindowMs = 15_000;
+var workflowEventDedup = new Map();
+var workflowTaskStatusSnapshot = new Map();
+var workflowAutomationEngine = null;
+var workflowAutomationInitPromise = null;
+var workflowAutomationInitDone = false;
+var workflowAutomationReadyLogged = false;
+var workflowAutomationUnavailableLogged = false;
+var workflowConflictResolverPausedLogged = false;
+var workflowTaskReconcilePausedLogged = false;
+var workflowTaskReconcileInFlight = false;
+var workflowTaskReconcileLastAt = 0;
+var WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS = 45 * 1000;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
  * Populated once after the workflow engine loads.
  * Used by `isWorkflowReplacingModule()` to let legacy code yield.
  */
-const _workflowReplacesModuleCache = new Set();
-let _workflowReplacesModuleCachePopulated = false;
+var _workflowReplacesModuleCache = new Set();
+var _workflowReplacesModuleCachePopulated = false;
 
 /**
  * Check whether a workflow replaces a legacy module and workflow automation is
@@ -827,6 +849,12 @@ async function ensureWorkflowAutomationEngine() {
 
   workflowAutomationInitPromise = (async () => {
     try {
+      const childProcessCapability = checkChildProcessLaunch();
+      if (!childProcessCapability.ok) {
+        throw new Error(
+          `workflow automation blocked: Node child-process launch unavailable (${childProcessCapability.code || "unknown"}: ${childProcessCapability.message || "child_process_launch_failed"})`,
+        );
+      }
       const [{ getWorkflowEngine }, { createTask, getTask }, wfNodes, workflowTemplates] = await Promise.all([
         import("../workflow/workflow-engine.mjs"),
         import("../kanban/kanban-adapter.mjs"),
@@ -835,6 +863,9 @@ async function ensureWorkflowAutomationEngine() {
       ]);
       if (!wfNodes) {
         throw new Error("workflow nodes unavailable");
+      }
+      if (typeof wfNodes.ensureWorkflowNodeTypesLoaded === "function") {
+        await wfNodes.ensureWorkflowNodeTypesLoaded({ repoRoot });
       }
 
       const kanbanService = {
@@ -1016,6 +1047,7 @@ async function ensureWorkflowAutomationEngine() {
         const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
           forceUpdateTemplateIds: [
+            "template-task-batch-processor",
             "template-task-lifecycle",
             "template-task-finalization-guard",
             "template-agent-session-monitor",
@@ -1033,6 +1065,20 @@ async function ensureWorkflowAutomationEngine() {
                 ? ` (${reconcile.forceUpdated.length} forced)`
                 : ""),
           );
+        }
+        if (Array.isArray(reconcile?.criticalRemaining) && reconcile.criticalRemaining.length > 0) {
+          const criticalSummary = reconcile.criticalRemaining
+            .map((entry) => {
+              const workflowId = String(entry?.workflowId || "").trim() || "workflow-unknown";
+              const templateId = String(entry?.templateId || "").trim() || "template-unknown";
+              const issueCodes = (Array.isArray(entry?.issues) ? entry.issues : [])
+                .map((issue) => String(issue?.code || "").trim())
+                .filter(Boolean)
+                .join(",");
+              return `${workflowId}:${templateId}${issueCodes ? `:${issueCodes}` : ""}`;
+            })
+            .join("; ");
+          throw new Error(`Startup-critical workflow template mismatch remains after reconcile: ${criticalSummary}`);
         }
         if (
           typeof engine.load === "function" &&
@@ -1197,6 +1243,16 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
 function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
+
+const REVIEW_FIX_HANDOFF_MODES = Object.freeze({
+  ACTIVE_SESSION_STEERING: "active_session_steering",
+  REVIEW_REDISPATCH: "review_redispatch",
+});
+
+const REVIEW_FIX_HANDOFF_STATES = Object.freeze({
+  ACTIVE_SESSION_ATTACHED: "active_session_attached",
+  SESSION_REBIND_REQUESTED: "session_rebind_requested",
+});
 
 // ── GitHub webhook → workflow-engine bridge ──────────────────────────────────
 // Forwards GitHub App webhook events from the OAuth portal's EventEmitter into
@@ -1974,6 +2030,13 @@ function configureExecutorTaskStatusTransitions() {
     if (!normalizedTaskId || !normalizedStatus) return false;
     const payload =
       options && typeof options === "object" ? { ...options } : {};
+
+    if (payload.bypassWorkflowOwnership === true) {
+      return updateTaskStatus(normalizedTaskId, normalizedStatus, {
+        ...payload,
+        bypassWorkflowOwnership: true,
+      });
+    }
 
     queueWorkflowEvent(
       "task.transition.requested",
@@ -3236,7 +3299,7 @@ let stopTuiConfigReloadListener = null;
 const SELF_RESTART_EXIT_CODE = 75;
 const SELF_RESTART_QUIET_MS = Math.max(
   90_000,
-  Number(process.env.SELF_RESTART_QUIET_MS || "90000"),
+  Number(process.env.SELF_RESTART_QUIET_MS || "180000"),
 );
 const ENV_RELOAD_DELAY_MS = Math.max(
   500,
@@ -3272,6 +3335,7 @@ let selfWatcher = null;
 let selfWatcherLib = null;
 let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
 let selfWatcherDebounce = null;
+let selfWatcherMtimes = new Map();
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
 let selfRestartLastFile = null;
@@ -3398,6 +3462,70 @@ function getTelegramBotStartOptions() {
     suppressPortalAutoOpen:
       restartReason.length > 0 || !allowDaemonPortalAutoOpen,
   };
+}
+
+function _getTuiMonitorStatsForPortal() {
+  try {
+    const executorStats = typeof internalTaskExecutor?.getTuiStats === "function"
+      ? (internalTaskExecutor.getTuiStats() || {})
+      : {};
+    const runtimeStats = getRuntimeStats();
+    const activeSessions = getSessionTracker().listAllSessions({ includePersisted: false })
+      .filter((session) => session?.runtimeIsLive === true);
+    return buildMonitorStatsPayload({
+      agentPool: {
+        ...executorStats,
+        activeSessions,
+      },
+      runtimeStats: {
+        ...runtimeStats,
+        activeSessions,
+      },
+      uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
+    });
+  } catch {
+    return {};
+  }
+}
+
+async function ensureTelegramSurfaceRuntimeStarted(options = {}) {
+  const restartReason = String(
+    options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+  )
+    .trim()
+    .toLowerCase();
+  const suppressPortalAutoOpen =
+    options.suppressPortalAutoOpen === true || restartReason.length > 0;
+  const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+  );
+  await startTelegramSurfaceRuntime({
+    skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+    restartReason,
+    dependencies: {
+      getInternalExecutor: () => internalTaskExecutor,
+      getTuiMonitorStats: () => _getTuiMonitorStatsForPortal(),
+      getExecutorMode: () => executorMode,
+      getAgentEventBus: () => agentEventBus,
+      handleUiCommand,
+      getSyncEngine: () => syncEngine,
+      onProjectSyncAlert: async (alert) => {
+        if (!sendTelegramMessage) return;
+        const text = String(alert?.message || "Project sync alert");
+        await sendTelegramMessage(`:alert: ${text}`);
+      },
+    },
+  });
+}
+
+async function startTelegramSurfaceAndBot(options = {}) {
+  await ensureTelegramSurfaceRuntimeStarted(options);
+  await startTelegramBot(options);
+}
+
+function stopTelegramSurfaceAndBot(options = {}) {
+  stopTelegramBot(options);
+  stopTelegramSurfaceRuntime();
 }
 
 // ── Anomaly detector — plaintext pattern matching for death loops, stalls, etc. ──
@@ -3738,7 +3866,7 @@ function restartSelf(reason) {
   runDetachedDuringShutdown("poll-lock-release:restart-self", () =>
     releaseTelegramPollLock(),
   );
-  stopTelegramBot({ preserveDigest: true });
+  stopTelegramSurfaceAndBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
     runDetachedDuringShutdown("containers-stop:restart-self", () =>
@@ -7285,10 +7413,12 @@ async function queueFlowReview(taskId, ctx, reason = "") {
 }
 
 function redispatchInReviewTask(task, reason, extra = {}) {
-  const taskId = String(task?.id || "").trim();
+  const handoff = buildReviewFixTaskHandoff(task, reason, {
+    ...extra,
+    mode: REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH,
+  });
+  const taskId = handoff?.taskId || "";
   if (!taskId) return false;
-  const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
-  const eventType = String(extra.workflowEvent || "task.assigned").trim() || "task.assigned";
   const now = Date.now();
   const existing = reviewRedispatchCooldownByTask.get(taskId);
   if (existing && now - existing.at < REVIEW_REDISPATCH_COOLDOWN_MS) {
@@ -7296,39 +7426,188 @@ function redispatchInReviewTask(task, reason, extra = {}) {
   }
   reviewRedispatchCooldownByTask.set(taskId, {
     at: now,
-    reason: normalizedReason,
+    reason: handoff.reason,
   });
-  const taskTitle = String(task?.title || taskId).trim() || taskId;
-  const branch = String(task?.branchName || task?.branch || extra.branch || "").trim() || null;
-  const worktreePath = String(task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "").trim() || null;
+  persistReviewFixTaskHandoff(taskId, handoff);
+  queueWorkflowEvent(handoff.eventType, handoff.workflowPayload, {
+    dedupKey: `workflow-event:${handoff.eventType}:${taskId}:${handoff.workflowPayload?.taskStatus || "todo"}:${handoff.reason}:${handoff.mode}`,
+  });
+  return true;
+}
+
+function buildReviewFixTaskHandoff(task, reason, extra = {}) {
+  const taskId = String(task?.id || extra?.taskId || "").trim();
+  const taskTitle = String(task?.title || extra?.taskTitle || taskId).trim() || taskId;
+  const normalizedReason = String(reason || "inreview_redispatch").trim() || "inreview_redispatch";
+  const eventType = String(extra.workflowEvent || "task.review_fix_requested").trim() || "task.review_fix_requested";
+  const mode = String(extra.mode || REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH).trim()
+    || REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH;
+  const branchName = String(task?.branchName || task?.branch || extra.branch || extra.branchName || "").trim() || null;
+  const worktreePath = String(
+    task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "",
+  ).trim() || null;
   const prNumber =
     parsePositivePrNumber(extra.prNumber) ||
     parsePositivePrNumber(task?.prNumber) ||
     parsePositivePrNumber(task?.pr_number) ||
     null;
   const prUrl = String(extra.prUrl || task?.prUrl || task?.pr_url || "").trim() || null;
-  const reviewIssues = Array.isArray(extra.reviewIssues)
+  const reviewIssuesSource = Array.isArray(extra.reviewIssues)
     ? extra.reviewIssues
     : (Array.isArray(task?.reviewIssues) ? task.reviewIssues : []);
-  queueWorkflowEvent(
+  const reviewIssues = reviewIssuesSource
+    .map((issue, index) => {
+      if (!issue || typeof issue !== "object") {
+        const description = String(issue || "").trim();
+        return description
+          ? { severity: "major", category: "review", description, order: index }
+          : null;
+      }
+      const normalized = {
+        severity: String(issue.severity || "major").trim() || "major",
+        category: String(issue.category || "review").trim() || "review",
+        file: String(issue.file || issue.path || "").trim() || null,
+        line: parsePositivePrNumber(issue.line) || null,
+        description: String(issue.description || issue.message || issue.body || "").trim() || null,
+        code: String(issue.code || "").trim() || null,
+        source: String(issue.source || issue.kind || "").trim() || null,
+        author: String(issue.author || issue.reviewer || "").trim() || null,
+        url: String(issue.url || "").trim() || null,
+        order: index,
+      };
+      return Object.fromEntries(
+        Object.entries(normalized).filter(([, value]) => value !== null && value !== ""),
+      );
+    })
+    .filter(Boolean);
+  const issueCount = reviewIssues.length;
+  const reviewStatus = String(task?.reviewStatus || extra.reviewStatus || "").trim() || null;
+  const nowIso = String(extra.requestedAt || new Date().toISOString());
+  const requiresNewSession = mode === REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH;
+  const handoffState = requiresNewSession
+    ? REVIEW_FIX_HANDOFF_STATES.SESSION_REBIND_REQUESTED
+    : REVIEW_FIX_HANDOFF_STATES.ACTIVE_SESSION_ATTACHED;
+  const issueSummary = reviewIssues
+    .slice(0, 5)
+    .map((issue) => {
+      const severity = String(issue?.severity || "major");
+      const category = String(issue?.category || "review");
+      const file = String(issue?.file || "(unknown)");
+      const line = Number.isFinite(Number(issue?.line))
+        ? `:${Number(issue.line)}`
+        : "";
+      const description = String(issue?.description || "").trim();
+      return `- [${severity}/${category}] ${file}${line}${description ? ` - ${description}` : ""}`;
+    })
+    .join("\n");
+  const prompt = [
+    `Review requested changes for task "${taskTitle}".`,
+    issueSummary
+      ? `Fix these review issues first:\n${issueSummary}`
+      : "Fix the reported review issues first.",
+    "Stay on the current branch, run relevant tests, commit the fixes, and continue toward PR update.",
+  ].join("\n\n");
+  const reviewFixLifecycle = {
+    mode,
+    state: handoffState,
+    reason: normalizedReason,
+    requestedAt: nowIso,
+    branchName,
+    prNumber,
+    prUrl,
+    reviewIssueCount: issueCount,
+  };
+  const existingMeta = task?.meta && typeof task.meta === "object" ? task.meta : {};
+  const taskPatch = {
+    branchName,
+    prNumber,
+    prUrl,
+    reviewIssues,
+    reviewIssueCount: issueCount,
+    reviewFixDispatchMode: mode,
+    reviewFixState: handoffState,
+    reviewFixRequestedAt: nowIso,
+    reviewStatus: reviewStatus || undefined,
+    meta: {
+      ...existingMeta,
+      reviewFixLifecycle,
+    },
+  };
+  if (requiresNewSession) {
+    taskPatch.status = "todo";
+    taskPatch.sessionId = null;
+    taskPatch.latestSessionId = null;
+  }
+  const workflowTask = {
+    id: taskId,
+    title: taskTitle,
+    status: requiresNewSession ? "todo" : (String(task?.status || "").trim() || "inreview"),
+    branchName,
+    worktreePath,
+    prNumber,
+    prUrl,
+    reviewStatus,
+    reviewIssues,
+    reviewIssueCount: issueCount,
+    reviewFixDispatchMode: mode,
+    reviewFixState: handoffState,
+    reviewFixRequestedAt: nowIso,
+    sessionId: requiresNewSession ? null : (task?.sessionId || null),
+    latestSessionId: requiresNewSession ? null : (task?.latestSessionId || null),
+  };
+  return {
+    taskId,
+    taskTitle,
+    reason: normalizedReason,
     eventType,
-    {
+    mode,
+    prompt,
+    issueCount,
+    reviewIssues,
+    taskPatch,
+    workflowPayload: {
       taskId,
       taskTitle,
-      taskStatus: "inreview",
-      branch,
+      taskStatus: workflowTask.status,
+      branch: branchName,
+      branchName,
       worktreePath,
       prNumber,
       prUrl,
-      reviewStatus: String(task?.reviewStatus || "").trim() || null,
+      reviewStatus,
       reviewIssues,
-      reviewIssueCount: reviewIssues.length,
+      reviewIssueCount: issueCount,
+      reviewFixDispatchMode: mode,
+      reviewFixState: handoffState,
+      reviewFixRequestedAt: nowIso,
       reviewRedispatchReason: normalizedReason,
+      task: workflowTask,
       ...extra,
+      mode,
     },
-    { dedupKey: `workflow-event:${eventType}:${taskId}:inreview:${normalizedReason}` },
-  );
-  return true;
+  };
+}
+
+function persistReviewFixTaskHandoff(taskId, handoff) {
+  if (!taskId || !handoff?.taskPatch) return;
+  const nextStatus = String(handoff.taskPatch.status || "").trim().toLowerCase();
+  if (nextStatus) {
+    try {
+      setInternalTaskStatus(taskId, nextStatus, handoff.reason || "review-fix");
+    } catch {
+      /* best-effort */
+    }
+    try {
+      updateTaskStatus(taskId, nextStatus);
+    } catch {
+      /* best-effort */
+    }
+  }
+  try {
+    updateInternalTask(taskId, handoff.taskPatch);
+  } catch {
+    /* best-effort */
+  }
 }
 
 function isReviewRedispatchCoolingDown(taskId, now = Date.now()) {
@@ -7662,7 +7941,7 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
       if (!attempt.branch) continue;
 
       console.log(
-        `[${tag}] rebasing task "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
+        `[${tag}] refreshing task "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
       );
 
       try {
@@ -7679,7 +7958,7 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
             status: "success",
           });
           console.log(
-            `[${tag}] ✓ rebased "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
+            `[${tag}] ✓ refreshed "${task.title}" (${attempt.id.substring(0, 8)}) onto ${mergedUpstreamBranch}`,
           );
         } else {
           failedCount++;
@@ -7692,10 +7971,10 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
             error,
           });
           console.warn(
-            `[${tag}] ✗ rebase failed for "${task.title}" (${attempt.id.substring(0, 8)}): ${error}`,
+            `[${tag}] ✗ refresh failed for "${task.title}" (${attempt.id.substring(0, 8)}): ${error}`,
           );
 
-          // ── Run task assessment on rebase failure ──────────────
+          // ── Run task assessment on refresh failure ──────────────
           if (branchRouting?.assessWithSdk && agentPoolEnabled) {
             void runTaskAssessment({
               taskId: task.id,
@@ -7723,13 +8002,13 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
           error: err.message || String(err),
         });
         console.warn(
-          `[${tag}] error rebasing "${task.title}": ${err.message || err}`,
+          `[${tag}] error refreshing "${task.title}": ${err.message || err}`,
         );
       }
     }
 
     if (rebasedCount > 0 || failedCount > 0) {
-      const summary = `Downstream rebase after merge to ${mergedUpstreamBranch}: ${rebasedCount} rebased, ${failedCount} failed`;
+      const summary = `Downstream refresh after merge to ${mergedUpstreamBranch}: ${rebasedCount} refreshed, ${failedCount} failed`;
       console.log(`[${tag}] ${summary}`);
       void sendTelegramMessage(
         `:refresh: ${summary}\n${rebaseResults.map((r) => `  ${r.status === "success" ? "✓" : "✗"} ${r.taskTitle}`).join("\n")}`,
@@ -8631,8 +8910,8 @@ function resolveAttemptTargetBranch(attempt, task) {
  * Intelligent multi-step PR creation:
  *
  *   1. Check branch-status → decide action
- *   2. Stale detection: 0 commits AND far behind → rebase first, archive on error
- *   3. Rebase onto main (resolve conflicts automatically if possible)
+ *   2. Stale detection: 0 commits AND far behind → merge-refresh first, archive on error
+ *   3. Refresh onto main (resolve conflicts automatically if possible)
  *   4. Create PR via /pr endpoint
  *   5. Distinguish fast-fail (<2s = worktree issue) vs slow-fail (>30s = prepush)
  *   6. On prepush failure → prompt agent to fix lint/test issues and push
@@ -8748,7 +9027,7 @@ async function smartPRFlow(attemptId, shortId, status) {
       commits_ahead === 0 && !has_uncommitted_changes && commits_behind > 10;
     if (isStale) {
       console.warn(
-        `[monitor] ${tag}: stale attempt — 0 commits, ${commits_behind} behind. Trying rebase first.`,
+        `[monitor] ${tag}: stale attempt — 0 commits, ${commits_behind} behind. Trying merge refresh first.`,
       );
     }
 
@@ -8796,14 +9075,14 @@ async function smartPRFlow(attemptId, shortId, status) {
     }
     const targetBranch = resolveAttemptTargetBranch(attempt, taskData);
 
-    // ── Step 3: Rebase onto target branch ────────────────────────
-    console.log(`[monitor] ${tag}: rebasing onto ${targetBranch}...`);
+    // ── Step 3: Refresh onto target branch ───────────────────────
+    console.log(`[monitor] ${tag}: refreshing onto ${targetBranch}...`);
     const rebaseResult = await rebaseAttempt(attemptId, targetBranch);
 
     if (rebaseResult && !rebaseResult.success) {
       if (isStale) {
         console.warn(
-          `[monitor] ${tag}: stale attempt rebase failed — archiving and reattempting next cycle.`,
+          `[monitor] ${tag}: stale attempt refresh failed — archiving and reattempting next cycle.`,
         );
         await archiveAttempt(attemptId);
         const freshStarted = await attemptFreshSessionRetry(
@@ -8825,7 +9104,7 @@ async function smartPRFlow(attemptId, shortId, status) {
       if (errorData?.type === "merge_conflicts") {
         const files = errorData.conflicted_files || [];
         console.warn(
-          `[monitor] ${tag}: rebase conflicts in ${files.join(", ")} — attempting smart auto-resolve`,
+          `[monitor] ${tag}: merge conflicts in ${files.join(", ")} — attempting smart auto-resolve`,
         );
 
         // Classify conflicted files
@@ -8874,7 +9153,7 @@ async function smartPRFlow(attemptId, shortId, status) {
                 return `  - ${f}: Resolve MANUALLY (inspect both sides, merge intelligently)`;
               })
               .join("\n");
-            const prompt = `You are fixing a git rebase conflict in a worktree.
+            const prompt = `You are fixing a git merge conflict in a worktree.
 Worktree: ${worktreeDir || "(unknown)"}
 Attempt: ${shortId}
 Conflicted files: ${files.join(", ") || "(unknown)"}
@@ -8888,9 +9167,9 @@ Instructions:
    - THEIRS: git checkout --theirs -- <file> && git add <file>
    - OURS: git checkout --ours -- <file> && git add <file>
    - MANUAL: Open the file, remove conflict markers (<<<< ==== >>>>), merge both sides intelligently, then git add <file>
-3) After resolving all files, run: git rebase --continue
+3) After resolving all files, run: git merge --continue
 4) If more conflicts appear, repeat steps 2-3.
-5) Once rebase completes, push the branch: git push --force-with-lease
+5) Once the merge completes, push the branch: git push --force-with-lease
 6) Verify the build still passes if possible.
 Return a short summary of what you did and any files that needed manual resolution.`;
             const codexResult = await runCodexExec(
@@ -8913,7 +9192,7 @@ Return a short summary of what you did and any files that needed manual resoluti
               );
               if (telegramToken && telegramChatId) {
                 void sendTelegramMessage(
-                  `:check: Codex resolved rebase conflicts for ${shortId}. Log: ${logPath}`,
+                  `:check: Codex resolved merge conflicts for ${shortId}. Log: ${logPath}`,
                 );
               }
               return;
@@ -8933,7 +9212,7 @@ Return a short summary of what you did and any files that needed manual resoluti
           );
           if (telegramToken && telegramChatId) {
             void sendTelegramMessage(
-              `:alert: Attempt ${shortId} has unresolvable rebase conflicts: ${files.join(", ")}`,
+              `:alert: Attempt ${shortId} has unresolvable merge conflicts: ${files.join(", ")}`,
             );
           }
           if (primaryAgentReady) {
@@ -9094,7 +9373,7 @@ Return a short summary of what you did and any files that needed manual resoluti
             `1. Navigate to the worktree for this branch\n` +
             `2. Fix any lint, test, or build errors\n` +
             `3. Commit the fixes\n` +
-            `4. Rebase onto main: git pull --rebase origin main\n` +
+            `4. Merge main into the branch: git pull --no-rebase origin main\n` +
             `5. Push: git push --set-upstream origin ${attempt?.branch || shortId}\n` +
             `6. Create a PR targeting main`,
           { timeoutMs: 15 * 60 * 1000 },
@@ -12877,7 +13156,7 @@ function requestManualFullRestart(reason = "manual-telegram-restart") {
   // the caller (cmdRestart) can send the final confirmation message first.
   // The 1.5 s delay below gives the bot time to flush the outbound message.
   setTimeout(() => {
-    stopTelegramBot({ preserveDigest: true });
+    stopTelegramSurfaceAndBot({ preserveDigest: true });
     stopWhatsAppChannel();
     if (isContainerEnabled()) {
       void stopAllContainers().catch(() => {});
@@ -12922,7 +13201,52 @@ function stopSelfWatcher() {
     clearTimeout(selfRestartTimer);
     selfRestartTimer = null;
   }
+  selfWatcherMtimes = new Map();
   pendingSelfRestart = null;
+}
+
+function snapshotSelfWatcherDirMtimes(rootDir) {
+  if (!existsSync(rootDir)) return;
+  try {
+    for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+      const entryPath = resolve(rootDir, entry.name);
+      if (entry.isDirectory()) continue;
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith(".mjs")) continue;
+      try {
+        selfWatcherMtimes.set(entryPath, Number(statSync(entryPath).mtimeMs || 0));
+      } catch {
+        /* best effort */
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function resolveSelfWatcherChangedPath(filename, watchedRoots = []) {
+  const normalizedName = String(filename || "").trim();
+  if (!normalizedName) return null;
+  const isAbsolute = /^[a-zA-Z]:[\\/]|^\//.test(normalizedName);
+  if (isAbsolute) {
+    return resolve(normalizedName);
+  }
+  for (const rootDir of watchedRoots) {
+    const candidate = resolve(rootDir, normalizedName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return watchedRoots.length > 0 ? resolve(watchedRoots[0], normalizedName) : resolve(normalizedName);
+}
+
+function formatSelfWatcherLabel(filePath) {
+  const repoRoot = resolve(__dirname, "..");
+  const normalized = resolve(String(filePath || ""));
+  if (normalized.startsWith(`${repoRoot}\\`) || normalized.startsWith(`${repoRoot}/`)) {
+    return normalized.slice(repoRoot.length + 1).replace(/\\/g, "/");
+  }
+  return normalized.replace(/\\/g, "/");
 }
 
 function getInternalActiveSlotCount() {
@@ -12944,6 +13268,22 @@ function getInternalActiveSlotCount() {
   return 0;
 }
 
+function getActiveWorkflowRunSummaries() {
+  try {
+    if (!workflowAutomationEngine || typeof workflowAutomationEngine.getActiveRuns !== "function") {
+      return [];
+    }
+    const activeRuns = workflowAutomationEngine.getActiveRuns();
+    return Array.isArray(activeRuns) ? activeRuns.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getActiveWorkflowRunCount() {
+  return getActiveWorkflowRunSummaries().length;
+}
+
 function getRuntimeRestartProtection() {
   if (ALLOW_INTERNAL_RUNTIME_RESTARTS) {
     return { defer: false, reason: "" };
@@ -12957,6 +13297,13 @@ function getRuntimeRestartProtection() {
     return {
       defer: true,
       reason: `${activeSlots} internal task agent(s) active`,
+    };
+  }
+  const activeWorkflowRuns = getActiveWorkflowRunCount();
+  if (activeWorkflowRuns > 0) {
+    return {
+      defer: true,
+      reason: `${activeWorkflowRuns} workflow run(s) active`,
     };
   }
   return { defer: false, reason: "" };
@@ -13010,6 +13357,7 @@ function selfRestartForSourceChange(
   // This should never trigger because attemptSelfRestartAfterQuiet() already
   // defers, but provides defense-in-depth against race conditions.
   const activeSlots = getInternalActiveSlotCount();
+  const activeWorkflowRuns = getActiveWorkflowRunCount();
   if (activeSlots > 0 && !forceActiveAgentExit) {
     console.warn(
       `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeSlots} active agent(s)! Deferring instead of killing.`,
@@ -13018,9 +13366,22 @@ function selfRestartForSourceChange(
     selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
     return;
   }
+  if (activeWorkflowRuns > 0 && !forceActiveAgentExit) {
+    console.warn(
+      `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeWorkflowRuns} active workflow run(s)! Deferring instead of killing.`,
+    );
+    pendingSelfRestart = filename;
+    selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
+    return;
+  }
   if (activeSlots > 0 && forceActiveAgentExit) {
     console.warn(
       `[monitor] FORCED self-restart: proceeding with ${activeSlots} active agent(s) after defer hard cap`,
+    );
+  }
+  if (activeWorkflowRuns > 0 && forceActiveAgentExit) {
+    console.warn(
+      `[monitor] FORCED self-restart: proceeding with ${activeWorkflowRuns} active workflow run(s) after defer hard cap`,
     );
   }
   console.log(
@@ -13063,7 +13424,7 @@ function selfRestartForSourceChange(
   runDetachedDuringShutdown("poll-lock-release:self-restart-source-change", () =>
     releaseTelegramPollLock(),
   );
-  stopTelegramBot({ preserveDigest: true });
+  stopTelegramSurfaceAndBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
     runDetachedDuringShutdown("containers-stop:self-restart-source-change", () =>
@@ -13215,6 +13576,41 @@ function attemptSelfRestartAfterQuiet() {
     }
   }
 
+  const activeWorkflowRuns = getActiveWorkflowRunSummaries();
+  if (activeWorkflowRuns.length > 0) {
+    if (!selfRestartFirstDeferredAt) {
+      selfRestartFirstDeferredAt = now;
+    }
+    const deferCount = (selfRestartDeferCount =
+      (selfRestartDeferCount || 0) + 1);
+    const deferElapsedMs = Math.max(0, now - selfRestartFirstDeferredAt);
+    const hitCountCap = deferCount >= SELF_RESTART_DEFER_HARD_CAP;
+    const hitTimeCap = deferElapsedMs >= SELF_RESTART_MAX_DEFER_MS;
+    if (hitCountCap || hitTimeCap) {
+      console.warn(
+        `[monitor] self-restart deferred ${deferCount} times over ${Math.round(deferElapsedMs / 1000)}s while waiting for active workflow runs — restarting anyway`,
+      );
+      selfRestartDeferCount = 0;
+      selfRestartFirstDeferredAt = 0;
+      selfRestartForSourceChange(filename, { forceActiveAgentExit: true });
+      return;
+    }
+    const runNames = activeWorkflowRuns
+      .slice(0, 5)
+      .map((run) => String(run?.workflowName || run?.runId || "workflow").trim())
+      .filter(Boolean)
+      .join(", ");
+    console.log(
+      `[monitor] self-restart deferred — ${activeWorkflowRuns.length} workflow run(s) still active: ${runNames}`,
+    );
+    console.log(
+      `[monitor] will retry restart in 60s (workflow runs must finish first)` +
+        ` (defer #${deferCount}, elapsed ${Math.round(deferElapsedMs / 1000)}s)`,
+    );
+    selfRestartTimer = safeSetTimeout("self-restart-workflow-wait-retry", attemptSelfRestartAfterQuiet, 60_000);
+    return;
+  }
+
   selfRestartDeferCount = 0;
   selfRestartFirstDeferredAt = 0;
   selfRestartForSourceChange(filename);
@@ -13251,22 +13647,41 @@ function startSelfWatcher() {
     return;
   }
   try {
+    const watchedRootPaths = [];
     const handleSourceChange = (_event, filename) => {
       // Only react to .mjs source files
       if (!filename || !filename.endsWith(".mjs")) return;
       // Ignore node_modules and log artifacts
       if (filename.includes("node_modules")) return;
+      const fullPath = resolveSelfWatcherChangedPath(filename, watchedRootPaths);
+      if (!fullPath) return;
+      let newMtime = 0;
+      try {
+        newMtime = Number(statSync(fullPath).mtimeMs || 0);
+      } catch {
+        return;
+      }
+      const prevMtime = Number(selfWatcherMtimes.get(fullPath) || 0);
+      if (newMtime <= prevMtime) {
+        return;
+      }
+      selfWatcherMtimes.set(fullPath, newMtime);
+      const restartLabel = formatSelfWatcherLabel(fullPath);
       if (selfWatcherDebounce) {
         clearTimeout(selfWatcherDebounce);
       }
       selfWatcherDebounce = safeSetTimeout("self-watcher-debounce", () => {
-        queueSelfRestart(filename);
+        queueSelfRestart(restartLabel);
       }, 1000);
     };
     selfWatcher = watch(__dirname, { persistent: true }, handleSourceChange);
+    watchedRootPaths.push(__dirname);
+    snapshotSelfWatcherDirMtimes(__dirname);
     const libDir = resolve(__dirname, "lib");
     if (existsSync(libDir)) {
       selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
+      watchedRootPaths.push(libDir);
+      snapshotSelfWatcherDirMtimes(libDir);
     }
     // Watch sibling source directories that contain runtime-critical modules
     const repoRoot = resolve(__dirname, "..");
@@ -13277,6 +13692,8 @@ function startSelfWatcher() {
       if (existsSync(dirPath)) {
         try {
           selfWatcherExtra.push(watch(dirPath, { persistent: true }, handleSourceChange));
+          watchedRootPaths.push(dirPath);
+          snapshotSelfWatcherDirMtimes(dirPath);
           watchedDirs.push(`${dir}/`);
         } catch {}
       }
@@ -13566,9 +13983,9 @@ function applyConfig(nextConfig, options = {}) {
   if (prevTelegramBotEnabled !== telegramBotEnabled) {
     if (telegramBotEnabled) {
       runDetached("telegram-bot:start-config-reload", () =>
-        startTelegramBot(getTelegramBotStartOptions()));
+        startTelegramSurfaceAndBot(getTelegramBotStartOptions()));
     } else {
-      stopTelegramBot();
+      stopTelegramSurfaceAndBot();
     }
   }
   if (prevCodexEnabled && !codexEnabled) {
@@ -13763,7 +14180,7 @@ process.on("SIGTERM", async () => {
   runDetachedDuringShutdown("poll-lock-release:sigterm", () =>
     releaseTelegramPollLock(),
   );
-  stopTelegramBot();
+  stopTelegramSurfaceAndBot();
   stopWhatsAppChannel();
   if (agentSupervisor) {
     agentSupervisor.stop();
@@ -13898,11 +14315,16 @@ const workflowStartupRecoveryStepDelayMs = Math.max(
   0,
   Number(configWorkflowRecovery?.startupStepDelayMs || 0),
 );
+const workflowStartupHistoryRecoveryDelayMs = Math.max(
+  0,
+  Number(process.env.WORKFLOW_STARTUP_HISTORY_RECOVERY_DELAY_MS || 120_000),
+);
 
-function scheduleStartupWorkflowRecovery(name, handler, step = 0) {
+function scheduleStartupWorkflowRecovery(name, handler, step = 0, extraDelayMs = 0) {
   const delayMs =
     workflowStartupRecoveryGraceMs +
-    Math.max(0, step) * workflowStartupRecoveryStepDelayMs;
+    Math.max(0, step) * workflowStartupRecoveryStepDelayMs +
+    Math.max(0, Number(extraDelayMs) || 0);
   safeSetTimeout(name, handler, delayMs);
 }
 
@@ -14044,6 +14466,14 @@ try {
 }
 
 console.log("[monitor] legacy maintenance sweep removed — use workflow schedules");
+
+safeSetInterval("helper-process-reaper", () => {
+  try {
+    reapStaleBosunHelperProcesses(HELPER_PROCESS_MAX_AGE_MS);
+  } catch (err) {
+    console.warn(`[monitor] helper-process reaper error: ${err?.message || err}`);
+  }
+}, HELPER_PROCESS_REAP_INTERVAL_MS);
 
 safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 
@@ -14225,20 +14655,19 @@ async function syncDivergedWorktrees() {
       if (ahead === 0 || behind === 0) continue;
 
       console.log(
-        `[monitor:worktree-sync] ${branch} diverged: ${ahead} ahead, ${behind} behind — rebasing and pushing`,
+        `[monitor:worktree-sync] ${branch} diverged: ${ahead} ahead, ${behind} behind — merging and pushing`,
       );
 
-      // Rebase local onto remote tracking ref to incorporate remote commits
-      let rebased = false;
+      // Merge local with remote tracking ref to incorporate remote commits
+      let merged = false;
       try {
-        await execAsync(`git rebase ${remoteRef}`, {
+        await execAsync(`git merge --no-edit ${remoteRef}`, {
           cwd: wtPath, timeout: 60_000,
         });
-        rebased = true;
-      } catch (rebaseErr) {
-        try { await execAsync("git rebase --abort", { cwd: wtPath, timeout: 10_000 }); } catch { /* ok */ }
+        merged = true;
+      } catch (mergeErr) {
         console.warn(
-          `[monitor:worktree-sync] ${branch} rebase conflict — skipping push: ${rebaseErr.message?.slice(0, 200)}`,
+          `[monitor:worktree-sync] ${branch} merge conflict — skipping push: ${mergeErr.message?.slice(0, 200)}`,
         );
         failed++;
         continue;
@@ -14249,7 +14678,7 @@ async function syncDivergedWorktrees() {
         const headSha = (await execAsync("git rev-parse HEAD", { cwd: wtPath, timeout: 5_000 })).trim();
         const mainSha = (await execAsync("git rev-parse origin/main", { cwd: wtPath, timeout: 5_000 })).trim();
         if (headSha === mainSha) {
-          console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after rebase — aborting push to prevent PR wipe`);
+          console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after merge — aborting push to prevent PR wipe`);
           failed++;
           continue;
         }
@@ -14565,6 +14994,7 @@ if (!isMonitorTestRuntime) {
           },
         ),
       1,
+      workflowStartupHistoryRecoveryDelayMs,
     );
   } else {
     console.log(
@@ -15074,41 +15504,33 @@ if (isExecutorDisabled()) {
           }
 
           if (hasActiveSession(normalizedTaskId)) {
-            const issueSummary = issueList
-              .slice(0, 5)
-              .map((issue) => {
-                const severity = String(issue?.severity || "major");
-                const category = String(issue?.category || "review");
-                const file = String(issue?.file || "(unknown)");
-                const line = Number.isFinite(Number(issue?.line))
-                  ? `:${Number(issue.line)}`
-                  : "";
-                const description = String(issue?.description || "").trim();
-                return `- [${severity}/${category}] ${file}${line}${description ? ` - ${description}` : ""}`;
-              })
-              .join("\n");
-            const prompt = [
-              `Review requested changes for task "${task?.title || normalizedTaskId}".`,
-              issueSummary
-                ? `Fix these review issues first:\n${issueSummary}`
-                : "Fix the reported review issues first.",
-              "Stay on the current branch, run relevant tests, commit the fixes, and continue toward PR update.",
-            ].join("\n\n");
-            console.log(
-              `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId}`,
+            const handoff = buildReviewFixTaskHandoff(
+              task || { id: normalizedTaskId, title: normalizedTaskId },
+              "review-fix-active-session",
+              {
+                mode: REVIEW_FIX_HANDOFF_MODES.ACTIVE_SESSION_STEERING,
+                reviewIssues: issueList,
+                workflowEvent: "task.review_fix_requested",
+              },
             );
-            steerActiveThread(normalizedTaskId, prompt);
+            persistReviewFixTaskHandoff(normalizedTaskId, handoff);
+            console.log(
+              `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId} ` +
+              `(mode=${handoff.mode} state=${handoff.taskPatch.reviewFixState})`,
+            );
+            steerActiveThread(normalizedTaskId, handoff.prompt);
             return {
               dispatched: true,
-              mode: "active_session",
-              issueCount,
+              mode: handoff.mode,
+              issueCount: handoff.issueCount,
               taskId: normalizedTaskId,
               taskTitle: task?.title || normalizedTaskId,
             };
           }
 
           console.warn(
-            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; re-dispatching inreview session`,
+            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; ` +
+            `re-dispatching inreview session with session rebind`,
           );
           redispatchInReviewTask(task || { id: normalizedTaskId, title: normalizedTaskId }, "review-fix-redispatch", {
             reviewIssueCount: issueCount,
@@ -15117,7 +15539,7 @@ if (isExecutorDisabled()) {
           });
           return {
             dispatched: true,
-            mode: "redispatch",
+            mode: REVIEW_FIX_HANDOFF_MODES.REVIEW_REDISPATCH,
             issueCount,
             taskId: normalizedTaskId,
             taskTitle: task?.title || normalizedTaskId,
@@ -15413,29 +15835,7 @@ injectMonitorFunctions({
   getReviewAgentEnabled: () => isReviewAgentEnabled(),
   getSyncEngine: () => syncEngine,
   getErrorDetector: () => errorDetector,
-  getTuiMonitorStats: () => {
-    try {
-      const executorStats = typeof internalTaskExecutor?.getTuiStats === "function"
-        ? (internalTaskExecutor.getTuiStats() || {})
-        : {};
-      const runtimeStats = getRuntimeStats();
-      const activeSessions = getSessionTracker().listAllSessions({ includePersisted: false })
-        .filter((session) => session?.runtimeIsLive || session?.lifecycleStatus === "active");
-      return buildMonitorStatsPayload({
-        agentPool: {
-          ...executorStats,
-          activeSessions,
-        },
-        runtimeStats: {
-          ...runtimeStats,
-          activeSessions,
-        },
-        uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
-      });
-    } catch {
-      return {};
-    }
-  },
+  getTuiMonitorStats: () => _getTuiMonitorStatsForPortal(),
   getWorkspaceMonitor: () => workspaceMonitor,
   getTaskStoreStats: () => {
     try {
@@ -15452,13 +15852,14 @@ injectMonitorFunctions({
     }
   },
   triggerTaskPlanner,
+  telegramUiRuntime: createTelegramUiRuntime(),
 });
 const portalWantsStart =
   ["1", "true", "yes"].includes(String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase()) ||
   Number(process.env.TELEGRAM_UI_PORT || "0") > 0;
 if (telegramBotEnabled || portalWantsStart) {
   runDetached("telegram-bot:start-startup", () =>
-    startTelegramBot(getTelegramBotStartOptions()));
+    startTelegramSurfaceAndBot(getTelegramBotStartOptions()));
 
   // Process any commands queued by telegram-sentinel while monitor was down
   try {

@@ -22,6 +22,7 @@ import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
+import { buildTaskHierarchyModel, deriveTaskHierarchyView, getTaskHierarchyTaskType } from "../modules/task-hierarchy.js";
 import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Menu, MenuItem, Paper, Tooltip, Badge } from "@mui/material";
 
 const html = htm.bind(h);
@@ -361,6 +362,178 @@ function getTaskDueDate(task) {
   return String(task?.dueDate || task?.due_date || task?.meta?.dueDate || "").trim();
 }
 
+function getHierarchySortOrder(model, id) {
+  return model?.originalOrderById?.get?.(String(id || "")) ?? Number.MAX_SAFE_INTEGER;
+}
+
+function summarizeChildStatusRollup(tasks = []) {
+  const counts = { active: 0, review: 0, blocked: 0, done: 0, backlog: 0 };
+  for (const task of tasks) {
+    const status = String(task?.status || "").toLowerCase();
+    if (COLUMN_MAP.inProgress.includes(status)) counts.active += 1;
+    else if (COLUMN_MAP.inReview.includes(status)) counts.review += 1;
+    else if (COLUMN_MAP.blocked.includes(status)) counts.blocked += 1;
+    else if (COLUMN_MAP.done.includes(status)) counts.done += 1;
+    else counts.backlog += 1;
+  }
+  return [
+    counts.active ? `${counts.active} active` : "",
+    counts.review ? `${counts.review} review` : "",
+    counts.blocked ? `${counts.blocked} blocked` : "",
+    counts.done ? `${counts.done} done` : "",
+    counts.backlog ? `${counts.backlog} backlog` : "",
+  ].filter(Boolean);
+}
+
+export function buildKanbanColumnItems(tasks = [], hierarchyView = null, hierarchyModel = null) {
+  const rows = Array.isArray(tasks) ? [...tasks] : [];
+  const groupedTaskIds = new Set();
+  const coveredHeaderTaskIds = new Set();
+  const groups = new Map();
+  const taskById = hierarchyModel?.taskById || new Map();
+  const epicGroupById = new Map((hierarchyView?.epicGroups || []).map((entry) => [String(entry.id || ""), entry]));
+  rows.sort((left, right) => getHierarchySortOrder(hierarchyModel, left?.id) - getHierarchySortOrder(hierarchyModel, right?.id));
+
+  const ensureGroup = (key, create) => {
+    if (!groups.has(key)) groups.set(key, create());
+    return groups.get(key);
+  };
+
+  for (const task of rows) {
+    const taskId = String(task?.id || "");
+    const node = hierarchyView?.nodeStateById?.get?.(taskId) || null;
+    const parentId = String(node?.meta?.parentTaskId || "");
+    if (parentId && hierarchyView?.nodeStateById?.get?.(parentId)?.isParentNode) {
+      const parentNode = hierarchyView.nodeStateById.get(parentId);
+      const parentTask = taskById.get(parentId) || parentNode?.task || null;
+      const group = ensureGroup(`parent:${parentId}`, () => ({
+        key: `parent:${parentId}`,
+        kind: "parent",
+        parentTask,
+        parentNode,
+        title: parentTask?.title || parentId,
+        children: [],
+      }));
+      if (parentTask?.id) coveredHeaderTaskIds.add(String(parentTask.id));
+      if (taskId === parentId) {
+        coveredHeaderTaskIds.add(taskId);
+        continue;
+      }
+      groupedTaskIds.add(taskId);
+      group.children.push(task);
+      continue;
+    }
+
+    const epicId = String(node?.meta?.epicId || "");
+    const epicGroup = epicId ? epicGroupById.get(epicId) : null;
+    const taskType = getTaskHierarchyTaskType(task, "task");
+    if (epicGroup && epicGroup.visibleTaskCount > 1 && taskType !== "epic") {
+      const anchorTask = epicGroup.anchorTaskId ? taskById.get(epicGroup.anchorTaskId) : null;
+      const group = ensureGroup(`epic:${epicId}`, () => ({
+        key: `epic:${epicId}`,
+        kind: "epic",
+        parentTask: anchorTask,
+        parentNode: anchorTask ? hierarchyView?.nodeStateById?.get?.(String(anchorTask.id)) || null : null,
+        epicGroup,
+        title: epicGroup.label || epicId,
+        children: [],
+      }));
+      if (anchorTask?.id) coveredHeaderTaskIds.add(String(anchorTask.id));
+      if (anchorTask?.id && taskId === String(anchorTask.id)) {
+        coveredHeaderTaskIds.add(taskId);
+        continue;
+      }
+      groupedTaskIds.add(taskId);
+      group.children.push(task);
+    }
+  }
+
+  const items = [];
+  for (const group of groups.values()) {
+    if (!group.children.length) continue;
+    group.children.sort((left, right) => getHierarchySortOrder(hierarchyModel, left?.id) - getHierarchySortOrder(hierarchyModel, right?.id));
+    const groupOrder = group.parentTask?.id
+      ? getHierarchySortOrder(hierarchyModel, group.parentTask.id)
+      : Math.min(...group.children.map((entry) => getHierarchySortOrder(hierarchyModel, entry?.id)));
+    items.push({
+      kind: "group",
+      order: groupOrder,
+      group,
+    });
+  }
+
+  for (const task of rows) {
+    const taskId = String(task?.id || "");
+    if (groupedTaskIds.has(taskId) || coveredHeaderTaskIds.has(taskId)) continue;
+    items.push({
+      kind: "task",
+      order: getHierarchySortOrder(hierarchyModel, taskId),
+      task,
+    });
+  }
+
+  items.sort((left, right) => left.order - right.order);
+  return items;
+}
+
+function getTaskTypeBadgeLabel(taskType) {
+  const normalized = String(taskType || "task").toLowerCase();
+  if (normalized === "epic") return "EPIC";
+  if (normalized === "subtask") return "SUBTASK";
+  return "TASK";
+}
+
+function isTerminalTaskStatus(status) {
+  return ["done", "completed", "closed", "merged", "cancelled"].includes(String(status || "").toLowerCase());
+}
+
+function isBlockedTaskStatus(status) {
+  return ["blocked", "error", "failed"].includes(String(status || "").toLowerCase());
+}
+
+function getKanbanGroupVisibleChildren(group, hierarchyModel = null) {
+  if (!group || !hierarchyModel?.taskById) return [];
+  if (group.kind === "parent") {
+    return (group.parentNode?.visibleChildIds || [])
+      .map((taskId) => hierarchyModel.taskById.get(String(taskId)))
+      .filter(Boolean);
+  }
+  const anchorTaskId = String(group.parentTask?.id || group.epicGroup?.anchorTaskId || "");
+  return (group.epicGroup?.visibleTaskIds || [])
+    .map((taskId) => hierarchyModel.taskById.get(String(taskId)))
+    .filter((task) => {
+      if (!task) return false;
+      const taskId = String(task.id || "");
+      if (anchorTaskId && taskId === anchorTaskId) return false;
+      return getTaskHierarchyTaskType(task, "task") !== "epic";
+    });
+}
+
+function buildKanbanGroupSummary(group, col, hierarchyModel = null) {
+  const parentTask = group?.parentTask || null;
+  const taskType = group?.kind === "epic" ? "epic" : getTaskHierarchyTaskType(parentTask, "task");
+  const visibleChildren = getKanbanGroupVisibleChildren(group, hierarchyModel);
+  const totalChildren = visibleChildren.length || group?.children?.length || 0;
+  const completedCount = visibleChildren.reduce((sum, task) => sum + (isTerminalTaskStatus(task?.status) ? 1 : 0), 0);
+  const blockedCount = visibleChildren.reduce((sum, task) => sum + (isBlockedTaskStatus(task?.status) ? 1 : 0), 0);
+  const collapseKey = group?.kind === "epic"
+    ? (group?.epicGroup?.collapseKey || group?.parentNode?.collapseKey || group?.key)
+    : (group?.parentNode?.collapseKey || group?.key);
+  return {
+    collapseKey,
+    title: String(parentTask?.title || group?.title || "Grouped work").trim(),
+    parentTaskId: String(parentTask?.id || ""),
+    typeLabel: getTaskTypeBadgeLabel(taskType),
+    totalChildren,
+    blockedCount,
+    columnChildCount: group?.children?.length || 0,
+    progressLabel: totalChildren > 0 ? `${completedCount}/${totalChildren} done` : null,
+    statusLabel: parentTask?.status ? getTaskStatusLabel(parentTask.status) : null,
+    columnLabel: group?.children?.length ? `${group.children.length} in ${col?.title || "this column"}` : null,
+    statusRollup: summarizeChildStatusRollup(visibleChildren),
+  };
+}
+
 /* ─── Derived column data ─── */
 const columnData = computed(() => {
   const tasks = tasksData.value || [];
@@ -590,7 +763,7 @@ async function createTaskInColumn(columnStatus, title) {
 }
 
 /* ─── KanbanCard ─── */
-function KanbanCard({ task, onOpen }) {
+function KanbanCard({ task, onOpen, compact = false, nested = false }) {
   const onDragStart = useCallback((e) => {
     dragTaskId.value = task.id;
     e.dataTransfer.effectAllowed = "move";
@@ -694,6 +867,7 @@ function KanbanCard({ task, onOpen }) {
   const blockedPreview = getTaskBlockedPreview(task);
   const prLinkage = getPrimaryTaskPrLinkage(task);
   const sharedReviewIncident = getTaskSharedReviewIncident(task);
+  const taskType = getTaskHierarchyTaskType(task, "task");
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -708,10 +882,28 @@ function KanbanCard({ task, onOpen }) {
   const agentDisplay = hasAgent ? getAgentDisplay(task) : null;
 
   const isDragging = dragTaskId.value === task.id || (touchDragId.value === task.id && _touchMoved);
+  const cardClassName = [
+    "kanban-card",
+    isDragging ? "dragging" : "",
+    compact ? "kanban-card-compact" : "",
+    nested ? "kanban-card-nested" : "",
+    compact ? "kanban-card-checklist" : "",
+  ].filter(Boolean).join(" ");
+  const compactStatusTone = isTerminalTaskStatus(task?.status)
+    ? "done"
+    : isBlockedTaskStatus(task?.status)
+      ? "blocked"
+      : "open";
+  const compactIndicator = compactStatusTone === "done"
+    ? "✓"
+    : compactStatusTone === "blocked"
+      ? "!"
+      : "•";
 
   return html`
     <${Card}
-      className=${`kanban-card ${isDragging ? "dragging" : ""}`}
+      className=${cardClassName}
+      data-task-type=${taskType}
       sx=${{
         cursor: 'pointer',
         mb: 1,
@@ -731,76 +923,176 @@ function KanbanCard({ task, onOpen }) {
         onOpen(task.id);
       }}
     >
-      <${CardContent} sx=${{ p: '10px !important', '&:last-child': { pb: '10px !important' } }}>
-        <${Stack} direction="row" spacing=${0.5} alignItems="center" flexWrap="wrap" sx=${{ mb: 0.5 }}>
-          ${repoName && html`
-            <${Typography} variant="caption" color="text.secondary">${repoName}</${Typography}>
-          `}
-          ${(issueNum || task.pr) && html`
-            <${Typography} variant="caption" color="text.secondary">${task.pr ? '#' + task.pr : '#' + issueNum}</${Typography}>
-          `}
-          ${priorityLabel && html`
-            <${Chip} label=${priorityLabel} size="small" sx=${{ backgroundColor: priorityColor, color: '#fff', height: 18, fontSize: '0.65rem' }} />
-          `}
-          ${runtime?.state === "running" && html`
-            <${Chip} label="LIVE" size="small" color="success" sx=${{ height: 18, fontSize: '0.65rem' }} />
-          `}
-          ${runtime?.state === "queued" && html`
-            <${Chip} label="QUEUED" size="small" color="warning" sx=${{ height: 18, fontSize: '0.65rem' }} />
-          `}
-          ${sharedReviewIncident && html`
-            <${Chip} label=${sharedReviewIncident.label} size="small" color="warning" variant="outlined" sx=${{ height: 18, fontSize: '0.65rem', fontWeight: 700 }} />
-          `}
-        </${Stack}>
-        <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
-        ${task.description && html`
-          <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
-        `}
-        ${sharedReviewIncident && html`
-          <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-warning, #f59e0b)', fontWeight: 600 }}>
-            ${sharedReviewIncident.detail}
-          </${Typography}>
-        `}
-        ${String(task?.status || "").toLowerCase() === "blocked" && html`
-          <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-error, #ef4444)', fontWeight: 600 }}>
-            ${truncate(blockedPreview || "Blocked task. Open details for diagnostics.", 96)}
-          </${Typography}>
-        `}
-        ${(epic || sprint || storyPoints || dueDate) && html`
-          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
-            ${epic && html`<${Chip} label=${`Epic: ${truncate(epic, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-            ${sprint && html`<${Chip} label=${`Sprint: ${truncate(sprint, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-            ${storyPoints && html`<${Chip} label=${`${storyPoints} pts`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-            ${dueDate && html`<${Chip} label=${`Due: ${truncate(dueDate, 18)}`} size="small" variant="outlined" color="warning" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-          </${Stack}>
-        `}
-        ${prLinkage && html`
-          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
-            ${prLinkage.prNumber && html`<${Chip} label=${`PR #${prLinkage.prNumber}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-            ${prLinkage.branchName && html`<${Chip} label=${`Branch: ${truncate(prLinkage.branchName, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-            ${prLinkage.source && html`<${Chip} label=${`PR source: ${truncate(prLinkage.source, 16)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-            ${(prLinkage.freshness || prLinkage.updatedAt || prLinkage.linkedAt) && html`<${Chip} label=${formatPrLinkageFreshnessLabel(prLinkage)} size="small" color=${prLinkage.freshness === "stale" ? "warning" : "success"} sx=${{ height: 20, fontSize: '0.65rem' }} />`}
-          </${Stack}>
-        `}
-        ${baseBranch && html`
-          <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
-        `}
-        ${tags.length > 0 && html`
-          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.5 }}>
-            ${tags.map((tag) => html`<${Chip} key=${tag} label=${'#' + tag} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`)}
-          </${Stack}>
-        `}
-        <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ mt: 0.5 }}>
-          ${agentDisplay && html`
-            <${Tooltip} title=${agentDisplay.label}>
-              <span>${agentDisplay.icon}</span>
-            </${Tooltip}>
-          `}
-          <${Typography} variant="caption" color="text.secondary">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</${Typography}>
-          ${task.created_at && html`<${Typography} variant="caption" color="text.secondary">${formatRelative(task.created_at)}</${Typography}>`}
-        </${Stack}>
+      <${CardContent} sx=${{ p: compact ? '8px !important' : '10px !important', '&:last-child': { pb: compact ? '8px !important' : '10px !important' } }}>
+        ${compact
+          ? html`
+              <div class="kanban-checklist-row">
+                <span class="kanban-checklist-mark kanban-checklist-mark-${compactStatusTone}" aria-hidden="true">${compactIndicator}</span>
+                <div class="kanban-checklist-body">
+                  <div class="kanban-checklist-topline">
+                    <span class="kanban-checklist-type">${getTaskTypeBadgeLabel(taskType)}</span>
+                    <span class="kanban-checklist-title">${truncate(task.title || "(untitled)", 72)}</span>
+                  </div>
+                  <div class="kanban-checklist-meta">
+                    <span>${getTaskStatusLabel(task.status)}</span>
+                    ${(issueNum || task.pr) && html`<span>${task.pr ? '#' + task.pr : '#' + issueNum}</span>`}
+                    ${priorityLabel && html`<span>${priorityLabel}</span>`}
+                    ${task.created_at && html`<span>${formatRelative(task.created_at)}</span>`}
+                    ${agentDisplay && html`
+                      <${Tooltip} title=${agentDisplay.label}>
+                        <span class="kanban-icon-cap">${agentDisplay.icon}</span>
+                      </${Tooltip}>
+                    `}
+                  </div>
+                  ${String(task?.status || "").toLowerCase() === "blocked" && html`
+                    <div class="kanban-checklist-note">${truncate(blockedPreview || "Blocked task. Open details for diagnostics.", 72)}</div>
+                  `}
+                </div>
+              </div>
+            `
+          : html`
+              <${Stack} direction="row" spacing=${0.5} alignItems="center" flexWrap="wrap" sx=${{ mb: 0.5 }}>
+                ${repoName && html`
+                  <${Typography} variant="caption" color="text.secondary">${repoName}</${Typography}>
+                `}
+                ${(issueNum || task.pr) && html`
+                  <${Typography} variant="caption" color="text.secondary">${task.pr ? '#' + task.pr : '#' + issueNum}</${Typography}>
+                `}
+                ${priorityLabel && html`
+                  <${Chip} label=${priorityLabel} size="small" sx=${{ backgroundColor: priorityColor, color: '#fff', height: 18, fontSize: '0.65rem' }} />
+                `}
+                ${runtime?.state === "running" && html`
+                  <${Chip} label="LIVE" size="small" color="success" sx=${{ height: 18, fontSize: '0.65rem' }} />
+                `}
+                ${runtime?.state === "queued" && html`
+                  <${Chip} label="QUEUED" size="small" color="warning" sx=${{ height: 18, fontSize: '0.65rem' }} />
+                `}
+                ${sharedReviewIncident && html`
+                  <${Chip} label=${sharedReviewIncident.label} size="small" color="warning" variant="outlined" sx=${{ height: 18, fontSize: '0.65rem', fontWeight: 700 }} />
+                `}
+              </${Stack}>
+              <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
+              ${task.description && html`
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
+              `}
+              ${sharedReviewIncident && html`
+                <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-warning, #f59e0b)', fontWeight: 600 }}>
+                  ${sharedReviewIncident.detail}
+                </${Typography}>
+              `}
+              ${String(task?.status || "").toLowerCase() === "blocked" && html`
+                <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-error, #ef4444)', fontWeight: 600 }}>
+                  ${truncate(blockedPreview || "Blocked task. Open details for diagnostics.", 96)}
+                </${Typography}>
+              `}
+              ${(epic || sprint || storyPoints || dueDate) && html`
+                <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
+                  ${epic && html`<${Chip} label=${`Epic: ${truncate(epic, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                  ${sprint && html`<${Chip} label=${`Sprint: ${truncate(sprint, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                  ${storyPoints && html`<${Chip} label=${`${storyPoints} pts`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                  ${dueDate && html`<${Chip} label=${`Due: ${truncate(dueDate, 18)}`} size="small" variant="outlined" color="warning" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                </${Stack}>
+              `}
+              ${prLinkage && html`
+                <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
+                  ${prLinkage.prNumber && html`<${Chip} label=${`PR #${prLinkage.prNumber}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                  ${prLinkage.branchName && html`<${Chip} label=${`Branch: ${truncate(prLinkage.branchName, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                  ${prLinkage.source && html`<${Chip} label=${`PR source: ${truncate(prLinkage.source, 16)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                  ${(prLinkage.freshness || prLinkage.updatedAt || prLinkage.linkedAt) && html`<${Chip} label=${formatPrLinkageFreshnessLabel(prLinkage)} size="small" color=${prLinkage.freshness === "stale" ? "warning" : "success"} sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+                </${Stack}>
+              `}
+              ${baseBranch && html`
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
+              `}
+              ${tags.length > 0 && html`
+                <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.5 }}>
+                  ${tags.map((tag) => html`<${Chip} key=${tag} label=${'#' + tag} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`)}
+                </${Stack}>
+              `}
+              <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ mt: 0.5 }}>
+                ${agentDisplay && html`
+                  <${Tooltip} title=${agentDisplay.label}>
+                    <span class="kanban-icon-cap">${agentDisplay.icon}</span>
+                  </${Tooltip}>
+                `}
+                <${Typography} variant="caption" color="text.secondary">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</${Typography}>
+                ${task.created_at && html`<${Typography} variant="caption" color="text.secondary">${formatRelative(task.created_at)}</${Typography}>`}
+              </${Stack}>
+            `}
       </${CardContent}>
     </${Card}>
+  `;
+}
+
+function KanbanGroupShell({
+  group,
+  col,
+  hierarchyModel = null,
+  onOpen,
+  collapsed = false,
+  onToggleCollapse = null,
+  forceExpanded = false,
+}) {
+  const summary = buildKanbanGroupSummary(group, col, hierarchyModel);
+  const isCollapsed = forceExpanded ? false : collapsed;
+  const parentClickable = summary.parentTaskId && typeof onOpen === "function";
+  const shellClassName = [
+    "kanban-group-shell",
+    group?.kind === "epic" ? "kanban-group-shell-epic" : "kanban-group-shell-parent",
+    isCollapsed ? "is-collapsed" : "is-expanded",
+  ].join(" ");
+  const headerContent = html`
+    <span class="kanban-group-shell-type">${summary.typeLabel}</span>
+    <span class="kanban-group-shell-title">${truncate(summary.title, 92)}</span>
+  `;
+
+  return html`
+    <section class=${shellClassName} data-group-kind=${group?.kind || "group"}>
+      <div class="kanban-group-shell-head">
+        <button
+          type="button"
+          class="kanban-group-shell-toggle"
+          aria-expanded=${String(!isCollapsed)}
+          aria-label=${`${isCollapsed ? "Expand" : "Collapse"} ${summary.title}`}
+          onClick=${() => onToggleCollapse?.(summary.collapseKey)}
+        >
+          ${isCollapsed ? "▸" : "▾"}
+        </button>
+        ${parentClickable
+          ? html`
+              <button type="button" class="kanban-group-shell-open" onClick=${() => onOpen(summary.parentTaskId)}>
+                ${headerContent}
+              </button>
+            `
+          : html`<div class="kanban-group-shell-open is-static">${headerContent}</div>`}
+      </div>
+      <div class="kanban-group-shell-pills">
+        ${summary.progressLabel && html`<span class="kanban-group-pill">${summary.progressLabel}</span>`}
+        ${summary.statusLabel && html`<span class="kanban-group-pill">${summary.statusLabel}</span>`}
+        ${summary.columnLabel && html`<span class="kanban-group-pill">${summary.columnLabel}</span>`}
+        ${summary.blockedCount > 0 && html`<span class="kanban-group-pill kanban-group-pill-blocked">${summary.blockedCount} blocked</span>`}
+      </div>
+      ${summary.statusRollup.length > 0 && html`
+        <div class="kanban-group-shell-rollup">
+          ${summary.statusRollup.map((label) => html`<span key=${label} class="kanban-group-rollup-item">${label}</span>`)}
+        </div>
+      `}
+      ${isCollapsed
+        ? html`<div class="kanban-group-shell-collapsed-note">${summary.columnChildCount} child tasks hidden</div>`
+        : html`
+            <div class=${`kanban-group-children ${group?.kind === "epic" ? "kanban-group-children-rich" : "kanban-group-children-checklist"}`}>
+              ${group.children.map((task) => html`
+                <${KanbanCard}
+                  key=${task.id}
+                  task=${task}
+                  onOpen=${onOpen}
+                  compact=${group?.kind !== "epic"}
+                  nested=${true}
+                />
+              `)}
+            </div>
+          `}
+    </section>
   `;
 }
 
@@ -808,7 +1100,12 @@ function KanbanCard({ task, onOpen }) {
 function KanbanColumn({
   col,
   tasks,
+  hierarchyView = null,
+  hierarchyModel = null,
   onOpen,
+  collapsedGroups = {},
+  onToggleGroupCollapse = null,
+  forceExpanded = false,
   totalCount = 0,
   hasMoreTasks = false,
   loadingMoreTasks = false,
@@ -964,6 +1261,10 @@ function KanbanColumn({
 
   const isOver = dragOverCol.value === col.id || touchOverCol.value === col.id;
   const liveCount = tasks.length;
+  const columnItems = useMemo(
+    () => buildKanbanColumnItems(tasks, hierarchyView, hierarchyModel),
+    [tasks, hierarchyView, hierarchyModel],
+  );
   const serverCount = Number.isFinite(Number(totalCount)) && Number(totalCount) > 0 ? Number(totalCount) : 0;
   const countLabel = hasMoreTasks
     ? (serverCount > liveCount ? `${liveCount}/${serverCount}` : `${liveCount}+`)
@@ -999,10 +1300,27 @@ function KanbanColumn({
             sx=${{ mb: 1 }}
           />
         `}
-        ${tasks.length
-          ? tasks.map((task) => html`
-              <${KanbanCard} key=${task.id} task=${task} onOpen=${onOpen} />
-            `)
+        ${columnItems.length
+          ? columnItems.map((item) => item.kind === "group"
+            ? html`
+                <${KanbanGroupShell}
+                  key=${item.group.key}
+                  group=${item.group}
+                  col=${col}
+                  hierarchyModel=${hierarchyModel}
+                  onOpen=${onOpen}
+                  collapsed=${collapsedGroups?.[buildKanbanGroupSummary(item.group, col, hierarchyModel).collapseKey] === true}
+                  onToggleCollapse=${onToggleGroupCollapse}
+                  forceExpanded=${forceExpanded}
+                />
+              `
+            : html`
+                <${KanbanCard}
+                  key=${item.task.id}
+                  task=${item.task}
+                  onOpen=${onOpen}
+                />
+              `)
           : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
         ${hasMoreTasks && html`
@@ -1161,12 +1479,19 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "", hierarchyModel = null, tasks = null }) {
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const [hydratedWorkspaceScope, setHydratedWorkspaceScope] = useState(workspaceScope);
   const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
-  const allTasks = tasksData.value || [];
+  const [collapsedGroups, setCollapsedGroups] = useState({});
+  const allTasks = Array.isArray(tasks) ? tasks : (tasksData.value || []);
   const boardTasksLoaded = Boolean(tasksLoaded.value);
+  const sharedHierarchyModel = useMemo(
+    () => hierarchyModel && typeof hierarchyModel === "object"
+      ? hierarchyModel
+      : buildTaskHierarchyModel(allTasks),
+    [allTasks, hierarchyModel],
+  );
   const knownRepos = useMemo(() => {
     const repos = new Set();
     for (const task of allTasks) {
@@ -1211,22 +1536,26 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     persistBoardFilters({ workspaceId: workspaceScope, filters });
   }, [workspaceScope, hydratedWorkspaceScope, filters]);
 
-  const filteredTasks = useMemo(() => {
-    let tasks = allTasks;
-    if (filters.repo) tasks = tasks.filter((t) => (t.repo || t.repository) === filters.repo);
-    if (filters.assignee) tasks = tasks.filter((t) => t.assignee === filters.assignee);
-    if (filters.priority) tasks = tasks.filter((t) => t.priority === filters.priority);
-    if (filters.search) {
-      const q = filters.search.toLowerCase();
-      tasks = tasks.filter((t) =>
-        (t.title || "").toLowerCase().includes(q) ||
-        (t.id || "").toString().toLowerCase().includes(q) ||
-        (t.repo || "").toLowerCase().includes(q) ||
-        (t.assignee || "").toLowerCase().includes(q)
-      );
-    }
-    return tasks;
-  }, [allTasks, filters]);
+  const hierarchyView = useMemo(() => deriveTaskHierarchyView(sharedHierarchyModel, {
+    matchTask: (task) => {
+      if (filters.repo && (task?.repo || task?.repository) !== filters.repo) return false;
+      if (filters.assignee && task?.assignee !== filters.assignee) return false;
+      if (filters.priority && task?.priority !== filters.priority) return false;
+      if (filters.search) {
+        const q = filters.search.toLowerCase();
+        const searchDoc = `${task?.title || ""} ${task?.description || ""} ${task?.id || ""} ${task?.repo || task?.repository || ""} ${task?.assignee || ""}`.toLowerCase();
+        if (!searchDoc.includes(q)) return false;
+      }
+      return true;
+    },
+  }), [filters, sharedHierarchyModel]);
+
+  const filteredTasks = useMemo(
+    () => [...hierarchyView.visibleTaskIds]
+      .map((taskId) => sharedHierarchyModel.taskById.get(taskId))
+      .filter(Boolean),
+    [hierarchyView.visibleTaskIds, sharedHierarchyModel],
+  );
 
   const cols = useMemo(() => {
     const result = {};
@@ -1243,6 +1572,13 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     ? Number(totalTasks)
     : allTasks.length;
   const autoLoadMore = !hasBoardFilters && resolvedTotalTasks <= AUTO_LOAD_MAX_TASKS;
+  const toggleGroupCollapse = useCallback((collapseKey) => {
+    if (!collapseKey) return;
+    setCollapsedGroups((prev) => ({
+      ...prev,
+      [collapseKey]: !prev[collapseKey],
+    }));
+  }, []);
 
   return html`
     <${Box} className="kanban-container">
@@ -1257,6 +1593,8 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
             key=${col.id}
             col=${col}
             tasks=${cols[col.id] || []}
+            hierarchyView=${hierarchyView}
+            hierarchyModel=${sharedHierarchyModel}
             totalCount=${columnTotals?.[col.id] ?? (cols[col.id] || []).length}
             hasMoreTasks=${hasMoreTasks}
             loadingMoreTasks=${loadingMoreTasks}
@@ -1264,6 +1602,9 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
             autoLoadMore=${autoLoadMore}
             globalTaskCount=${allTasks.length}
             onOpen=${onOpenTask}
+            collapsedGroups=${collapsedGroups}
+            onToggleGroupCollapse=${toggleGroupCollapse}
+            forceExpanded=${hasBoardFilters}
           />
         `)}
       </${Box}>

@@ -631,6 +631,94 @@
   }
 }
 
+.inspector-collapse-btn {
+  align-self: flex-end;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin: 10px 10px 0 auto;
+}
+
+.inspector-collapse-btn:hover,
+.inspector-collapse-btn:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.app-breadcrumbs {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: 12px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.app-breadcrumb-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.app-breadcrumb-part span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.app-breadcrumb-separator {
+  opacity: 0.55;
+}
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .app-tablet-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main";
+  }
+
+  :root[data-desktop="true"] .app-shell,
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main";
+  }
+
+  .app-main {
+    grid-area: main;
+    min-width: 0;
+  }
+
+  .main-panel {
+    min-width: 0;
+  }
+
+  .app-shell[data-has-rail="true"] .session-rail,
+  .app-shell[data-has-inspector="true"] .inspector {
+    display: none;
+  }
+
+  .bottom-nav {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-breadcrumbs {
+    display: none;
+  }
+
+  .app-header-status-stack {
+    gap: 4px !important;
+  }
+}
+
 @media (min-width: 768px) {
   .main-content {
     padding-top: 20px;
@@ -1476,6 +1564,16 @@
 }
 
 @media (min-width: 1200px) {
+  .app-desktop-grid {
+    display: grid;
+    grid-template-columns: var(--sidebar-width, 240px) minmax(0, 1fr) var(--inspector-width, 320px);
+    grid-template-areas: "sidebar main inspector";
+  }
+
+  .app-breadcrumbs {
+    display: inline-flex;
+  }
+
   /* Desktop: bottom nav is hidden, so remove reserved chat bottom padding. */
   .app-shell[data-tab="chat"] .main-content {
     padding-bottom: 0;
@@ -1490,6 +1588,10 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  .bottom-nav {
+    display: none;
   }
 }
 

@@ -33,7 +33,6 @@
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import {
-  copyFile,
   mkdir,
   readFile,
   rename,
@@ -71,6 +70,8 @@ const CACHE_DIR = ".cache/bosun";
 const DEFAULT_OWNER_STALE_TTL_MS = 10 * 60 * 1000;
 const FS_RETRY_DELAY_MS = 40;
 const FS_RETRY_MAX = 4;
+const CLAIMS_REPLACE_RETRY_DELAY_MS = 100;
+const CLAIMS_REPLACE_RETRY_MAX = 20;
 
 // Shared state configuration from environment
 const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false"; // default true
@@ -94,6 +95,19 @@ const state = {
   claimsPath: null,
   auditPath: null,
 };
+
+function normalizeRepoRoot(repoRoot) {
+  const candidate = String(repoRoot || "").trim();
+  return candidate ? resolve(candidate) : "";
+}
+
+async function ensureRepoContext(repoRoot) {
+  const normalizedRepoRoot = normalizeRepoRoot(repoRoot);
+  if (!normalizedRepoRoot) return;
+  if (!state.initialized || normalizeRepoRoot(state.repoRoot) !== normalizedRepoRoot) {
+    await initTaskClaims({ repoRoot: normalizedRepoRoot });
+  }
+}
 
 // ── In-process mutex ─────────────────────────────────────────────────────────
 // Serializes all load→modify→save cycles on the claims registry to prevent
@@ -309,36 +323,41 @@ async function saveClaimsRegistry(registry) {
   const tmpPath = `${state.claimsPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
   await writeFile(tmpPath, payload, { encoding: "utf8", flush: true });
   try {
-    await retryFsOperation(() => rename(tmpPath, state.claimsPath));
+    await retryFsOperation(
+      () => rename(tmpPath, state.claimsPath),
+      { maxRetries: CLAIMS_REPLACE_RETRY_MAX, delayMs: CLAIMS_REPLACE_RETRY_DELAY_MS },
+    );
     persisted = true;
   } catch (err) {
     const reason = err?.message || err;
-    // On Windows, rename can fail when the destination file is in use.
     try {
-      await retryFsOperation(() => copyFile(tmpPath, state.claimsPath));
-      persisted = true;
-      console.warn(
-        `[task-claims] Atomic rename failed (${reason}); copied temp file into place.`,
-      );
-    } catch (copyErr) {
-      const copyReason = copyErr?.message || copyErr;
-      await retryFsOperation(() =>
-        writeFile(state.claimsPath, payload, { encoding: "utf8", flush: true }),
-      );
-      persisted = true;
-      console.warn(
-        `[task-claims] Atomic rename failed (${reason}); copy fallback failed (${copyReason}); wrote registry directly.`,
-      );
-    } finally {
-      try {
-        await unlink(tmpPath);
-      } catch {
-        /* best effort */
-      }
+      await unlink(tmpPath);
+    } catch {
+      /* best effort */
     }
+    throw new Error(
+      `[task-claims] Failed to replace claims registry atomically (${reason}). Refusing non-atomic overwrite to avoid corrupting ${state.claimsPath}.`,
+    );
   }
 
-  if (!persisted) return;
+  if (!persisted) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      /* best effort */
+    }
+    return;
+  }
+
+  try {
+    await unlink(tmpPath);
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      console.warn(
+        `[task-claims] Temporary registry cleanup warning: ${err?.message || err}`,
+      );
+    }
+  }
   try {
     syncTaskClaimsRegistryToStateLedger(registry, { repoRoot: state.repoRoot });
   } catch (err) {
@@ -431,6 +450,25 @@ function isProcessAlive(pid) {
   }
 }
 
+async function noteClaimOwnerPresence(instanceId, metadata = {}, source = "task-claim") {
+  const normalizedInstanceId = String(instanceId || "").trim();
+  if (!normalizedInstanceId) return;
+  const pid = Number(metadata?.pid);
+  try {
+    const presence = {
+      ...(buildLocalPresence() || {}),
+      instance_id: normalizedInstanceId,
+      host: metadata?.host || os.hostname(),
+      pid: Number.isFinite(pid) && pid > 0 ? pid : process.pid,
+    };
+    if (presence?.instance_id) {
+      await notePresence(presence, { source });
+    }
+  } catch (err) {
+    console.warn(`[task-claims] presence note warning for ${normalizedInstanceId}: ${err?.message || err}`);
+  }
+}
+
 function shouldTreatClaimAsStale(claim, ownerStaleTtlMs) {
   if (!claim || !claim.instance_id) {
     return { stale: false, reason: null };
@@ -494,6 +532,34 @@ function sweepExpiredClaims(registry, now = new Date()) {
     }
   }
   return { registry, expiredCount };
+}
+
+function sweepInactiveClaims(
+  registry,
+  {
+    now = new Date(),
+    includeExpired = false,
+    ownerStaleTtlMs = DEFAULT_OWNER_STALE_TTL_MS,
+  } = {},
+) {
+  let expiredCount = 0;
+  let staleCount = 0;
+
+  for (const [taskId, claim] of Object.entries(registry.claims || {})) {
+    if (!includeExpired && isClaimExpired(claim, now)) {
+      delete registry.claims[taskId];
+      expiredCount += 1;
+      continue;
+    }
+
+    const staleCheck = shouldTreatClaimAsStale(claim, ownerStaleTtlMs);
+    if (staleCheck.stale) {
+      delete registry.claims[taskId];
+      staleCount += 1;
+    }
+  }
+
+  return { registry, expiredCount, staleCount };
 }
 
 // ── Duplicate Claim Resolution ───────────────────────────────────────────────
@@ -611,6 +677,7 @@ function resolveDuplicateClaim(existingClaim, newClaim, opts = {}) {
  * @returns {Promise<object>} { success, token, claim?, error?, resolution? }
  */
 export async function claimTask(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   return withRegistryLock(() => _claimTaskInner(opts));
 }
@@ -771,6 +838,8 @@ async function _claimTaskInner(opts) {
       return { success: false, error: sharedSync.error };
     }
 
+    await noteClaimOwnerPresence(instanceId, claimMetadata, "task-claim");
+
     return { success: true, token: claimToken, claim: newClaim };
   }
 
@@ -803,6 +872,8 @@ async function _claimTaskInner(opts) {
     if (!sharedSync.success) {
       return { success: false, error: sharedSync.error };
     }
+
+    await noteClaimOwnerPresence(instanceId, claimMetadata, "task-claim-override");
 
     return {
       success: true,
@@ -842,6 +913,8 @@ async function _claimTaskInner(opts) {
     if (!sharedSync.success) {
       return { success: false, error: sharedSync.error };
     }
+
+    await noteClaimOwnerPresence(instanceId, claimMetadata, "task-claim-override");
 
     return {
       success: true,
@@ -888,6 +961,7 @@ async function _claimTaskInner(opts) {
  * @returns {Promise<object>} { success, error? }
  */
 export async function releaseTask(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   return withRegistryLock(() => _releaseTaskInner(opts));
 }
@@ -974,6 +1048,7 @@ async function _releaseTaskInner(opts) {
  * @returns {Promise<object>} { success, claim?, error? }
  */
 export async function renewClaim(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   return withRegistryLock(() => _renewClaimInner(opts));
 }
@@ -1022,10 +1097,7 @@ async function _renewClaimInner(opts) {
   // Refresh our own presence so shouldTreatClaimAsStale() continues to
   // see this instance as active between fleet-sync intervals.
   try {
-    const selfPresence = buildLocalPresence();
-    if (selfPresence?.instance_id) {
-      await notePresence(selfPresence, { source: "claim-renew" });
-    }
+    await noteClaimOwnerPresence(instanceId, claim.metadata || {}, "claim-renew");
   } catch {
     /* best-effort — don't fail the renewal for a presence write error */
   }
@@ -1089,7 +1161,8 @@ async function _renewClaimInner(opts) {
  * @param {string} taskId - Task ID
  * @returns {Promise<object|null>} Claim object or null
  */
-export async function getClaim(taskId) {
+export async function getClaim(taskId, opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   const registry = await loadClaimsRegistry();
   return registry.claims[taskId] || null;
@@ -1104,14 +1177,25 @@ export async function getClaim(taskId) {
  * @returns {Promise<Array<object>>} Array of claim objects
  */
 export async function listClaims(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
-  const { instanceId, includeExpired = false } = opts;
+  const {
+    instanceId,
+    includeExpired = false,
+    ownerStaleTtlMs = parseDuration(
+      opts.ownerStaleTtlMs ?? process.env.TASK_CLAIM_OWNER_STALE_TTL_MS,
+      DEFAULT_OWNER_STALE_TTL_MS,
+    ),
+  } = opts;
 
   let registry = await loadClaimsRegistry();
-
-  if (!includeExpired) {
-    const sweepResult = sweepExpiredClaims(registry);
-    registry = sweepResult.registry;
+  const sweepResult = sweepInactiveClaims(registry, {
+    includeExpired,
+    ownerStaleTtlMs,
+  });
+  registry = sweepResult.registry;
+  if (sweepResult.expiredCount > 0 || sweepResult.staleCount > 0) {
+    await saveClaimsRegistry(registry);
   }
 
   let claims = Object.values(registry.claims);
@@ -1129,9 +1213,10 @@ export async function listClaims(opts = {}) {
  * @param {string} taskId - Task ID
  * @returns {Promise<boolean>} True if claimed (and not expired)
  */
-export async function isTaskClaimed(taskId) {
+export async function isTaskClaimed(taskId, opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
-  const claim = await getClaim(taskId);
+  const claim = await getClaim(taskId, opts);
   if (!claim) return false;
   return !isClaimExpired(claim);
 }
@@ -1141,7 +1226,8 @@ export async function isTaskClaimed(taskId) {
  *
  * @returns {Promise<object>} Statistics object
  */
-export async function getClaimStats() {
+export async function getClaimStats(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   const registry = await loadClaimsRegistry();
   const now = new Date();
@@ -1173,6 +1259,7 @@ export async function getClaimStats() {
 // For testing
 export const _test = {
   sweepExpiredClaims,
+  sweepInactiveClaims,
   resolveDuplicateClaim,
   isClaimExpired,
   loadClaimsRegistry,
@@ -1181,4 +1268,3 @@ export const _test = {
   retryFsOperation,
   isRetriableFsError,
 };
-

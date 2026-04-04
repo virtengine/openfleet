@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -9,8 +10,10 @@ import {
   isDirectExecution,
   resolveVitestArgs,
 } from "../tools/vitest-runner.mjs";
+import { buildVitestBatchArgs, buildVitestFullSuitePlan } from "../tools/vitest-full-suite.mjs";
 
 const tempDirs = [];
+const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function createFixture() {
   const root = mkdtempSync(resolve(tmpdir(), "bosun-vitest-runner-"));
@@ -26,14 +29,14 @@ afterEach(() => {
 
 describe("vitest-runner", () => {
   it("keeps the pre-push adjacency map aligned with newer non-prefixed suites", () => {
-    const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
+    const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
 
     expect(prePushHook).toContain('"workflow/|workflow-*|workflow-task-lifecycle*|workflow-write-file-encoding*|workflow-pipeline-primitives*|workflow-research-evidence-sidecar*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|state-ledger-sqlite*|webhook-gateway*|credential-store*|cron-scheduler*"');
-    expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"');
-    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*"');
-    expect(prePushHook).toContain('"telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"');
+    expect(prePushHook).toContain('"infra/|monitor-*|heartbeat-monitor*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tracing*|tui-bridge*|windows-hidden-child-processes*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*|session-telemetry*"');
+    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*|internal-harness*|harness-runtime*|harness-surface-integration*|provider-kernel*|provider-kernel-support*|session-manager*|tool-governance-support*|tool-orchestrator*"');
+    expect(prePushHook).toContain('"telegram/|telegram-*|harness-surface-integration*|whatsapp-*|weekly-agent-work-report*|harness-surface-clients*"');
     expect(prePushHook).toContain('"task/|task-*|workflow-task-lifecycle*|kanban-*|state-ledger-sqlite*|ve-orchestrator*|vk-api*|ve-kanban*"');
-    expect(prePushHook).toContain('"lib/|logger*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*"');
+    expect(prePushHook).toContain('"lib/|logger*|log-tail*|utils*|library-*|error-detector*|context-*|codebase-audit*|repo-map*|state-ledger-sqlite*|hot-path-runtime*"');
   });
   it("finds vitest from an ancestor node_modules directory", () => {
     const root = createFixture();
@@ -93,23 +96,129 @@ describe("vitest-runner", () => {
   });
 
   it("routes package test scripts through the worktree-safe runner", () => {
-    const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
 
-    expect(packageJson.scripts.test).toContain("tools/vitest-runner.mjs");
-    expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts.test).toContain("tools/vitest-full-suite.mjs");
+    expect(packageJson.scripts["test:quick"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts["test:vitest"]).toContain("tools/vitest-full-suite.mjs");
+    expect(packageJson.scripts["test:watch"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts["test:voice-provider-smoke"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts["check:native-call-parity"]).toContain("tools/vitest-runner.mjs");
+    expect(packageJson.scripts["prepush:check"]).toContain("npm run test:all");
+    expect(packageJson.scripts["test:node"]).toContain("--no-warnings=ExperimentalWarning");
     expect(packageJson.scripts.test).not.toContain("node_modules/vitest/vitest.mjs");
+    expect(packageJson.scripts["test:quick"]).not.toContain("node_modules/vitest/vitest.mjs");
     expect(packageJson.scripts["test:vitest"]).not.toContain("node_modules/vitest/vitest.mjs");
   });
 
-  it("routes the pre-push hook through the worktree-safe runner", () => {
-    const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
+  it("isolates heavyweight suites from the grouped full-suite batch", () => {
+    const previous = process.env.BOSUN_VITEST_INCLUDE_GUARANTEED;
+    delete process.env.BOSUN_VITEST_INCLUDE_GUARANTEED;
+    const { groupedSuites, heavySuites } = buildVitestFullSuitePlan({ startDir: repoRoot });
 
-    expect(prePushHook).toContain("node tools/vitest-runner.mjs run --config vitest.config.mjs");
+    expect(heavySuites).toContain("tests/workflow-engine.test.mjs");
+    expect(heavySuites).toContain("tests/workflow-templates-e2e.test.mjs");
+    expect(groupedSuites).not.toContain("tests/workflow-engine.test.mjs");
+    expect(groupedSuites).not.toContain("tests/workflow-templates-e2e.test.mjs");
+    if (process.platform === "win32") {
+      expect(heavySuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+      expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+    } else {
+      expect(heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
+      expect(groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+    }
+    expect(groupedSuites.length + heavySuites.length).toBeGreaterThan(0);
+
+    process.env.BOSUN_VITEST_INCLUDE_GUARANTEED = "1";
+    const explicitPlan = buildVitestFullSuitePlan({ startDir: repoRoot });
+    expect(explicitPlan.heavySuites).toContain("tests/workflow-guaranteed.test.mjs");
+    expect(explicitPlan.groupedSuites).not.toContain("tests/workflow-guaranteed.test.mjs");
+
+    if (previous == null) delete process.env.BOSUN_VITEST_INCLUDE_GUARANTEED;
+    else process.env.BOSUN_VITEST_INCLUDE_GUARANTEED = previous;
+  });
+
+  it("builds full-suite vitest batches without unsupported minWorkers flags", () => {
+    expect(
+      buildVitestBatchArgs(["tests/workflow-engine.test.mjs"], { maxWorkers: 1 }),
+    ).toEqual([
+      "run",
+      "--config",
+      "vitest.config.mjs",
+      "--maxWorkers",
+      "1",
+      "tests/workflow-engine.test.mjs",
+    ]);
+  });
+
+  it("caps grouped full-suite worker fan-out on Windows by default", () => {
+    const source = readFileSync(resolve(repoRoot, "tools", "vitest-full-suite.mjs"), "utf8");
+    expect(source).toContain('process.env.BOSUN_VITEST_MAX_WORKERS || (process.platform === "win32" ? "4" : "")');
+    expect(source).toContain('process.env.BOSUN_VITEST_GROUP_BATCH_SIZE || (process.platform === "win32" ? "12" : "0")');
+    expect(source).toContain('process.env.BOSUN_VITEST_WORKFLOW_GUARANTEED_SHARDS || ""');
+    expect(source).toContain('VITEST_TOTAL_SHARDS');
+  });
+
+  it("routes the pre-push hook through the worktree-safe runner", () => {
+    const prePushHook = readFileSync(resolve(repoRoot, ".githooks", "pre-push"), "utf8");
+
+    expect(prePushHook).toContain('local -a runner_args=(run --config vitest.config.mjs)');
+    expect(prePushHook).toContain('local -a serialized_runner_args=("${runner_args[@]}" --maxWorkers 1)');
+    expect(prePushHook).toContain('local -a regular_runner_args=("${runner_args[@]}")');
+    expect(prePushHook).toContain('node tools/vitest-runner.mjs "${serialized_runner_args[@]}"');
+    expect(prePushHook).toContain('node tools/vitest-runner.mjs "${regular_runner_args[@]}"');
+    expect(prePushHook).toContain('BOSUN_PREPUSH_RUN_PACKED_SMOKE');
+    expect(prePushHook).toContain('BOSUN_PREPUSH_INCLUDE_HEAVY');
+    expect(prePushHook).toContain('BOSUN_RUN_HEAVY_TESTS');
+    expect(prePushHook).toContain('tests/workflow-templates-e2e.test.mjs)');
+    expect(prePushHook).toContain('deferring heavyweight local suites to CI/default full runs');
+    expect(prePushHook).toContain('tests/*workflow*e2e*.test.mjs)');
+    expect(prePushHook).toContain('tests/bosun-mcp-server.test.mjs|tests/ui-server*.test.mjs)');
+    expect(prePushHook).toContain('local -a slice=("${regular_tests[@]:$offset:$batch_size}")');
+    expect(prePushHook).toContain('local -a slice=("${tests[@]:$offset:$batch_size}")');
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
   });
 
+  it("keeps the slow template full-pipeline execution opt-in for local runs", () => {
+    const source = readFileSync(resolve(repoRoot, "tests", "workflow-templates-e2e.test.mjs"), "utf8");
+
+    expect(source).toContain('import { isCiOnlyTestRun } from "./test-speed-gates.mjs";');
+    expect(source).toContain("const runFullTemplatePipelineE2E = isCiOnlyTestRun;");
+    expect(source).toContain("const fullPipelineIt = runFullTemplatePipelineE2E ? it : it.skip;");
+    expect(source).toContain('fullPipelineIt("installs and executes every template in sequence without cross-contamination"');
+  });
+
+  it("keeps the local speed-gate helper wired for CI-only tests", () => {
+    const source = readFileSync(resolve(repoRoot, "tests", "test-speed-gates.mjs"), "utf8");
+
+    expect(source).toContain('process.env.GITHUB_ACTIONS === "true" || process.env.CI === "true"');
+    expect(source).toContain("export const skipLocallyForSpeed = !isCiOnlyTestRun;");
+  });
+
+  it("scopes file discovery and splits fast versus isolated Vitest projects", () => {
+    const source = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
+
+    expect(source).toContain('dir: "tests"');
+    expect(source).toContain('fsModuleCache: process.env.BOSUN_VITEST_FS_CACHE !== "0"');
+    expect(source).toContain('name: "fast"');
+    expect(source).toContain('pool: "threads"');
+    expect(source).toContain('isolate: process.env.BOSUN_VITEST_FAST_ISOLATE === "1"');
+    expect(source).toContain('name: "isolated"');
+    expect(source).toContain('pool: "forks"');
+    expect(source).toContain('include: isolatedProjectSuites');
+  });
+
+  it("keeps workflow-template e2e command and agent nodes shimmed for local determinism", () => {
+    const source = readFileSync(resolve(repoRoot, "tests", "workflow-templates-e2e.test.mjs"), "utf8");
+
+    expect(source).toContain('registerForE2E("action.run_command"');
+    expect(source).toContain('registerForE2E("action.run_agent"');
+    expect(source).toContain("Execute a deterministic command result for e2e tests");
+    expect(source).toContain("Return deterministic agent output for e2e tests");
+  });
+
   it("detects direct execution for Windows-style script paths", () => {
-    const scriptPath = resolve(process.cwd(), "tools", "vitest-runner.mjs");
+    const scriptPath = resolve(repoRoot, "tools", "vitest-runner.mjs");
 
     expect(
       isDirectExecution([process.execPath, scriptPath]),
@@ -149,15 +258,34 @@ describe("vitest-runner", () => {
   });
 
   it("includes the Windows realpath shim for Vitest child processes", () => {
-    const source = readFileSync(resolve(process.cwd(), "tools", "vitest-runner.mjs"), "utf8");
+    const source = readFileSync(resolve(repoRoot, "tools", "vitest-runner.mjs"), "utf8");
     expect(source).toContain("vite-windows-realpath-shim.mjs");
     expect(source).toContain('nodeArgs.push("--import"');
+    expect(source).toContain('--no-warnings=ExperimentalWarning');
+    expect(source).toContain("--max-old-space-size=");
+    expect(source).toContain("BOSUN_VITEST_HEAP_MB");
   });
 
   it("patches net use probes for Windows realpath handling", () => {
-    const source = readFileSync(resolve(process.cwd(), "tools", "vite-windows-realpath-shim.mjs"), "utf8");
+    const source = readFileSync(resolve(repoRoot, "tools", "vite-windows-realpath-shim.mjs"), "utf8");
     expect(source).toContain("childProcess.exec = function patchedExec");
     expect(source).toContain('normalizedCommand === "net use"');
     expect(source).toContain("syncBuiltinESMExports()");
+  });
+
+  it("keeps demo-default syncing out of Vitest global setup", () => {
+    const source = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
+
+    expect(source).not.toContain("globalSetup");
+    expect(source).not.toContain("syncDemoDefaults");
+  });
+
+  it("keeps child-spawn detection out of the per-file test setup", () => {
+    const configSource = readFileSync(resolve(repoRoot, "vitest.config.mjs"), "utf8");
+    const setupSource = readFileSync(resolve(repoRoot, "tests", "setup.mjs"), "utf8");
+
+    expect(configSource).toContain("function detectBlockedChildSpawn()");
+    expect(setupSource).not.toContain("spawnSync");
+    expect(setupSource).not.toContain("detectBlockedChildSpawn");
   });
 });

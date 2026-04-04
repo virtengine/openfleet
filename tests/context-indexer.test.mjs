@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  ensureContextIndexFresh,
+  getContextGraph,
   runContextIndex,
   searchContextIndex,
   getContextIndexStatus,
@@ -39,7 +41,13 @@ describe("context-indexer", () => {
 
     writeFileSync(
       resolve(testRoot, "src", "alpha.mjs"),
-      "// alpha module\nexport function greetUser(name) { return `hello ${name}`; }\n",
+      "// alpha module\nimport { formatGreeting } from \"./helper.mjs\";\nexport function greetUser(name) { return formatGreeting(name); }\n",
+      "utf8",
+    );
+
+    writeFileSync(
+      resolve(testRoot, "src", "helper.mjs"),
+      "// helper module\nexport function formatGreeting(name) { return `hello ${name}`; }\n",
       "utf8",
     );
 
@@ -68,9 +76,13 @@ describe("context-indexer", () => {
 
     const dbPath = resolve(testRoot, ".bosun", "context-index", "index.db");
     const agentIndexPath = resolve(testRoot, ".bosun", "context-index", "AGENT_INDEX.md");
+    const agentIndexJsonPath = resolve(testRoot, ".bosun", "context-index", "agent-index.json");
 
     expect(existsSync(dbPath)).toBe(true);
     expect(existsSync(agentIndexPath)).toBe(true);
+    const agentIndexJson = JSON.parse(readFileSync(agentIndexJsonPath, "utf8"));
+    expect(Array.isArray(agentIndexJson.relations)).toBe(true);
+    expect(agentIndexJson.relations.some((entry) => entry.relationType === "file_imports_file")).toBe(true);
 
     const hits = await searchContextIndex("greetUser", {
       rootDir: testRoot,
@@ -84,6 +96,109 @@ describe("context-indexer", () => {
     expect(status.ready).toBe(true);
     expect(status.fileCount).toBeGreaterThan(0);
     expect(status.symbolCount).toBeGreaterThan(0);
+    expect(status.graph.nodeCount).toBeGreaterThan(0);
+    expect(status.graph.edgeCount).toBeGreaterThan(0);
+    expect(status.graph.relationTypes.some((entry) => entry.relationType === "file_imports_file")).toBe(true);
+    expect(status.stale).toBe(false);
+    expect(status.staleReasons).toEqual([]);
+    expect(status.latestSourcePath).toBeTruthy();
+  });
+
+  it("returns a graph neighborhood for seed symbols and imported files", async () => {
+    mkdirSync(resolve(testRoot, "src"), { recursive: true });
+
+    writeFileSync(
+      resolve(testRoot, "src", "alpha.mjs"),
+      "// alpha module\nimport { formatGreeting } from \"./helper.mjs\";\nexport function greetUser(name) { return formatGreeting(name); }\n",
+      "utf8",
+    );
+
+    writeFileSync(
+      resolve(testRoot, "src", "helper.mjs"),
+      "// helper module\nexport function formatGreeting(name) { return `hello ${name}`; }\n",
+      "utf8",
+    );
+
+    await runContextIndex({
+      rootDir: testRoot,
+      includeTests: true,
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+
+    const graph = await getContextGraph("greetUser", {
+      rootDir: testRoot,
+      limit: 10,
+    });
+
+    expect(graph.nodes.some((node) => node.type === "symbol" && node.name === "greetUser")).toBe(true);
+    expect(graph.nodes.some((node) => node.type === "file" && String(node.path || "").endsWith("src/alpha.mjs"))).toBe(true);
+    expect(graph.nodes.some((node) => node.type === "file" && String(node.path || "").endsWith("src/helper.mjs"))).toBe(true);
+    expect(graph.edges.some((edge) => edge.relationType === "file_defines_symbol" && edge.toName === "greetUser")).toBe(true);
+    expect(graph.edges.some((edge) => edge.relationType === "file_imports_file" && String(edge.toPath || "").endsWith("src/helper.mjs"))).toBe(true);
+  });
+
+  it("rebuilds the context index when it is missing and changed files request graph context", async () => {
+    mkdirSync(resolve(testRoot, "src"), { recursive: true });
+
+    writeFileSync(
+      resolve(testRoot, "src", "alpha.mjs"),
+      "import { formatGreeting } from './helper.mjs';\nexport function greetUser(name) { return formatGreeting(name); }\n",
+      "utf8",
+    );
+    writeFileSync(
+      resolve(testRoot, "src", "helper.mjs"),
+      "export function formatGreeting(name) { return `hello ${name}`; }\n",
+      "utf8",
+    );
+
+    const refreshed = await ensureContextIndexFresh({
+      rootDir: testRoot,
+      changedFiles: ["src/alpha.mjs"],
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+
+    expect(refreshed.refreshed).toBe(true);
+    expect(refreshed.reason).toBe("missing");
+    expect(refreshed.status.ready).toBe(true);
+
+    const graph = await getContextGraph("greetUser", {
+      rootDir: testRoot,
+      limit: 10,
+    });
+    expect(graph.edges.some((edge) => edge.relationType === "file_imports_file" && String(edge.toPath || "").endsWith("src/helper.mjs"))).toBe(true);
+  });
+
+  it("reports stale context indexes when workspace source files changed after indexing", async () => {
+    mkdirSync(resolve(testRoot, "src"), { recursive: true });
+
+    const alphaPath = resolve(testRoot, "src", "alpha.mjs");
+    writeFileSync(alphaPath, "export function greetUser(name) { return name; }\n", "utf8");
+
+    await runContextIndex({
+      rootDir: testRoot,
+      includeTests: true,
+      useTreeSitter: false,
+      useZoekt: false,
+    });
+
+    writeFileSync(alphaPath, "export function greetUser(name) { return `${name}!`; }\n", "utf8");
+    const futureDate = new Date(Date.now() + 5000);
+    utimesSync(alphaPath, futureDate, futureDate);
+
+    const status = await getContextIndexStatus({
+      rootDir: testRoot,
+      includeTests: true,
+      maxAgeMs: 60 * 60 * 1000,
+    });
+
+    expect(status.ready).toBe(true);
+    expect(status.stale).toBe(true);
+    expect(status.staleBecauseWorkspaceChanged).toBe(true);
+    expect(status.staleBecauseAge).toBe(false);
+    expect(status.staleReasons).toContain("workspace-changed");
+    expect(status.latestSourcePath).toBe("src/alpha.mjs");
   });
 
   it("supports task-type scoped search with optional fallback", async () => {

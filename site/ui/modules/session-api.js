@@ -490,8 +490,41 @@ function buildRuntimeState(key, overrides = {}) {
   };
 }
 
+function resolveSessionRuntimeLiveFlag(session) {
+  if (!session || typeof session !== "object") return null;
+  if (typeof session.runtimeIsLive === "boolean") return session.runtimeIsLive;
+  if (typeof session.runtime?.isLive === "boolean") return session.runtime.isLive;
+  if (typeof session.runtimeSnapshot?.isLive === "boolean") return session.runtimeSnapshot.isLive;
+  return null;
+}
+
+function resolveSessionRuntimeAgeMs(session, now = Date.now()) {
+  const recencyAt = getSessionRecencyTimestamp(session);
+  const recencyMs = Date.parse(String(recencyAt || ""));
+  if (!Number.isFinite(recencyMs)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, now - recencyMs);
+}
+
+function buildSessionRecencyRuntimeState(session, lifecycle, options = {}, source = "recency") {
+  if (!lifecycle.isActive) {
+    return buildRuntimeState("stopped", { source: "lifecycle" });
+  }
+  const now = Number(options?.now || Date.now()) || Date.now();
+  const ageMs = resolveSessionRuntimeAgeMs(session, now);
+  if (ageMs <= SESSION_RUNTIME_RECENT_WINDOW_MS) {
+    return buildRuntimeState("recent", { source, ageMs });
+  }
+  if (ageMs >= SESSION_RUNTIME_STALE_WINDOW_MS || !Number.isFinite(ageMs)) {
+    return buildRuntimeState("stale", { source, ageMs });
+  }
+  return buildRuntimeState("idle", { source, ageMs, isLive: false });
+}
+
 export function getSessionRuntimeState(session, options = {}) {
   const lifecycle = getSessionLifecycleState(session);
+  if (!lifecycle.isActive) {
+    return buildRuntimeState("stopped", { source: "lifecycle" });
+  }
   const runtimeKey = normalizeSessionRuntimeKey(
     session?.runtimeState
       || session?.runtimeStatus
@@ -499,23 +532,23 @@ export function getSessionRuntimeState(session, options = {}) {
       || session?.runtimeSnapshot?.state
       || (session?.lifecycleStatus ? "" : session?.status),
   );
+  const runtimeIsLive = resolveSessionRuntimeLiveFlag(session);
   if (runtimeKey) {
-    return buildRuntimeState(runtimeKey, { source: "runtime" });
+    if (runtimeKey === "running" && runtimeIsLive === false) {
+      return buildSessionRecencyRuntimeState(session, lifecycle, options, "runtime");
+    }
+    const now = Number(options?.now || Date.now()) || Date.now();
+    const ageMs = resolveSessionRuntimeAgeMs(session, now);
+    return buildRuntimeState(runtimeKey, {
+      source: "runtime",
+      ageMs: Number.isFinite(ageMs) ? ageMs : null,
+      isLive:
+        runtimeKey === "running"
+          ? (runtimeIsLive === false ? false : true)
+          : (runtimeIsLive === true ? true : false),
+    });
   }
-  if (!lifecycle.isActive) {
-    return buildRuntimeState("stopped", { source: "lifecycle" });
-  }
-  const now = Number(options?.now || Date.now()) || Date.now();
-  const recencyAt = getSessionRecencyTimestamp(session);
-  const recencyMs = Date.parse(String(recencyAt || ""));
-  const ageMs = Number.isFinite(recencyMs) ? Math.max(0, now - recencyMs) : Number.POSITIVE_INFINITY;
-  if (ageMs <= SESSION_RUNTIME_RECENT_WINDOW_MS) {
-    return buildRuntimeState("recent", { source: "recency", ageMs });
-  }
-  if (ageMs >= SESSION_RUNTIME_STALE_WINDOW_MS || !Number.isFinite(ageMs)) {
-    return buildRuntimeState("stale", { source: "recency", ageMs });
-  }
-  return buildRuntimeState("idle", { source: "recency", ageMs, isLive: false });
+  return buildSessionRecencyRuntimeState(session, lifecycle, options, "recency");
 }
 
 export function resolveSessionWorkspaceHint(session, fallback = "active") {

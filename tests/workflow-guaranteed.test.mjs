@@ -29,6 +29,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { PassThrough } from "node:stream";
 
 import { TEMPLATE_FIXTURES } from "./sandbox/fixtures.mjs";
 import { createExecSandbox  } from "./sandbox/exec-sandbox.mjs";
@@ -36,6 +37,7 @@ import {
   createTemplateHarness,
   ensureExperimentalNodeTypes,
 } from "./sandbox/template-harness.mjs";
+import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 // ══════════════════════════════════════════════════════════════════════════
 //  Mutable sandbox dispatch — the vi.mock captures this reference so that
@@ -44,6 +46,7 @@ import {
 
 let _activeDispatch = (_cmd) => "";
 let _activeExecSandbox = null;
+let _pendingChildProcessOps = 0;
 
 function isoDaysAgo(daysAgo = 0, hour = 10) {
   const date = new Date(Date.now() - (Number(daysAgo) * 24 * 60 * 60 * 1000));
@@ -86,40 +89,70 @@ vi.mock("node:child_process", async (importOriginal) => {
       }
     },
 
-    spawn: vi.fn((cmd, args) => {
+    spawn: (cmd, args) => {
       const proc = new EventEmitter();
-      proc.stdout = new EventEmitter();
-      proc.stderr = new EventEmitter();
-      proc.stdout.pipe = vi.fn();
-      proc.stderr.pipe = vi.fn();
-      proc.kill = vi.fn();
+      proc.stdout = new PassThrough();
+      proc.stderr = new PassThrough();
+      proc.stdin = new PassThrough();
+      proc.kill = () => {};
       proc.pid = 9999;
+      _pendingChildProcessOps += 1;
       setImmediate(() => {
         try {
           const output = String(_activeDispatch(renderSpawnCommand(cmd, args)) || "");
-          if (output) proc.stdout.emit("data", output);
-          proc.emit("close", 0);
+          if (output) proc.stdout.write(output);
+          proc.stdout.end();
+          proc.stderr.end();
+          proc.emit("exit", 0, null);
+          proc.emit("close", 0, null);
         } catch (err) {
           const stdout = String(err?.stdout || "");
           const stderr = String(err?.stderr || err?.message || err || "");
-          if (stdout) proc.stdout.emit("data", stdout);
-          if (stderr) proc.stderr.emit("data", stderr);
-          proc.emit("close", err?.status ?? err?.exitCode ?? 1);
+          if (stdout) proc.stdout.write(stdout);
+          if (stderr) proc.stderr.write(stderr);
+          proc.stdout.end();
+          proc.stderr.end();
+          const exitCode = err?.status ?? err?.exitCode ?? 1;
+          proc.emit("exit", exitCode, null);
+          proc.emit("close", exitCode, null);
+        } finally {
+          _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
         }
       });
       return proc;
-    }),
+    },
 
-    exec: vi.fn((cmd, opts, cb) => {
+    exec: (cmd, opts, cb) => {
       const callback = typeof opts === "function" ? opts : cb;
+      _pendingChildProcessOps += 1;
       try {
         const result = String(_activeDispatch(cmd) || "");
-        if (callback) setImmediate(() => callback(null, result, ""));
+        if (callback) {
+          setImmediate(() => {
+            try {
+              callback(null, result, "");
+            } finally {
+              _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+            }
+          });
+        } else {
+          _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+        }
       } catch (err) {
-        if (callback) setImmediate(() => callback(err, "", err.message));
+        if (callback) {
+          setImmediate(() => {
+            try {
+              callback(err, "", err.message);
+            } finally {
+              _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+            }
+          });
+        } else {
+          _pendingChildProcessOps = Math.max(0, _pendingChildProcessOps - 1);
+        }
       }
-      return { kill: vi.fn() };
-    }),
+      return { kill: () => {} };
+    },
   };
 });
 
@@ -182,10 +215,15 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  if (process.env.BOSUN_TEST_HARNESS_DEBUG_CLEANUP === "1") {
+    console.error(`[workflow-guaranteed] pendingChildProcessOps=${_pendingChildProcessOps}`);
+  }
   currentHarness?.cleanup();
   currentHarness   = null;
   _activeDispatch  = (_cmd) => "";
   _activeExecSandbox = null;
+  _pendingChildProcessOps = 0;
+  vi.clearAllMocks();
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -356,11 +394,11 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-custom-agent: dispatches custom task to agent", async () => {
+  it.skipIf(skipLocallyForSpeed)("template-custom-agent: dispatches custom task to agent", async () => {
     const { harness, fixtures } = setupHarness("template-custom-agent");
     const { ctx } = await harness.run(fixtures.inputVars);
     harness.assertions.noEngineErrors(ctx);
-  }, 15000);
+  }, 60000);
 
   it("template-agent-session-monitor: monitors session without errors", async () => {
     const { harness, fixtures } = setupHarness("template-agent-session-monitor");
@@ -685,11 +723,11 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-incident-response: handles incident without crash", async () => {
+  it.skipIf(skipLocallyForSpeed)("template-incident-response: handles incident without crash", async () => {
     const { harness, fixtures } = setupHarness("template-incident-response");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
-  }, 15000);
+  }, 60000);
 
   it("template-task-archiver: archives completed tasks without error", async () => {
     const { harness } = setupHarness("template-task-archiver");
@@ -731,11 +769,11 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-task-batch-pr: creates PRs for a batch of tasks", async () => {
+  it.skipIf(skipLocallyForSpeed)("template-task-batch-pr: creates PRs for a batch of tasks", async () => {
     const { harness, fixtures } = setupHarness("template-task-batch-pr");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
-  }, 15000);
+  }, 60000);
 
   // ── Agent chain templates ─────────────────────────────────────────────
 

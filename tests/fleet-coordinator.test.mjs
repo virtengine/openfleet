@@ -581,10 +581,63 @@ describe("shared-knowledge", () => {
       const result = await appendKnowledgeEntry(entry);
 
       expect(result.success).toBe(true);
+      expect(result.mirrored).toBe(true);
 
       const content = await readFile(resolve(tempRoot, targetFile), "utf8");
       expect(content).toContain("## Agent Learnings");
       expect(content).toContain("deterministic ops");
+    });
+
+    it("persists to the ledger even when the markdown mirror path is invalid", async () => {
+      const targetBlocker = "MIRROR_BLOCKER";
+      await writeFile(resolve(tempRoot, targetBlocker), "blocker", "utf8");
+      initSharedKnowledge({ repoRoot: tempRoot, targetFile: `${targetBlocker}/TEST_AGENTS.md` });
+
+      const entry = buildKnowledgeEntry({
+        content: "Always persist the authoritative ledger entry before attempting markdown mirroring.",
+        scope: "inference",
+        category: "pattern",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        agentId: "test-agent",
+      });
+
+      const result = await appendKnowledgeEntry(entry);
+      expect(result.success).toBe(true);
+      expect(result.mirrored).toBe(false);
+      expect(String(result.mirrorReason || "")).toContain("markdown mirror failed");
+
+      const { listKnowledgeEntriesFromStateLedger } = await import("../lib/state-ledger-sqlite.mjs");
+      expect(listKnowledgeEntriesFromStateLedger({ repoRoot: tempRoot, workspaceId: "workspace-1" })).toEqual([
+        expect.objectContaining({
+          content: "Always persist the authoritative ledger entry before attempting markdown mirroring.",
+          workspaceId: "workspace-1",
+        }),
+      ]);
+    });
+
+    it("does not write markdown when the authoritative ledger write fails", async () => {
+      const targetFile = "TEST_AGENTS.md";
+      await writeFile(resolve(tempRoot, targetFile), "# Agents\n\nSome content.\n");
+      await writeFile(resolve(tempRoot, ".bosun"), "block-ledger-dir", "utf8");
+      initSharedKnowledge({ repoRoot: tempRoot, targetFile });
+
+      const entry = buildKnowledgeEntry({
+        content: "Never mirror a memory entry into markdown before the ledger accepts it.",
+        scope: "inference",
+        category: "pattern",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        agentId: "test-agent",
+      });
+
+      const result = await appendKnowledgeEntry(entry);
+      expect(result.success).toBe(false);
+      expect(String(result.reason || "")).toContain("write error");
+
+      const content = await readFile(resolve(tempRoot, targetFile), "utf8");
+      expect(content).not.toContain("Never mirror a memory entry into markdown before the ledger accepts it.");
+      expect(content).not.toContain("## Agent Learnings");
     });
 
     it("rejects invalid entries", async () => {
@@ -807,6 +860,40 @@ Always use deterministic TF ops.
       expect(briefing).not.toContain("[team]");
     });
 
+    it("includes path-match reasons in briefings when graph-aware ranking is available", () => {
+      const briefing = formatKnowledgeBriefing([
+        {
+          ...buildKnowledgeEntry({
+            content: "Workspace memory: reseed auth fixtures before retrying login flows.",
+            scope: "testing",
+            scopeLevel: "workspace",
+            teamId: "team-a",
+            workspaceId: "workspace-1",
+            sessionId: "session-1",
+            runId: "run-1",
+            agentId: "agent-workspace",
+          }),
+          directPathHits: ["src/auth/login.mjs"],
+        },
+        {
+          ...buildKnowledgeEntry({
+            content: "Workspace memory: session-store snapshots must stay deterministic.",
+            scope: "testing",
+            scopeLevel: "workspace",
+            teamId: "team-a",
+            workspaceId: "workspace-1",
+            sessionId: "session-1",
+            runId: "run-1",
+            agentId: "agent-workspace",
+          }),
+          adjacentPathHits: ["src/auth/session-store.mjs"],
+        },
+      ]);
+
+      expect(briefing).toContain("matched=src/auth/login.mjs");
+      expect(briefing).toContain("graph=src/auth/session-store.mjs");
+    });
+
     it("retrieves memories from the SQL ledger even when the JSON registry is missing", async () => {
       const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
       const {
@@ -848,6 +935,50 @@ Always use deterministic TF ops.
           content: "Workspace memory: reset fixtures before retrying browser login flows.",
         }),
       ]);
+    });
+
+    it("rewrites the JSON registry from the SQL ledger instead of preserving stale projection entries", async () => {
+      const registryPath = resolve(tempRoot, ".cache", "bosun", "persistent-memory.json");
+      const staleEntry = buildKnowledgeEntry({
+        content: "Workspace memory: stale projected entry that should not survive projection rebuild.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-stale",
+        sessionId: "session-stale",
+        runId: "run-stale",
+        agentId: "agent-stale",
+      });
+      await mkdir(resolve(tempRoot, ".cache", "bosun"), { recursive: true });
+      await writeFile(registryPath, JSON.stringify({
+        version: "1.0.0",
+        updatedAt: staleEntry.timestamp,
+        entries: [staleEntry],
+      }, null, 2), "utf8");
+
+      const result = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: canonical ledger entry for auth retry fixtures.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        agentId: "agent-workspace",
+      }));
+      expect(result.success).toBe(true);
+
+      const registry = JSON.parse(await readFile(registryPath, "utf8"));
+      expect(Array.isArray(registry.entries)).toBe(true);
+      expect(registry.entries).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: canonical ledger entry for auth retry fixtures.",
+          workspaceId: "workspace-1",
+        }),
+      ]);
+      expect(registry.entries.map((entry) => entry.content)).not.toContain(
+        "Workspace memory: stale projected entry that should not survive projection rebuild.",
+      );
     });
 
     it("backfills legacy JSON registry memories into the SQL ledger on retrieval", async () => {
@@ -895,6 +1026,192 @@ Always use deterministic TF ops.
           hash: legacyEntry.hash,
         }),
       ]);
+      const rewrittenRegistry = JSON.parse(await readFile(registryPath, "utf8"));
+      expect(rewrittenRegistry.entries).toEqual([
+        expect.objectContaining({
+          content: "Workspace memory: seed deterministic data before replaying flaky workflows.",
+          hash: legacyEntry.hash,
+        }),
+      ]);
+    });
+
+    it("prefers memories tied to directly changed files over generic workspace memories", async () => {
+      await mkdir(resolve(tempRoot, ".bosun", "context-index"), { recursive: true });
+      await writeFile(
+        resolve(tempRoot, ".bosun", "context-index", "agent-index.json"),
+        JSON.stringify({ relations: [] }, null, 2),
+        "utf8",
+      );
+
+      const genericResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: refresh session fixtures before retrying auth flows.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        agentId: "agent-generic",
+      }));
+      expect(genericResult.success).toBe(true);
+
+      const directResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: src/auth/login.mjs must reseed auth fixtures before replaying retries.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+        agentId: "agent-direct",
+        relatedPaths: ["src/auth/login.mjs"],
+      }));
+      expect(directResult.success).toBe(true);
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-9",
+        runId: "run-9",
+        query: "retry auth fixtures before replaying login flows",
+        changedFiles: ["src/auth/login.mjs"],
+        limit: 5,
+      });
+
+      expect(retrieved[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: src/auth/login.mjs must reseed auth fixtures before replaying retries.",
+        directPathHits: ["src/auth/login.mjs"],
+      }));
+      expect(retrieved[0].score).toBeGreaterThan(retrieved[1].score);
+    });
+
+    it("boosts memories attached to graph-adjacent files when direct matches are absent", async () => {
+      await mkdir(resolve(tempRoot, ".bosun", "context-index"), { recursive: true });
+      await writeFile(
+        resolve(tempRoot, ".bosun", "context-index", "agent-index.json"),
+        JSON.stringify({
+          relations: [
+            {
+              relationType: "file_imports_file",
+              fromPath: "src/auth/login.mjs",
+              toPath: "src/auth/session-store.mjs",
+            },
+          ],
+        }, null, 2),
+        "utf8",
+      );
+
+      const adjacentResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+        agentId: "agent-adjacent",
+        relatedPaths: ["src/auth/session-store.mjs"],
+      }));
+      expect(adjacentResult.success).toBe(true);
+
+      const unrelatedResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: billing retries also need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-3",
+        runId: "run-3",
+        agentId: "agent-unrelated",
+        relatedPaths: ["src/billing/invoice-runner.mjs"],
+      }));
+      expect(unrelatedResult.success).toBe(true);
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-9",
+        runId: "run-9",
+        query: "deterministic token snapshots for retries",
+        changedFiles: ["src/auth/login.mjs"],
+        limit: 5,
+      });
+
+      expect(retrieved[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        adjacentPathHits: ["src/auth/session-store.mjs"],
+      }));
+      expect(retrieved[1].adjacentPathHits).toEqual([]);
+      expect(retrieved[0].score).toBeGreaterThan(retrieved[1].score);
+    });
+
+    it("uses the context index database for graph-adjacent boosts when the json projection is missing", async () => {
+      const { runContextIndex } = await import("../workspace/context-indexer.mjs");
+
+      await mkdir(resolve(tempRoot, "src", "auth"), { recursive: true });
+      await writeFile(
+        resolve(tempRoot, "src", "auth", "session-store.mjs"),
+        "export function createSessionStore() { return new Map(); }\n",
+        "utf8",
+      );
+      await writeFile(
+        resolve(tempRoot, "src", "auth", "login.mjs"),
+        "import { createSessionStore } from './session-store.mjs';\nexport function retryLogin() { return createSessionStore(); }\n",
+        "utf8",
+      );
+
+      await runContextIndex({
+        rootDir: tempRoot,
+        includeTests: true,
+        useTreeSitter: false,
+        useZoekt: false,
+      });
+      await rm(resolve(tempRoot, ".bosun", "context-index", "agent-index.json"), { force: true });
+
+      const adjacentResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+        agentId: "agent-adjacent-db",
+        relatedPaths: ["src/auth/session-store.mjs"],
+      }));
+      expect(adjacentResult.success).toBe(true);
+
+      const unrelatedResult = await appendKnowledgeEntry(buildKnowledgeEntry({
+        content: "Workspace memory: billing retries also need deterministic token snapshots.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-3",
+        runId: "run-3",
+        agentId: "agent-unrelated-db",
+        relatedPaths: ["src/billing/invoice-runner.mjs"],
+      }));
+      expect(unrelatedResult.success).toBe(true);
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-9",
+        runId: "run-9",
+        query: "deterministic token snapshots for retries",
+        changedFiles: ["src/auth/login.mjs"],
+        limit: 5,
+      });
+
+      expect(retrieved[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: session-store retries need deterministic token snapshots.",
+        adjacentPathHits: ["src/auth/session-store.mjs"],
+      }));
+      expect(retrieved[1].adjacentPathHits).toEqual([]);
     });
   });
 

@@ -26,11 +26,13 @@ import {
 } from "../modules/session-api.js";
 import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
+import { clearAgentStatus } from "../modules/streaming.js";
+import { AppContextMenu, useContextMenuState } from "./context-menu.js";
 import {
   List, ListItem, ListItemButton, ListItemText, ListItemIcon,
   ListItemSecondaryAction, Typography, Box, Stack, IconButton,
   Chip, Divider, TextField, InputAdornment, CircularProgress,
-  Tooltip, Menu, MenuItem, Paper, Skeleton, Button, Alert,
+  Tooltip, Paper, Skeleton, Button, Alert,
 } from "@mui/material";
 
 const html = htm.bind(h);
@@ -107,6 +109,54 @@ function sessionPath(id, action = "") {
   return buildSessionApiPath(id, action, { workspace });
 }
 
+function clearUnavailableSelectedSession(targetSessionId) {
+  const normalizedTargetSessionId = String(targetSessionId || "").trim();
+  if (!normalizedTargetSessionId) return;
+  if (String(selectedSessionId.peek() || "").trim() === normalizedTargetSessionId) {
+    selectedSessionId.value = null;
+  }
+  if (String(sessionMessagesSessionId.peek() || "").trim() === normalizedTargetSessionId) {
+    sessionMessagesSessionId.value = "";
+    sessionMessages.value = [];
+    sessionPagination.value = null;
+  }
+}
+
+function sessionLooksLikeTestLeak(session) {
+  if (!session || typeof session !== "object") return true;
+  const metadata =
+    session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  const identifiers = [
+    session.id,
+    session.taskId,
+    session.title,
+    session.taskTitle,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const hasWorkspaceAssignment = Boolean(
+    String(session?.workspaceId || session?.workspace || metadata?.workspaceId || "").trim()
+      || String(metadata?.workspaceDir || "").trim()
+      || String(metadata?.workspaceRoot || "").trim(),
+  );
+  const normalizedSource = String(metadata?.source || "").trim().toLowerCase();
+  if (metadata?.hiddenInLists === true || metadata?.hidden === true || metadata?.testSession === true) {
+    return true;
+  }
+  if (normalizedSource === "voice-http" || normalizedSource === "voice-http-tool" || normalizedSource === "vision-http") {
+    return true;
+  }
+  if (identifiers.some((value) => /^(?:null|undefined|\(null\)|session|null session)$/i.test(value))) {
+    return true;
+  }
+  if (!hasWorkspaceAssignment && (Number(session?.turnCount || 0) <= 0) && !String(session?.preview || session?.lastMessage || "").trim()) {
+    return true;
+  }
+  return false;
+}
+
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}, _opts = {}) {
   const normalizedFilter = {
@@ -124,6 +174,9 @@ export async function loadSessions(filter = {}, _opts = {}) {
       params.set(key, String(value));
     }
     const currentSelectedSessionId = String(selectedSessionId.value || "").trim();
+    const previousSessionIds = new Set(
+      (sessionsData.peek() || []).map((session) => String(session?.id || "")).filter(Boolean),
+    );
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
     if (res?.sessions) {
       sessionsData.value = res.sessions;
@@ -134,6 +187,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
       const shouldRetainScopedSelection =
         Boolean(currentSelectedSessionId) &&
         workspaceScope !== "all" &&
+        previousSessionIds.has(currentSelectedSessionId) &&
         !sessionIds.has(currentSelectedSessionId);
       const selectedSessionStillExists =
         !currentSelectedSessionId ||
@@ -151,6 +205,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
       responseMeta.lastSuccessAt || Date.now(),
     );
     sessionsError.value = null;
+    return Array.isArray(res?.sessions) ? res.sessions : [];
   } catch (error) {
     const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek(), Date.now(), {
       staleReason: deriveSessionStaleReason(error),
@@ -160,6 +215,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
     const nextErrorState = classifySessionRequestError(error);
     const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
     sessionsError.value = hasCachedData ? null : nextErrorState;
+    return null;
   } finally {
     sessionsLoading.value = false;
   }
@@ -232,12 +288,16 @@ export async function loadSessionMessages(id, opts = {}) {
       sessionMessagesSessionId.value = targetSessionId;
     }
     return { ok: false, error: "empty" };
-  } catch {
+  } catch (error) {
+    const errorState = classifySessionRequestError(error);
+    if (errorState.isNotFound) {
+      clearUnavailableSelectedSession(targetSessionId);
+    }
     if (!opts.prepend) {
       _bindSessionStore(targetSessionId, [], null);
       sessionMessagesSessionId.value = targetSessionId;
     }
-    return { ok: false, error: "unavailable" };
+    return { ok: false, error: errorState.isNotFound ? "not_found" : "unavailable" };
   }
 }
 
@@ -506,16 +566,39 @@ export async function createSession(options = {}) {
   // Duplicate prevention: if a fresh empty session of same type exists, reuse it
   const existing = sessionsData.value || [];
   if (allowReuseFresh) {
-    const fresh = existing.find(
-      (s) =>
+    const freshCandidates = existing
+      .filter(
+        (s) =>
         s.type === type &&
         getSessionLifecycleState(s).isActive &&
+        !sessionLooksLikeTestLeak(s) &&
         (s.turnCount || 0) === 0 &&
         (!s.preview || s.preview.trim() === ""),
-    );
-    if (fresh) {
-      selectedSessionId.value = fresh.id;
-      return { ok: true, session: fresh };
+      )
+      .sort((left, right) => {
+        const leftTs = Date.parse(String(left?.lastActiveAt || left?.createdAt || "")) || 0;
+        const rightTs = Date.parse(String(right?.lastActiveAt || right?.createdAt || "")) || 0;
+        return rightTs - leftTs;
+      });
+    for (const fresh of freshCandidates) {
+      try {
+        const reusePath = buildSessionApiPath(fresh.id, "", {
+          workspace: resolveSessionWorkspaceHint(
+            fresh,
+            String(_lastLoadFilter?.workspace || "").trim() || "active",
+          ),
+          query: { limit: "1" },
+        });
+        const reuseCheck = reusePath
+          ? await apiFetch(reusePath, { _silent: true })
+          : null;
+        if (reuseCheck?.session?.id === fresh.id) {
+          selectedSessionId.value = fresh.id;
+          return { ok: true, session: fresh, reused: true };
+        }
+      } catch {
+        // Stale/orphan session shells should not block creating a real session.
+      }
     }
   }
 
@@ -542,7 +625,8 @@ export async function archiveSession(id) {
     const url = sessionPath(id, "archive");
     if (!url) return false;
     await apiFetch(url, { method: "POST" });
-    if (selectedSessionId.value === id) selectedSessionId.value = null;
+    clearAgentStatus(id);
+    clearUnavailableSelectedSession(id);
     await loadSessions(_lastLoadFilter);
     return true;
   } catch {
@@ -555,7 +639,8 @@ export async function deleteSession(id) {
     const url = sessionPath(id, "delete");
     if (!url) return false;
     await apiFetch(url, { method: "POST" });
-    if (selectedSessionId.value === id) selectedSessionId.value = null;
+    clearAgentStatus(id);
+    clearUnavailableSelectedSession(id);
     await loadSessions(_lastLoadFilter);
     return true;
   } catch {
@@ -601,12 +686,15 @@ function getSessionStatusKey(session) {
   return getSessionLifecycleState(session).key;
 }
 
-function isActiveSession(session) {
-  return getSessionLifecycleState(session).isActive;
+function isInProgressSession(session) {
+  const lifecycle = getSessionLifecycleState(session);
+  if (!lifecycle.isActive) return false;
+  const runtime = getSessionRuntimeState(session);
+  return runtime.isLive || runtime.key === "running" || runtime.key === "queued";
 }
 
 function isHistoricSession(session) {
-  return !isActiveSession(session);
+  return !isInProgressSession(session);
 }
 
 /* ─── Swipeable Session Item ─── */
@@ -909,7 +997,11 @@ export function SessionList({
 }) {
   const [search, setSearch] = useState("");
   const [revealedActions, setRevealedActions] = useState(null);
-  const [contextMenu, setContextMenu] = useState(null);
+  const {
+    contextMenu,
+    openContextMenu,
+    closeContextMenu,
+  } = useContextMenuState();
   const [uncontrolledSessionView, setUncontrolledSessionView] = useState(
     normalizeSessionViewFilter(sessionView),
   );
@@ -979,7 +1071,7 @@ export function SessionList({
 
   const viewFiltered = archivedFiltered.filter((s) => {
     if (resolvedSessionView === SESSION_VIEW_FILTER.active) {
-      return isActiveSession(s);
+      return isInProgressSession(s);
     }
     if (resolvedSessionView === SESSION_VIEW_FILTER.historic) {
       return isHistoricSession(s);
@@ -995,26 +1087,26 @@ export function SessionList({
       )
     : viewFiltered;
 
-  const active = filtered.filter((s) => isActiveSession(s));
+  const active = filtered.filter((s) => isInProgressSession(s));
   const archived = filtered.filter((s) => getSessionStatusKey(s) === "archived");
   const recent = filtered.filter(
     (s) =>
-      !isActiveSession(s) && getSessionStatusKey(s) !== "archived",
+      !isInProgressSession(s) && getSessionStatusKey(s) !== "archived",
   );
 
   const archivedCount = typeFiltered.filter((s) => getSessionStatusKey(s) === "archived").length;
   const allCount = archivedFiltered.length;
-  const activeCount = archivedFiltered.filter((s) => isActiveSession(s)).length;
+  const activeCount = archivedFiltered.filter((s) => isInProgressSession(s)).length;
   const historicCount = archivedFiltered.filter((s) => isHistoricSession(s)).length;
 
   const handleSelect = useCallback(
     (id) => {
       selectedSessionId.value = id;
       setRevealedActions(null);
-      setContextMenu(null);
+      closeContextMenu();
       if (onSelect) onSelect(id);
     },
-    [onSelect],
+    [onSelect, closeContextMenu],
   );
 
   const handleRetry = useCallback(() => {
@@ -1037,34 +1129,28 @@ export function SessionList({
 
   const handleArchive = useCallback(async (id) => {
     setRevealedActions(null);
-    setContextMenu(null);
+    closeContextMenu();
     await archiveSession(id);
-  }, []);
+  }, [closeContextMenu]);
 
   const handleDelete = useCallback(async (id) => {
     setRevealedActions(null);
-    setContextMenu(null);
+    closeContextMenu();
     await deleteSession(id);
-  }, []);
+  }, [closeContextMenu]);
 
   const handleResume = useCallback(async (id) => {
     setRevealedActions(null);
-    setContextMenu(null);
+    closeContextMenu();
     await resumeSession(id);
-  }, []);
+  }, [closeContextMenu]);
 
   const handleContextMenu = useCallback((id, event) => {
     setRevealedActions(null);
-    setContextMenu({
+    openContextMenu({
       id,
-      mouseX: event.clientX + 2,
-      mouseY: event.clientY - 6,
-    });
-  }, []);
-
-  const closeContextMenu = useCallback(() => {
-    setContextMenu(null);
-  }, []);
+    }, event);
+  }, [openContextMenu]);
 
   const handleContextAction = useCallback(async (action) => {
     const targetId = contextMenu?.id;
@@ -1121,20 +1207,20 @@ export function SessionList({
   const handleListClick = useCallback((e) => {
     if (e.target.closest(".session-item-wrapper")) return;
     setRevealedActions(null);
-    setContextMenu(null);
-  }, []);
+    closeContextMenu();
+  }, [closeContextMenu]);
 
   const emptyTitle = hasSearch
     ? "No matching sessions"
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "No lifecycle-active sessions"
+      ? "No in-progress sessions"
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "No historic sessions"
         : "No sessions yet";
   const emptyHint = hasSearch
     ? "Try a different keyword or clear the search."
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "Start a new session or switch to All lifecycle states."
+      ? "Sessions with live work appear here."
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "Historic sessions appear after they finish."
         : "Create a session to get started.";
@@ -1324,7 +1410,7 @@ export function SessionList({
           clickable
         />
         <${Chip}
-          label=${`Lifecycle Active (${activeCount})`}
+          label=${`In Progress (${activeCount})`}
           size="small"
           variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
           color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
@@ -1350,7 +1436,7 @@ export function SessionList({
           html`
             <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
               <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
-                Lifecycle Active
+                In Progress
               </${Typography}>
             </${ListItem}>
             ${active.map(renderSessionItem)}
@@ -1422,30 +1508,29 @@ export function SessionList({
         </${Box}>
       `}
 
-      <${Menu}
-        open=${Boolean(contextMenu)}
+      <${AppContextMenu}
+        menu=${contextMenu}
         onClose=${closeContextMenu}
-        anchorReference="anchorPosition"
-        anchorPosition=${contextMenu ? { top: contextMenu.mouseY, left: contextMenu.mouseX } : undefined}
-      >
-        <${MenuItem} onClick=${() => handleContextAction("open")}>${resolveIcon(":chat:")} Open</${MenuItem}>
-        <${MenuItem} onClick=${() => handleContextAction("rename")}>${resolveIcon(":edit:")} Edit title</${MenuItem}>
-        <${MenuItem} onClick=${() => handleContextAction("archive")}>
-          ${(() => {
-            const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
-            return target?.status === "archived"
-              ? html`${resolveIcon(":workflow:")} Unarchive`
-              : html`${resolveIcon(":box:")} Archive`;
-          })()}
-        </${MenuItem}>
-        <${MenuItem} onClick=${() => handleContextAction("copy-id")}>${resolveIcon(":copy:")} Copy ID</${MenuItem}>
-        <${Divider} />
-        <${MenuItem} onClick=${() => handleContextAction("delete")} sx=${{ color: "error.main" }}>
-          ${resolveIcon(":trash:")} Delete
-        </${MenuItem}>
-      </${Menu}>
+        items=${[
+          { key: "open", label: "Open", icon: ":chat:", onClick: () => handleContextAction("open") },
+          { key: "rename", label: "Edit title", icon: ":edit:", onClick: () => handleContextAction("rename") },
+          {
+            key: "archive",
+            label: (() => {
+              const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
+              return target?.status === "archived" ? "Unarchive" : "Archive";
+            })(),
+            icon: (() => {
+              const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
+              return target?.status === "archived" ? ":workflow:" : ":box:";
+            })(),
+            onClick: () => handleContextAction("archive"),
+          },
+          { key: "copy-id", label: "Copy ID", icon: ":copy:", onClick: () => handleContextAction("copy-id") },
+          { kind: "divider", key: "danger-divider" },
+          { key: "delete", label: "Delete", icon: ":trash:", danger: true, onClick: () => handleContextAction("delete") },
+        ]}
+      />
     </${Paper}>
   `;
 }
-
-

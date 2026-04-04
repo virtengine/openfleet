@@ -8,6 +8,7 @@ import {
   NodeStatus,
 } from "../workflow/workflow-engine.mjs";
 import { registerNodeType } from "../workflow/workflow-nodes.mjs";
+import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ function makeTmpEngine(services = {}) {
 }
 
 function cleanup() {
+  resetStateLedgerCache();
   if (tmpDir && existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -305,6 +307,25 @@ describe("Snapshot create / restore lifecycle", () => {
     expect(result.runId).not.toBe(ctx.id);
     expect(result.workflowId).toBe(wf.id);
     expect(result.ctx?.data?._replayTrajectory?.restoredFrom).toBe(ctx.id);
+  });
+
+  it("lists and restores snapshots from sqlite when the snapshot file is missing", async () => {
+    const wf = makeWorkflow(
+      [{ id: "n1", type: PASS_TYPE, label: "A", config: {} }],
+      [],
+    );
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id);
+    const snap = engine.createRunSnapshot(ctx.id);
+
+    rmSync(snap.path, { force: true });
+
+    const snapshots = engine.listSnapshots(wf.id);
+    expect(snapshots.some((entry) => entry.snapshotId === ctx.id)).toBe(true);
+
+    const restored = await engine.restoreFromSnapshot(ctx.id);
+    expect(restored.workflowId).toBe(wf.id);
+    expect(restored.snapshotId).toBe(ctx.id);
   });
 
   it("persists trajectory replay data and short step summaries in run detail", async () => {

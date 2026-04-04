@@ -48,6 +48,11 @@ describe("session-tracker", () => {
       expect(session.totalEvents).toBe(0);
     });
 
+    it("uses a bounded default history budget for primary chat sessions", () => {
+      const session = tracker.createSession({ id: "chat-default-budget", type: "primary" });
+      expect(session.maxMessages).toBe(600);
+    });
+
     it("ends a session with status", () => {
       tracker.startSession("task-1", "Test Task");
       tracker.endSession("task-1", "completed");
@@ -613,6 +618,31 @@ describe("session-tracker", () => {
       expect(tracker.getSession("task-1")).toBeNull();
     });
 
+    it("suppresses late-event auto-recreation after a session is removed", () => {
+      tracker.createSession({ id: "task-retired", type: "primary" });
+      tracker.removeSession("task-retired");
+
+      tracker.recordEvent("task-retired", {
+        role: "assistant",
+        type: "agent_message",
+        content: "late event should be ignored",
+        timestamp: new Date().toISOString(),
+      });
+      expect(tracker.getSession("task-retired")).toBeNull();
+
+      tracker.createSession({ id: "task-retired", type: "primary" });
+      tracker.recordEvent("task-retired", {
+        role: "assistant",
+        type: "agent_message",
+        content: "fresh event should be accepted",
+        timestamp: new Date().toISOString(),
+      });
+
+      const session = tracker.getSession("task-retired");
+      expect(session).toBeTruthy();
+      expect(session.messages.at(-1)?.content).toContain("fresh event should be accepted");
+    });
+
     it("tracks stats", () => {
       tracker.startSession("task-1", "Test 1");
       tracker.startSession("task-2", "Test 2");
@@ -664,7 +694,7 @@ describe("session-tracker", () => {
             status: "idle",
             lifecycleStatus: "active",
             runtimeState: "idle",
-            runtimeIsLive: true,
+            runtimeIsLive: false,
           }),
         );
       } finally {

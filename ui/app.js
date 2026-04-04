@@ -79,8 +79,7 @@ function normalizeRenderableType(type) {
 
 function h(type, props, ...rest) {
   if (Array.isArray(type)) {
-    console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
-    return _h(_PreactFragment, null, ...type);
+    return _h(_PreactFragment, props, ...type, ...rest);
   }
   const normalizedType = normalizeRenderableType(type);
   if (normalizedType == null) {
@@ -524,6 +523,7 @@ const WorkflowsTab = lazyTab("./tabs/workflows.js", "WorkflowsTab", () => import
 const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab", () => import("./tabs/library.js"));
 const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab", () => import("./tabs/library.js"));
 const ManualFlowsTab = lazyTab("./tabs/manual-flows.js", "ManualFlowsTab", () => import("./tabs/manual-flows.js"));
+const ContextCompressionLabTab = lazyTab("./tabs/context-compression-lab.js", "ContextCompressionLabTab", () => import("./tabs/context-compression-lab.js"));
 
 /* ── Shared components ── */
 
@@ -811,10 +811,15 @@ const TAB_COMPONENTS = {
   telemetry: TelemetryTab,
   workflows: WorkflowsTab,
   "manual-flows": ManualFlowsTab,
+  "context-compression-lab": ContextCompressionLabTab,
   library: LibraryTab,
   marketplace: LibraryMarketplaceTab,
   settings: SettingsTab,
   integrations: IntegrationsTab,
+};
+
+const HIDDEN_TAB_CONFIG = {
+  "context-compression-lab": { id: "context-compression-lab", label: "Compression Lab" },
 };
 
 function getMaxFreshnessMs(rawFreshness) {
@@ -883,7 +888,11 @@ function Header() {
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
   const freshness = getMaxFreshnessMs(dataFreshness.value);
-  const activeConfig = TAB_CONFIG.find((tab) => tab.id === activeTab.value) || TAB_CONFIG[0] || { id: "dashboard", label: "Dashboard" };
+  const activeConfig =
+    TAB_CONFIG.find((tab) => tab.id === activeTab.value)
+    || HIDDEN_TAB_CONFIG[activeTab.value]
+    || TAB_CONFIG[0]
+    || { id: "dashboard", label: "Dashboard" };
   const sessionId = selectedSessionId.value;
   const activeSession = (sessionsData.value || []).find((session) => session?.id === sessionId);
   const breadcrumbParts = [activeConfig.label];
@@ -1238,7 +1247,11 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   const [logState, setLogState] = useState("idle");
   const [insights, setInsights] = useState(null);
   const [insightState, setInsightState] = useState("idle");
-  const workspaceHint = resolveSessionWorkspaceHint(session, "active");
+  const sessionWorkspaceFallback =
+    activeTab.value === "chat"
+      ? "active"
+      : "all";
+  const workspaceHint = resolveSessionWorkspaceHint(session, sessionWorkspaceFallback);
   const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
   const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
@@ -1308,7 +1321,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
   }, [isSessionTab, sessionId, session?.taskId, session?.branch, lifecycle.isActive]);
 
   useEffect(() => {
-    if (!isSessionTab || !sessionId) {
+    if (!isSessionTab || !sessionId || !session) {
       setInsights(null);
       setInsightState("idle");
       return;
@@ -1362,25 +1375,32 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
       active = false;
       stop();
     };
-  }, [isSessionTab, sessionId, workspaceHint]);
+  }, [isSessionTab, session?.id, sessionId, workspaceHint]);
 
   const insightsTotals = insights?.totals || null;
   const insightsFileCounts = insights?.fileCounts || null;
   const insightsTopTools = Array.isArray(insights?.topTools) ? insights.topTools : [];
+  const surfaceContextBreakdown = Array.isArray(session?.surface?.contextBreakdown)
+    ? session.surface.contextBreakdown
+    : [];
   const insightsContextBreakdown = Array.isArray(insights?.contextBreakdown)
     ? insights.contextBreakdown
     : [];
-  const contextWindow = insights?.contextWindow || null;
-  const tokenUsage = insights?.tokenUsage || null;
+  const contextBreakdown = surfaceContextBreakdown.length > 0
+    ? surfaceContextBreakdown
+    : insightsContextBreakdown;
+  const contextWindow = session?.surface?.contextWindow || insights?.contextWindow || null;
+  const tokenUsage = session?.surface?.tokenUsage || insights?.tokenUsage || null;
+  const compaction = session?.surface?.compaction || null;
   const recentActions = Array.isArray(insights?.recentActions) ? insights.recentActions : [];
 
   // Context window breakdown grouping
   const _SYSTEM_CTX = new Set(["system instructions", "tool definitions", "system"]);
   const _USER_CTX = new Set(["messages", "files", "tool results", "user context"]);
   const ctxRefTokens = contextWindow?.totalTokens || tokenUsage?.totalTokens || 0;
-  const ctxSystemRows = insightsContextBreakdown.filter((r) => _SYSTEM_CTX.has(String(r.label || "").toLowerCase()));
-  const ctxUserRows = insightsContextBreakdown.filter((r) => _USER_CTX.has(String(r.label || "").toLowerCase()));
-  const ctxOtherRows = insightsContextBreakdown.filter(
+  const ctxSystemRows = contextBreakdown.filter((r) => _SYSTEM_CTX.has(String(r.label || "").toLowerCase()));
+  const ctxUserRows = contextBreakdown.filter((r) => _USER_CTX.has(String(r.label || "").toLowerCase()));
+  const ctxOtherRows = contextBreakdown.filter(
     (r) => !_SYSTEM_CTX.has(String(r.label || "").toLowerCase()) && !_USER_CTX.has(String(r.label || "").toLowerCase()),
   );
   const renderCtxRow = (row, idx) => {
@@ -1488,7 +1508,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                         <div class="inspector-metric"><span class="label">Messages</span><strong>${formatCompactCount(insightsTotals.messages)}</strong></div>
                         <div class="inspector-metric"><span class="label">Errors</span><strong>${formatCompactCount(insightsTotals.errors)}</strong></div>
                       </div>
-                      ${(contextWindow || tokenUsage || insightsContextBreakdown.length > 0 || insightsTopTools.length > 0) &&
+                      ${(contextWindow || tokenUsage || contextBreakdown.length > 0 || insightsTopTools.length > 0 || compaction) &&
                         html`
                           <div class="inspector-context">
                             <div class="inspector-ctx-header">
@@ -1504,6 +1524,25 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                             ${contextWindow?.usedTokens != null &&
                               html`<div class="inspector-ctx-summary">
                                 ${formatCompactCount(contextWindow.usedTokens)}${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)} tokens` : " tokens"}
+                              </div>`}
+                            ${(contextWindow?.remainingTokens != null || contextWindow?.reservedForResponseTokens != null || compaction) &&
+                              html`<div class="inspector-ctx-group">
+                                <div class="inspector-ctx-group-label">Headroom</div>
+                                ${contextWindow?.remainingTokens != null &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Remaining</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(contextWindow.remainingTokens)}</span></span>
+                                  </div>`}
+                                ${contextWindow?.reservedForResponseTokens != null &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Reserved for Response</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(contextWindow.reservedForResponseTokens)}</span></span>
+                                  </div>`}
+                                ${compaction &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Compaction</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(compaction.compactEvents || 0)}</span><span class="inspector-ctx-pct">${String(compaction.state || compaction.mode || "normal").replaceAll("_", " ")}</span></span>
+                                  </div>`}
                               </div>`}
                             ${ctxSystemRows.length > 0 &&
                               html`<div class="inspector-ctx-group">
@@ -1527,6 +1566,11 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer, collapsed =
                                   <span>Output</span>
                                   <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.outputTokens)}</span></span>
                                 </div>
+                                ${Number(tokenUsage.cacheInputTokens || 0) > 0 &&
+                                  html`<div class="inspector-ctx-row">
+                                    <span>Cache In</span>
+                                    <span class="inspector-ctx-row-right"><span class="inspector-ctx-tokens">${formatCompactCount(tokenUsage.cacheInputTokens)}</span></span>
+                                  </div>`}
                               </div>`}
                             ${insightsTopTools.length > 0 &&
                               html`<div class="inspector-ctx-group">

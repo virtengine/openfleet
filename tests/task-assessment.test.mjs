@@ -206,7 +206,7 @@ describe("task-assessment", () => {
       expect(result.success).toBe(true);
       expect(result.prompt).toContain("pnpm-lock.yaml");
       expect(result.prompt).toContain("package-lock.json");
-      expect(result.prompt).toContain("git rebase --continue");
+      expect(result.prompt).toContain("git merge --continue");
     });
 
     it("returns reprompt_same for go.sum conflicts", () => {

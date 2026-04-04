@@ -19,7 +19,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { execSync, execFileSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
@@ -64,7 +64,39 @@ export function listBuiltinNodeDefinitions() {
   }));
 }
 
-function makeIsolatedGitEnv(extra = {}) {
+function appendSafeDirectoryGitConfig(env, safeDirectories = []) {
+  const normalizedDirectories = Array.from(new Set(
+    (Array.isArray(safeDirectories) ? safeDirectories : [safeDirectories])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((value) => resolve(value)),
+  ));
+  if (normalizedDirectories.length === 0) return env;
+
+  const nextEnv = { ...env };
+  let configCount = Number.parseInt(String(nextEnv.GIT_CONFIG_COUNT || "0"), 10);
+  if (!Number.isFinite(configCount) || configCount < 0) configCount = 0;
+
+  const existingSafeDirectories = new Set();
+  for (let index = 0; index < configCount; index += 1) {
+    if (String(nextEnv[`GIT_CONFIG_KEY_${index}`] || "").trim() !== "safe.directory") continue;
+    const existingValue = String(nextEnv[`GIT_CONFIG_VALUE_${index}`] || "").trim();
+    if (existingValue) existingSafeDirectories.add(resolve(existingValue));
+  }
+
+  for (const directory of normalizedDirectories) {
+    if (existingSafeDirectories.has(directory)) continue;
+    nextEnv[`GIT_CONFIG_KEY_${configCount}`] = "safe.directory";
+    nextEnv[`GIT_CONFIG_VALUE_${configCount}`] = directory;
+    existingSafeDirectories.add(directory);
+    configCount += 1;
+  }
+
+  nextEnv.GIT_CONFIG_COUNT = String(configCount);
+  return nextEnv;
+}
+
+function makeIsolatedGitEnv(extra = {}, options = {}) {
   const env = { ...process.env, ...extra };
   for (const key of [
     "GIT_DIR",
@@ -77,7 +109,11 @@ function makeIsolatedGitEnv(extra = {}) {
   ]) {
     delete env[key];
   }
-  return env;
+  const safeDirectories = [
+    ...(Array.isArray(options?.safeDirectories) ? options.safeDirectories : []),
+    options?.cwd,
+  ];
+  return appendSafeDirectoryGitConfig(env, safeDirectories);
 }
 
 function resolveGitCandidates(env = process.env) {
@@ -179,16 +215,31 @@ function execGitArgsSync(args, options = {}) {
   const gitArgs = args.map((arg) => String(arg));
   let lastEnoent = null;
   for (const gitBinary of resolveGitCandidates(env)) {
-
+    const execOptions = {
+      ...options,
+      env: buildGitExecutionEnv(env, gitBinary),
+    };
     try {
-      return execFileSync(gitBinary, gitArgs, {
-        ...options,
-        env: buildGitExecutionEnv(env, gitBinary),
-      });
+      return execFileSync(gitBinary, gitArgs, execOptions);
     } catch (error) {
       if (error?.code === "ENOENT") {
         lastEnoent = error;
         continue;
+      }
+      if (process.platform === "win32" && error?.code === "EPERM") {
+        const fallback = spawnSync(gitBinary, gitArgs, execOptions);
+        if (fallback?.error?.code === "ENOENT") {
+          lastEnoent = fallback.error;
+          continue;
+        }
+        if (!fallback?.error && Number(fallback?.status) === 0) {
+          return fallback.stdout;
+        }
+        if (fallback?.error) {
+          fallback.error.stdout = fallback.stdout;
+          fallback.error.stderr = fallback.stderr;
+          throw fallback.error;
+        }
       }
       throw error;
     }
@@ -1231,6 +1282,7 @@ export {
   buildGitExecutionEnv,
   buildTaskContextBlock,
   buildWorkflowAgentToolContract,
+  appendSafeDirectoryGitConfig,
   collectWakePhraseCandidates,
   condenseAgentItems,
   createKanbanTaskWithProject,

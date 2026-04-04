@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
 
@@ -28,6 +28,7 @@ describe("task-claims", () => {
   beforeEach(async () => {
     tempRoot = await mkdtemp(resolve(tmpdir(), "codex-claims-"));
     vi.clearAllMocks();
+    vi.resetModules();
   });
 
   afterEach(async () => {
@@ -50,6 +51,7 @@ describe("task-claims", () => {
     let initTaskClaims, claimTask, getClaim;
 
     beforeEach(async () => {
+      vi.resetModules();
       ({ initTaskClaims, claimTask, getClaim } = await import(
         "../task/task-claims.mjs"
       ));
@@ -118,6 +120,21 @@ describe("task-claims", () => {
       const claim = await getClaim("task-1");
       expect(claim.metadata.branch).toBe("ve/task-1");
       expect(claim.metadata.agent).toBe("codex");
+    });
+
+    it("registers explicit claim owners in presence when granting a claim", async () => {
+      const { notePresence } = vi.mocked(await import("../infra/presence.mjs"));
+
+      const result = await claimTask({
+        taskId: "task-presence",
+        instanceId: "instance-explicit",
+      });
+
+      expect(result.success).toBe(true);
+      expect(notePresence).toHaveBeenCalledWith(
+        expect.objectContaining({ instance_id: "instance-explicit" }),
+        expect.objectContaining({ source: "task-claim" }),
+      );
     });
 
     it("reclaims a task when existing owner is stale/offline and shared state accepts the takeover", async () => {
@@ -468,6 +485,8 @@ describe("task-claims", () => {
       ({ initTaskClaims, claimTask, listClaims } = await import(
         "../task/task-claims.mjs"
       ));
+      const { listActiveInstances } = vi.mocked(await import("../infra/presence.mjs"));
+      listActiveInstances.mockReturnValue([]);
       await initTaskClaims({ repoRoot: tempRoot });
     });
 
@@ -513,6 +532,33 @@ describe("task-claims", () => {
 
       expect(claims).toHaveLength(1);
       expect(claims[0].task_id).toBe("task-1");
+    });
+
+    it("excludes stale claims by default and rewrites the registry", async () => {
+      const { _test } = await import("../task/task-claims.mjs");
+
+      await claimTask({ taskId: "task-1", instanceId: "instance-1" });
+
+      const registry = await _test.loadClaimsRegistry();
+      registry.claims["task-stale"] = {
+        task_id: "task-stale",
+        instance_id: "instance-stale",
+        claim_token: "token-stale",
+        claimed_at: new Date(Date.now() - 10_000).toISOString(),
+        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        ttl_minutes: 60,
+        metadata: {
+          host: hostname(),
+          pid: 999999,
+        },
+      };
+      await _test.saveClaimsRegistry(registry);
+
+      const claims = await listClaims();
+
+      expect(claims).toHaveLength(1);
+      expect(claims[0].task_id).toBe("task-1");
+      expect(await _test.loadClaimsRegistry()).not.toHaveProperty(["claims", "task-stale"]);
     });
 
     it("includes expired claims when requested", async () => {
@@ -808,6 +854,82 @@ describe("task-claims", () => {
       expect(result.success).toBe(true);
       expect(result.resolution.override).toBe(true);
       expect(result.resolution.reason).toBe("new_is_coordinator");
+    });
+  });
+
+  describe("saveClaimsRegistry", () => {
+    beforeEach(() => {
+      vi.resetModules();
+    });
+
+    afterEach(() => {
+      vi.resetModules();
+      vi.doUnmock("node:fs/promises");
+    });
+
+    it("preserves the last good registry when atomic replace keeps failing", async () => {
+      const actualFs = await vi.importActual("node:fs/promises");
+      const renameMock = vi.fn(async (from, to) => {
+        if (String(to || "").endsWith("task-claims.json")) {
+          const err = new Error("busy");
+          err.code = "EINVAL";
+          throw err;
+        }
+        return actualFs.rename(from, to);
+      });
+      const copyFileMock = vi.fn(actualFs.copyFile);
+      const writeFileMock = vi.fn(actualFs.writeFile);
+
+      vi.doMock("node:fs/promises", () => ({
+        ...actualFs,
+        rename: renameMock,
+        copyFile: copyFileMock,
+        writeFile: writeFileMock,
+      }));
+
+      const { initTaskClaims, _test } = await import("../task/task-claims.mjs");
+      await initTaskClaims({ repoRoot: tempRoot });
+
+      const cacheDir = resolve(tempRoot, ".cache/bosun");
+      const registryPath = resolve(cacheDir, "task-claims.json");
+      await actualFs.writeFile(
+        registryPath,
+        JSON.stringify(
+          {
+            version: 1,
+            claims: {
+              existing: {
+                task_id: "existing",
+                instance_id: "instance-1",
+              },
+            },
+            updated_at: "2026-04-02T00:00:00.000Z",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      await expect(
+        _test.saveClaimsRegistry({
+          version: 1,
+          claims: {
+            replacement: {
+              task_id: "replacement",
+              instance_id: "instance-2",
+            },
+          },
+        }),
+      ).rejects.toThrow("Failed to replace claims registry atomically");
+
+      const persisted = JSON.parse(await actualFs.readFile(registryPath, "utf8"));
+      expect(persisted.claims.existing).toBeDefined();
+      expect(persisted.claims.replacement).toBeUndefined();
+      expect(copyFileMock).not.toHaveBeenCalled();
+
+      const remainingFiles = await actualFs.readdir(cacheDir);
+      expect(remainingFiles.some((name) => name.includes("task-claims.json.tmp-"))).toBe(false);
     });
   });
 

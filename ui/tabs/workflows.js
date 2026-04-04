@@ -40,6 +40,7 @@ import {
   canUpdateCanvasEdgePortMapping,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
+import { AppContextMenu } from "../components/context-menu.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
@@ -47,7 +48,7 @@ import {
   TextField, Select, MenuItem, FormControl, InputLabel, Switch,
   FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
   Dialog, DialogTitle, DialogContent, DialogActions,
-  Tabs, Tab, Fab, Menu as MuiMenu,
+  Tabs, Tab, Fab,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
 } from "@mui/material";
 import { activeWorkspaceId } from "../components/workspace-switcher.js";
@@ -65,9 +66,13 @@ const workflowRunsTotal = signal(0);
 const workflowRunsHasMore = signal(false);
 const workflowRunsNextOffset = signal(0);
 const workflowRunsLoadingMore = signal(false);
+const workflowRunsLoading = signal(false);
+const workflowRunsError = signal("");
 const workflowRunsScopeId = signal(null);
 const selectedRunId = signal(null);
 const selectedRunDetail = signal(null);
+const workflowRunDetailLoading = signal(false);
+const workflowRunDetailError = signal("");
 const canvasZoom = signal(1);
 const canvasOffset = signal({ x: 0, y: 0 });
 const selectedNodeId = signal(null);
@@ -156,6 +161,19 @@ function mergeWorkflowRunPages(existingRuns, nextRuns) {
   const merged = [];
   const seen = new Set();
   for (const run of [...(existingRuns || []), ...(nextRuns || [])]) {
+    const runId = String(run?.runId || "").trim();
+    const dedupeKey = runId || JSON.stringify(run);
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    merged.push(run);
+  }
+  return merged;
+}
+
+function mergeWorkflowRunRefresh(existingRuns, nextRuns) {
+  const merged = [];
+  const seen = new Set();
+  for (const run of [...(nextRuns || []), ...(existingRuns || [])]) {
     const runId = String(run?.runId || "").trim();
     const dedupeKey = runId || JSON.stringify(run);
     if (seen.has(dedupeKey)) continue;
@@ -1069,6 +1087,10 @@ async function openWorkflowCopilotChat(prompt, opts = {}) {
     const created = await createSession({
       type: "primary",
       reuseFresh: false,
+      workspaceId: activeWorkspaceId.value || undefined,
+      source: "workflow-copilot",
+      visibility: "hidden",
+      hiddenInLists: true,
       ...(opts?.title ? { title: String(opts.title) } : {}),
     });
     const session = created?.session || null;
@@ -2198,6 +2220,7 @@ async function relayoutInstalledTemplateWorkflows() {
 
 async function loadRuns(workflowId, opts = {}) {
   const append = opts.append === true;
+  const preserveExisting = opts.preserveExisting === true && !append;
   const hasScopedWorkflowId = workflowId !== undefined;
   const scopedWorkflowId = hasScopedWorkflowId
     ? (workflowId ? String(workflowId) : null)
@@ -2209,7 +2232,7 @@ async function loadRuns(workflowId, opts = {}) {
     const rawLimit =
       opts.limit != null
         ? Number(opts.limit)
-        : (append ? WORKFLOW_RUN_PAGE_SIZE : Number(workflowRunsLimit.value));
+        : (append || preserveExisting ? WORKFLOW_RUN_PAGE_SIZE : Number(workflowRunsLimit.value));
     const rawOffset =
       opts.offset != null
         ? Number(opts.offset)
@@ -2226,47 +2249,74 @@ async function loadRuns(workflowId, opts = {}) {
       ? `/api/workflows/${scopedWorkflowId}/runs`
       : "/api/workflows/runs";
     if (append) workflowRunsLoadingMore.value = true;
-    const data = await apiFetch(`${baseUrl}?limit=${limit}&offset=${offset}`);
+    else workflowRunsLoading.value = true;
+    workflowRunsError.value = "";
+    const existingRunCount = Array.isArray(workflowRuns.value) ? workflowRuns.value.length : 0;
+    const data = await apiFetch(buildWorkflowRunApiPath(`${baseUrl}?limit=${limit}&offset=${offset}`));
     if (data?.runs) {
       const pageRuns = Array.isArray(data.runs) ? data.runs : [];
       const mergedRuns = append
         ? mergeWorkflowRunPages(workflowRuns.value, pageRuns)
-        : pageRuns;
+        : (preserveExisting ? mergeWorkflowRunRefresh(workflowRuns.value, pageRuns) : pageRuns);
       const total = Number(data?.pagination?.total);
       const nextOffset = Number(data?.pagination?.nextOffset);
       const hasMore = data?.pagination?.hasMore === true;
+      const effectiveLoadedCount = preserveExisting
+        ? Math.max(existingRunCount, mergedRuns.length)
+        : mergedRuns.length;
       workflowRuns.value = mergedRuns;
       workflowRunsScopeId.value = scopedWorkflowId;
       workflowRunsLimit.value = mergedRuns.length;
-      workflowRunsTotal.value = Number.isFinite(total) ? total : mergedRuns.length;
-      workflowRunsNextOffset.value = Number.isFinite(nextOffset) ? nextOffset : mergedRuns.length;
-      workflowRunsHasMore.value = hasMore || mergedRuns.length < workflowRunsTotal.value;
+      workflowRunsTotal.value = Number.isFinite(total) ? total : effectiveLoadedCount;
+      workflowRunsNextOffset.value = preserveExisting
+        ? Math.max(effectiveLoadedCount, Number.isFinite(nextOffset) ? nextOffset : 0)
+        : (Number.isFinite(nextOffset) ? nextOffset : mergedRuns.length);
+      workflowRunsHasMore.value = hasMore || effectiveLoadedCount < workflowRunsTotal.value;
     }
   } catch (err) {
+    workflowRunsError.value = String(err?.message || "Failed to load workflow runs");
     console.error("[workflows] Failed to load runs:", err);
   } finally {
+    if (!append) workflowRunsLoading.value = false;
     workflowRunsLoadingMore.value = false;
   }
 }
 
 async function loadRunDetail(runId, opts = {}) {
   if (!runId) return;
+  const safeRunId = String(runId || "").trim();
+  const previousRunId = String(selectedRunId.value || "").trim();
+  const clearCurrentDetail =
+    previousRunId !== safeRunId
+    || String(selectedRunDetail.value?.runId || "").trim() !== safeRunId;
+  selectedRunId.value = safeRunId;
+  if (clearCurrentDetail) {
+    selectedRunDetail.value = null;
+  }
+  workflowRunDetailLoading.value = true;
+  workflowRunDetailError.value = "";
   try {
-    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+    const data = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}`));
     if (data?.run) {
       const scopedWorkflowId = String(opts?.workflowId || workflowRunsScopeId.value || data.run.workflowId || "").trim() || null;
       if (scopedWorkflowId) {
         workflowRunsScopeId.value = scopedWorkflowId;
       }
-      selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
       viewMode.value = "runs";
-      const route = { runsView: true, runId };
+      const route = { runsView: true, runId: safeRunId };
       if (scopedWorkflowId) route.runsWorkflowId = scopedWorkflowId;
       setRouteParams(route, { replace: false, skipGuard: true });
+      workflowRunDetailError.value = "";
+      return;
     }
+    selectedRunDetail.value = null;
+    workflowRunDetailError.value = "Workflow run not found.";
   } catch (err) {
-    showToast("Failed to load run details", "error");
+    selectedRunDetail.value = null;
+    workflowRunDetailError.value = String(err?.message || "Failed to load run details");
+  } finally {
+    workflowRunDetailLoading.value = false;
   }
 }
 
@@ -2345,19 +2395,39 @@ function isWildcardPortType(type) {
   return normalized === "*" || normalized === "Any";
 }
 
+function normalizePortTypeForCompatibility(type) {
+  const normalized = String(type || "").trim();
+  if (!normalized) return "Any";
+  const lowered = normalized.toLowerCase();
+  if (["*", "any"].includes(lowered)) return "Any";
+  if (["taskdef"].includes(lowered)) return "json";
+  if (["json", "object"].includes(lowered)) return "json";
+  if (["string", "text"].includes(lowered)) return "string";
+  if (["boolean", "bool"].includes(lowered)) return "boolean";
+  if (["number", "numeric", "float", "int", "integer"].includes(lowered)) return "number";
+  return lowered;
+}
+
 function isPortConnectionCompatible(sourcePort, targetPort) {
   if (!sourcePort || !targetPort) return { compatible: true, reason: null };
   const sourceType = String(sourcePort.type || "Any").trim() || "Any";
   const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const normalizedSourceType = normalizePortTypeForCompatibility(sourceType);
+  const normalizedTargetType = normalizePortTypeForCompatibility(targetType);
   const accepted = new Set(
     [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
-      .map((value) => String(value || "").trim())
+      .map((value) => normalizePortTypeForCompatibility(value))
       .filter(Boolean),
   );
-  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+  if (
+    isWildcardPortType(sourceType)
+    || isWildcardPortType(targetType)
+    || accepted.has(normalizePortTypeForCompatibility("*"))
+    || accepted.has(normalizePortTypeForCompatibility("Any"))
+  ) {
     return { compatible: true, reason: null };
   }
-  if (sourceType === targetType || accepted.has(sourceType)) {
+  if (normalizedSourceType === normalizedTargetType || accepted.has(normalizedSourceType)) {
     return { compatible: true, reason: null };
   }
   return {
@@ -2735,7 +2805,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           setLiveNodeStatuses({});
           return;
         }
-        const detailResponse = await apiFetch(`/api/workflows/runs/${targetRun.runId}`);
+        const detailResponse = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${targetRun.runId}`));
         if (cancelled) return;
         const detailedRun = detailResponse?.run || targetRun;
         setLiveRun(detailedRun);
@@ -3472,7 +3542,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setSelectedNodeIds(new Set(group.nodeIds || []));
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
-    setContextMenu({ x: e.clientX, y: e.clientY, groupId: group.id });
+    setContextMenu({ mouseX: e.clientX + 2, mouseY: e.clientY - 6, groupId: group.id });
   }, [groups]);
 
   const onNodeMouseDown = useCallback((nodeId, e) => {
@@ -3570,7 +3640,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     }
     selectedNodeId.value = nodeId;
     setSelectedGroupId(null);
-    setContextMenu({ x: e.clientX, y: e.clientY, nodeId });
+    setContextMenu({ mouseX: e.clientX + 2, mouseY: e.clientY - 6, nodeId });
   }, [onGroupContextMenu, renderNodes]);
 
   // ── Port / connection interaction ─────────────────────────
@@ -4628,58 +4698,88 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       `}
 
       <!-- Context Menu -->
-      ${contextMenu && html`
-        <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
-          ${contextMenu.groupId ? html`
-            <${MenuItem} onClick=${() => { handleToggleActiveGroup(); setContextMenu(null); }}>
-              <span class="btn-icon">${resolveIcon(activeGroup?.collapsed ? "play" : "pause")}</span>
-              ${activeGroup?.collapsed ? "Expand Group" : "Collapse Group"}
-            <//>
-          ` : html`
-            <${MenuItem}
-              onClick=${() => {
-                const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
-                setContextMenu(null);
-                openWorkflowCopilotFromCanvas({
-                  intent: "node",
-                  nodeId: contextMenu.nodeId,
-                  title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
-                  successToast: "Opened node copilot chat",
-                });
-              }}
-            >
-              <span class="btn-icon">${resolveIcon("bot")}</span>
-              Ask Bosun About Node
-            <//>
-            <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
-              <span class="btn-icon">${resolveIcon("settings")}</span>
-              Edit Config
-            <//>
-            <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
-              <span class="btn-icon">${resolveIcon("clipboard")}</span>
-              Duplicate
-            <//>
-          `}
-          ${selectedNodeIds.size > 1 && html`
-            <${MenuItem} onClick=${() => { handleCreateGroup(); setContextMenu(null); }}>
-              <span class="btn-icon">${resolveIcon("plus")}</span>
-              Create Group
-            <//>
-          `}
-          ${activeGroup && !contextMenu.groupId && html`
-            <${MenuItem} onClick=${() => { handleToggleActiveGroup(); setContextMenu(null); }}>
-              <span class="btn-icon">${resolveIcon(activeGroup.collapsed ? "play" : "pause")}</span>
-              ${activeGroup.collapsed ? "Expand Group" : "Collapse Group"}
-            <//>
-          `}
-          ${!contextMenu.groupId && html`
-            <${MenuItem} onClick=${() => { deleteNode(contextMenu.nodeId); }} sx=${{ color: '#ef4444' }}>
-              <span class="btn-icon">${resolveIcon("trash")}</span>
-              Delete
-            <//>
-          `}
-        </div>
-      `}
+      <${AppContextMenu}
+        menu=${contextMenu}
+        onClose=${() => setContextMenu(null)}
+        items=${[
+          contextMenu?.groupId
+            ? {
+                key: "toggle-group",
+                label: activeGroup?.collapsed ? "Expand Group" : "Collapse Group",
+                icon: activeGroup?.collapsed ? ":play:" : ":pause:",
+                onClick: () => {
+                  handleToggleActiveGroup();
+                  setContextMenu(null);
+                },
+              }
+            : {
+                key: "ask-node",
+                label: "Ask Bosun About Node",
+                icon: ":bot:",
+                hidden: !contextMenu?.nodeId,
+                onClick: () => {
+                  const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
+                  setContextMenu(null);
+                  openWorkflowCopilotFromCanvas({
+                    intent: "node",
+                    nodeId: contextMenu.nodeId,
+                    title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
+                    successToast: "Opened node copilot chat",
+                  });
+                },
+              },
+          {
+            key: "edit-node",
+            label: "Edit Config",
+            icon: ":settings:",
+            hidden: !contextMenu?.nodeId || Boolean(contextMenu?.groupId),
+            onClick: () => {
+              setEditingNode(contextMenu.nodeId);
+              setContextMenu(null);
+            },
+          },
+          {
+            key: "duplicate-node",
+            label: "Duplicate",
+            icon: ":clipboard:",
+            hidden: !contextMenu?.nodeId || Boolean(contextMenu?.groupId),
+            onClick: () => duplicateNode(contextMenu.nodeId),
+          },
+          {
+            key: "create-group",
+            label: "Create Group",
+            icon: ":plus:",
+            hidden: selectedNodeIds.size <= 1,
+            onClick: () => {
+              handleCreateGroup();
+              setContextMenu(null);
+            },
+          },
+          {
+            key: "toggle-active-group",
+            label: activeGroup?.collapsed ? "Expand Group" : "Collapse Group",
+            icon: activeGroup?.collapsed ? ":play:" : ":pause:",
+            hidden: !activeGroup || Boolean(contextMenu?.groupId),
+            onClick: () => {
+              handleToggleActiveGroup();
+              setContextMenu(null);
+            },
+          },
+          {
+            kind: "divider",
+            key: "delete-divider",
+            hidden: !contextMenu?.nodeId || Boolean(contextMenu?.groupId),
+          },
+          {
+            key: "delete-node",
+            label: "Delete",
+            icon: ":trash:",
+            danger: true,
+            hidden: !contextMenu?.nodeId || Boolean(contextMenu?.groupId),
+            onClick: () => deleteNode(contextMenu.nodeId),
+          },
+        ]}
+      />
 
       <${Dialog} open=${importDialogOpen} onClose=${() => setImportDialogOpen(false)} maxWidth="md" fullWidth>
         <${DialogTitle}>Import Workflow JSON</${DialogTitle}>
@@ -5799,6 +5899,7 @@ function WorkflowListView() {
   const tmpls = templates.value || [];
   const isWorkflowListLoading = workflowsLoading.value;
   const isTemplateListLoading = templatesLoading.value;
+  const [workflowCardContextMenu, setWorkflowCardContextMenu] = useState(null);
   const installedTemplateIds = new Set();
   wfs.forEach((wf) => {
     if (wf.metadata?.installedFrom) installedTemplateIds.add(wf.metadata.installedFrom);
@@ -5830,6 +5931,66 @@ function WorkflowListView() {
   const availableTemplateGroups = useMemo(() => {
     return groupItemsByWorkflowCategory(availableTemplates, (template) => template);
   }, [availableTemplates]);
+
+  const openWorkflowCardContextMenu = useCallback((workflow, event) => {
+    if (!workflow?.id) return;
+    setWorkflowCardContextMenu({
+      workflowId: workflow.id,
+      mouseX: event.clientX + 2,
+      mouseY: event.clientY - 6,
+    });
+  }, []);
+
+  const closeWorkflowCardContextMenu = useCallback(() => {
+    setWorkflowCardContextMenu(null);
+  }, []);
+
+  const handleWorkflowCardAction = useCallback(async (action) => {
+    const workflowId = String(workflowCardContextMenu?.workflowId || "").trim();
+    if (!workflowId) {
+      closeWorkflowCardContextMenu();
+      return;
+    }
+    const workflow = (workflows.value || []).find((entry) => String(entry?.id || "") === workflowId) || null;
+    closeWorkflowCardContextMenu();
+    if (!workflow) return;
+    if (action === "open") {
+      apiFetch("/api/workflows/" + workflow.id).then((data) => {
+        activeWorkflow.value = data?.workflow || workflow;
+        viewMode.value = "canvas";
+      }).catch(() => {
+        activeWorkflow.value = workflow;
+        viewMode.value = "canvas";
+      });
+      return;
+    }
+    if (action === "copy-id") {
+      try {
+        await navigator.clipboard.writeText(workflowId);
+      } catch {
+      }
+      return;
+    }
+    if (action === "run") {
+      if (!workflow.enabled) {
+        showToast("Workflow is paused. Resume it before running.", "warning");
+        return;
+      }
+      openExecuteDialog(workflow.id);
+      return;
+    }
+    if (action === "toggle") {
+      setWorkflowEnabled(workflow.id, !workflow.enabled);
+      return;
+    }
+    if (action === "export") {
+      exportWorkflow(workflow);
+      return;
+    }
+    if (action === "delete" && workflow.core !== true) {
+      if (confirm("Delete " + workflow.name + "?")) deleteWorkflow(workflow.id);
+    }
+  }, [closeWorkflowCardContextMenu, workflowCardContextMenu?.workflowId]);
 
   return html`
     <div style="padding: 0 4px;">
@@ -5901,39 +6062,46 @@ function WorkflowListView() {
                     const isCustomizedTemplate = templateState?.isCustomized === true;
                     const isCore = wf.core === true;
                     return html`
-                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
+                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s; display: flex; flex-direction: column; gap: 8px;"
                        onClick=${() => {
                          apiFetch("/api/workflows/" + wf.id).then(d => {
                            activeWorkflow.value = d?.workflow || wf;
                            viewMode.value = "canvas";
                          }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
+                       }}
+                       onContextMenu=${(event) => {
+                         event.preventDefault();
+                         event.stopPropagation();
+                         openWorkflowCardContextMenu(wf, event);
                        }}>
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
-                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
-                      <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                        ${wf.enabled ? "Active" : "Paused"}
+                    <div style="display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;">
+                      <span class="icon-inline" style="font-size: 14px; flex: 0 0 auto; margin-top: 1px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1 1 160px; min-width: 0; line-height: 1.25;">${wf.name}</span>
+                      <span style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
+                        <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px; white-space: nowrap;">
+                          ${wf.enabled ? "Active" : "Paused"}
+                        </span>
+                        ${isCore && html`
+                          <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600; white-space: nowrap;">
+                            Core
+                          </span>
+                        `}
+                        ${templateState?.templateId && html`
+                          <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px; white-space: nowrap;">
+                            Template
+                          </span>
+                        `}
+                        ${isCustomizedTemplate && html`
+                          <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px; white-space: nowrap;">
+                            Customized
+                          </span>
+                        `}
+                        ${hasTemplateUpdate && html`
+                          <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px; white-space: nowrap;">
+                            Update Available
+                          </span>
+                        `}
                       </span>
-                      ${isCore && html`
-                        <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
-                          Core
-                        </span>
-                      `}
-                      ${templateState?.templateId && html`
-                        <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
-                          Template
-                        </span>
-                      `}
-                      ${isCustomizedTemplate && html`
-                        <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
-                          Customized
-                        </span>
-                      `}
-                      ${hasTemplateUpdate && html`
-                        <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
-                          Update Available
-                        </span>
-                      `}
                     </div>
                     ${wf.description && html`
                       <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
@@ -5948,18 +6116,20 @@ function WorkflowListView() {
                         `}
                       </div>
                     `}
-                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                      <span>${wf.nodeCount || 0} nodes</span>
-                      <span>·</span>
-                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
-                        ${group.label}
-                      </span>
-                      <div style="flex: 1;"></div>
-                      ${hasTemplateUpdate && html`
-                        <${Button}
-                          variant="text"
-                          size="small"
-                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 2px;">
+                      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                        <span style="white-space: nowrap;">${wf.nodeCount || 0} nodes</span>
+                        <span>·</span>
+                        <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5); white-space: nowrap;">
+                          ${group.label}
+                        </span>
+                      </div>
+                      <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                        ${hasTemplateUpdate && html`
+                          <${Button}
+                            variant="text"
+                            size="small"
+                            sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none', whiteSpace: 'nowrap' }}
                           onClick=${async (e) => {
                             e.stopPropagation();
                             if (!isCustomizedTemplate) {
@@ -5981,52 +6151,53 @@ function WorkflowListView() {
                               await applyTemplateUpdate(wf.id, "replace", true);
                             }
                           }}
+                          >
+                            <span class="icon-inline">${resolveIcon("refresh")}</span>
+                            Update
+                          <//>
+                        `}
+                        ${!isCore && html`<${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', textTransform: 'none', whiteSpace: 'nowrap' }}
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            setWorkflowEnabled(wf.id, !wf.enabled);
+                          }}
                         >
-                          <span class="icon-inline">${resolveIcon("refresh")}</span>
-                          Update
+                          <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                          ${wf.enabled ? "Pause" : "Resume"}
+                        <//>`}
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', textTransform: 'none', whiteSpace: 'nowrap', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            if (!wf.enabled) {
+                              showToast("Workflow is paused. Resume it before running.", "warning");
+                              return;
+                            }
+                            openExecuteDialog(wf.id);
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("play")}</span>
                         <//>
-                      `}
-                      ${!isCore && html`<${Button}
-                        variant="text"
-                        size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none' }}
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          setWorkflowEnabled(wf.id, !wf.enabled);
-                        }}
-                      >
-                        <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
-                        ${wf.enabled ? "Pause" : "Resume"}
-                      <//>`}
-                      <${Button}
-                        variant="text"
-                        size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          if (!wf.enabled) {
-                            showToast("Workflow is paused. Resume it before running.", "warning");
-                            return;
-                          }
-                          openExecuteDialog(wf.id);
-                        }}
-                      >
-                        <span class="icon-inline">${resolveIcon("play")}</span>
-                      <//>
-                      <${Button}
-                        variant="text"
-                        size="small"
-                        sx=${{ fontSize: '11px', textTransform: 'none' }}
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          exportWorkflow(wf);
-                        }}
-                      >
-                        <span class="icon-inline">${resolveIcon("save")}</span>
-                      <//>
-                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                        <span class="icon-inline">${resolveIcon("trash")}</span>
-                      <//>`}
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', textTransform: 'none', whiteSpace: 'nowrap' }}
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            exportWorkflow(wf);
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("save")}</span>
+                        <//>
+                        ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none', whiteSpace: 'nowrap' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                          <span class="icon-inline">${resolveIcon("trash")}</span>
+                        <//>`}
+                      </div>
                     </div>
                   </div>
                 `;
@@ -6037,6 +6208,19 @@ function WorkflowListView() {
           `)}
         </div>
       `}
+      <${AppContextMenu}
+        menu=${workflowCardContextMenu}
+        onClose=${closeWorkflowCardContextMenu}
+        items=${[
+          { key: "open", label: "Open workflow", icon: ":workflow:", onClick: () => handleWorkflowCardAction("open") },
+          { key: "run", label: "Run now", icon: ":play:", onClick: () => handleWorkflowCardAction("run") },
+          { key: "toggle", label: "Pause or resume", icon: ":pause:", onClick: () => handleWorkflowCardAction("toggle") },
+          { key: "export", label: "Export", icon: ":save:", onClick: () => handleWorkflowCardAction("export") },
+          { key: "copy-id", label: "Copy ID", icon: ":copy:", onClick: () => handleWorkflowCardAction("copy-id") },
+          { kind: "divider", key: "workflow-danger-divider" },
+          { key: "delete", label: "Delete", icon: ":trash:", danger: true, onClick: () => handleWorkflowCardAction("delete") },
+        ]}
+      />
 
       ${!isWorkflowListLoading && wfs.length === 0 && html`
         <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
@@ -6263,10 +6447,14 @@ function safePrettyJson(value) {
 
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const runsLoading = workflowRunsLoading.value === true;
+  const runsError = String(workflowRunsError.value || "").trim();
   const totalRuns = Number(workflowRunsTotal.value || runs.length);
   const hasMoreRuns = workflowRunsHasMore.value === true;
   const loadingMoreRuns = workflowRunsLoadingMore.value === true;
   const selectedRun = selectedRunDetail.value;
+  const runDetailLoading = workflowRunDetailLoading.value === true;
+  const runDetailError = String(workflowRunDetailError.value || "").trim();
   const scopedWorkflowId = String(workflowRunsScopeId.value || "").trim();
   const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
@@ -6291,7 +6479,46 @@ function RunHistoryView() {
   const [selectedRunSnapshots, setSelectedRunSnapshots] = useState([]);
   const [runDiagnosticsLoading, setRunDiagnosticsLoading] = useState(false);
   const [runActionBusy, setRunActionBusy] = useState("");
+  const [runRowContextMenu, setRunRowContextMenu] = useState(null);
   const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
+
+  const openRunRowContextMenu = useCallback((run, event) => {
+    if (!run?.runId) return;
+    setRunRowContextMenu({
+      runId: run.runId,
+      mouseX: event.clientX + 2,
+      mouseY: event.clientY - 6,
+    });
+  }, []);
+
+  const closeRunRowContextMenu = useCallback(() => {
+    setRunRowContextMenu(null);
+  }, []);
+
+  const handleRunRowAction = useCallback(async (action) => {
+    const runId = String(runRowContextMenu?.runId || "").trim();
+    if (!runId) {
+      closeRunRowContextMenu();
+      return;
+    }
+    const run = (workflowRuns.value || []).find((entry) => String(entry?.runId || "") === runId) || null;
+    closeRunRowContextMenu();
+    if (!run) return;
+    if (action === "open") {
+      loadRunDetail(run.runId, { workflowId: run.workflowId });
+      return;
+    }
+    if (action === "open-workflow") {
+      if (run.workflowId) openWorkflowCanvas(run.workflowId);
+      return;
+    }
+    if (action === "copy-id") {
+      try {
+        await navigator.clipboard.writeText(runId);
+      } catch {
+      }
+    }
+  }, [closeRunRowContextMenu, runRowContextMenu?.runId]);
 
   const loadApprovals = useCallback(async (statusOverride = approvalStatusFilter) => {
     setApprovalQueueLoading(true);
@@ -6368,13 +6595,17 @@ function RunHistoryView() {
 
   useEffect(() => {
     let cancelled = false;
-    const pollMs = hasRunningRuns || selectedRunIsRunning ? 3000 : 15000;
+    const pollMs = hasRunningRuns || selectedRunIsRunning ? 8000 : 20000;
 
     const poll = async () => {
       if (cancelled) return;
-      await loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) }).catch(() => {});
-      await loadApprovals(approvalStatusFilter).catch(() => {});
-      if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
+      const activeRunId = String(selectedRunId.value || "").trim();
+      if (!activeRunId) {
+        await loadRuns(undefined, { preserveExisting: true }).catch(() => {});
+        await loadApprovals(approvalStatusFilter).catch(() => {});
+        return;
+      }
+      if (!cancelled && selectedRunIsRunning) {
         await loadRunDetail(selectedRunId.value).catch(() => {});
       }
     };
@@ -6385,7 +6616,7 @@ function RunHistoryView() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [approvalStatusFilter, hasRunningRuns, loadApprovals, runs.length, selectedRunIsRunning, selectedRunId.value]);
+  }, [approvalStatusFilter, hasRunningRuns, loadApprovals, selectedRunIsRunning, selectedRunId.value]);
 
   const workflowOptions = useMemo(() => {
     const map = new Map();
@@ -6619,7 +6850,7 @@ function RunHistoryView() {
     const safeIntent = String(intent || "ask").trim().toLowerCase();
     if (!safeRunId) return null;
     return startWorkflowCopilotSession({
-      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`,
+      endpoint: buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`),
       fallbackPrompt: buildRunCopilotPrompt(run, safeIntent),
       title: `${safeIntent === "fix" ? "Fix failed workflow run" : "Ask about workflow run"} ${safeRunId}`.trim(),
       successToast: safeIntent === "fix" ? "Opened failed-run fix chat" : "Opened workflow run analysis chat",
@@ -6631,7 +6862,7 @@ function RunHistoryView() {
     const safeIntent = String(intent || "node").trim().toLowerCase();
     if (!safeRunId || !safeNodeId) return null;
     return startWorkflowCopilotSession({
-      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`,
+      endpoint: buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`),
       fallbackPrompt: buildRunNodeCopilotPrompt(run, safeNodeId, { intent: safeIntent, workflow }),
       title: `${safeIntent === "fix" ? "Fix node" : "Ask Bosun about node"} ${safeNodeId}`.trim(),
       successToast: safeIntent === "fix" ? "Opened node fix chat" : "Opened node copilot chat",
@@ -6641,7 +6872,7 @@ function RunHistoryView() {
     const safeRunId = String(run?.runId || "").trim();
     if (!safeRunId) return;
     try {
-      const retryInfo = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+      const retryInfo = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`), {
         method: "POST",
         body: JSON.stringify({}),
       });
@@ -6688,7 +6919,7 @@ function RunHistoryView() {
         return;
       }
 
-      const result = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+      const result = await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`), {
         method: "POST",
         body: JSON.stringify({ mode: selectedMode }),
       });
@@ -6785,10 +7016,50 @@ function RunHistoryView() {
       setSelectedRunEvaluation(null);
       setSelectedRunForensics(null);
       setSelectedRunSnapshots([]);
-      return;
+    } else {
+      setSelectedRunEvaluation(null);
+      setSelectedRunForensics(null);
+      setSelectedRunSnapshots([]);
     }
-    refreshRunDiagnostics(selectedRunId.value).catch(() => {});
-  }, [refreshRunDiagnostics, selectedRunId.value]);
+  }, [selectedRunId.value]);
+
+  if (selectedRunId.value && runDetailLoading && !selectedRun) {
+    return html`
+      <div style="padding: 0 4px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+          <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunDetailError.value = ""; }}>
+            ← Back to Run History
+          <//>
+          <h2 style="margin:0; font-size:18px; font-weight:700;">Loading Run ${String(selectedRunId.value || "").slice(0, 12) || ""}</h2>
+        </div>
+        <div style="min-height:260px; display:flex; align-items:center; justify-content:center; padding:32px; border:1px solid var(--color-border,#2a3040); border-radius:12px; background:var(--color-bg-secondary,#1a1f2e);">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:12px; color:var(--color-text-secondary,#94a3b8);">
+            <${CircularProgress} size=${28} />
+            <div style="font-size:13px;">Fetching run details…</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (selectedRunId.value && !selectedRun && runDetailError) {
+    return html`
+      <div style="padding: 0 4px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+          <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunDetailError.value = ""; }}>
+            ← Back to Run History
+          <//>
+          <h2 style="margin:0; font-size:18px; font-weight:700;">Run Details</h2>
+        </div>
+        <${Alert}
+          severity="warning"
+          action=${html`<${Button} color="inherit" size="small" onClick=${() => loadRunDetail(selectedRunId.value)}>Retry<//>`}
+        >
+          ${runDetailError}
+        </${Alert}>
+      </div>
+    `;
+  }
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -7097,7 +7368,7 @@ function RunHistoryView() {
               color="error"
               onClick=${async () => {
                 try {
-                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel", { method: "POST" });
+                  await apiFetch(buildWorkflowRunApiPath("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel"), { method: "POST" });
                   showToast("Run cancellation requested", "success");
                   setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
                 } catch (err) {
@@ -7250,7 +7521,7 @@ function RunHistoryView() {
                   onClick=${async () => {
                     try {
                       const note = window.prompt("Optional approval note", "") || "";
-                      await apiFetch(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`, {
+                      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`), {
                         method: "POST",
                         body: JSON.stringify({ decision: "approved", note }),
                       });
@@ -7270,7 +7541,7 @@ function RunHistoryView() {
                   onClick=${async () => {
                     try {
                       const note = window.prompt("Reason for denying approval", "") || "";
-                      await apiFetch(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`, {
+                      await apiFetch(buildWorkflowRunApiPath(`/api/workflows/runs/${encodeURIComponent(selectedRun.runId)}/approval`), {
                         method: "POST",
                         body: JSON.stringify({ decision: "denied", note }),
                       });
@@ -8003,9 +8274,10 @@ function RunHistoryView() {
         <${Button}
           variant="text"
           size="small"
-          onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}
+          onClick=${() => loadRuns(undefined, { preserveExisting: true })}
+          disabled=${runsLoading}
         >
-          Refresh
+          ${runsLoading ? html`<${CircularProgress} size=${14} sx=${{ mr: 0.5 }} /> Refreshing…` : "Refresh"}
         <//>
         ${canLoadMoreRuns && html`
           <${Button}
@@ -8018,7 +8290,23 @@ function RunHistoryView() {
           <//>
         `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
+        ${runsLoading && runs.length > 0 && html`
+          <span class="wf-badge" style="background:#38bdf820; color:#7dd3fc; display:flex; align-items:center; gap:6px;">
+            <${CircularProgress} size=${12} sx=${{ color: "#7dd3fc" }} />
+            Loading
+          </span>
+        `}
       </div>
+
+      ${runsError && html`
+        <${Alert}
+          severity="warning"
+          sx=${{ mb: 1.5 }}
+          action=${html`<${Button} color="inherit" size="small" onClick=${() => loadRuns(undefined, { preserveExisting: true })}>Retry<//>`}
+        >
+          ${runsError}
+        </${Alert}>
+      `}
 
       <div class="wf-runs-toolbar">
         <${TextField}
@@ -8260,11 +8548,18 @@ function RunHistoryView() {
           `}
       </div>
 
-      ${runs.length === 0 && html`
+      ${runsLoading && runs.length === 0 && html`
+        <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:40px; color:var(--color-text-secondary,#94a3b8);">
+          <${CircularProgress} size=${28} />
+          <div>Loading workflow runs…</div>
+        </div>
+      `}
+
+      ${!runsLoading && runs.length === 0 && html`
         <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
       `}
 
-      ${runs.length > 0 && filteredRuns.length === 0 && html`
+      ${!runsLoading && runs.length > 0 && filteredRuns.length === 0 && html`
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
@@ -8300,7 +8595,12 @@ function RunHistoryView() {
                   hover
                   selected=${selectedRunId.value === run.runId}
                   sx=${{ cursor: "pointer" }}
-                  onClick=${() => loadRunDetail(run.runId)}
+                  onClick=${() => loadRunDetail(run.runId, { workflowId: run.workflowId })}
+                  onContextMenu=${(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openRunRowContextMenu(run, event);
+                  }}
                 >
                   <${TableCell}>
                     <${Typography} variant="body2" sx=${{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }}>
@@ -8352,6 +8652,15 @@ function RunHistoryView() {
           <//>
         </div>
       `}
+      <${AppContextMenu}
+        menu=${runRowContextMenu}
+        onClose=${closeRunRowContextMenu}
+        items=${[
+          { key: "open-run", label: "Open run", icon: ":workflow:", onClick: () => handleRunRowAction("open") },
+          { key: "open-workflow", label: "Open workflow", icon: ":edit:", onClick: () => handleRunRowAction("open-workflow") },
+          { key: "copy-id", label: "Copy run ID", icon: ":copy:", onClick: () => handleRunRowAction("copy-id") },
+        ]}
+      />
     </div>
   `;
 }

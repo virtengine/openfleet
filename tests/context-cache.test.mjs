@@ -399,6 +399,40 @@ describe("context-cache", () => {
       expect(result._liveCompactionPolicy.why.length).toBeGreaterThan(1);
     });
   });
+
+  describe("session coverage telemetry", () => {
+    const sessionCases = [
+      { sessionType: "task", expectedNormalized: "task" },
+      { sessionType: "flow", expectedNormalized: "flow" },
+      { sessionType: "delegate", expectedNormalized: "delegate" },
+      { sessionType: "voice-delegate", expectedNormalized: "voice" },
+    ];
+
+    it.each(sessionCases)("records coverage for $sessionType sessions", async ({ sessionType, expectedNormalized }) => {
+      contextCache.clearShreddingStats();
+      const items = [{
+        type: "command_execution",
+        command: "rg needle src",
+        exit_code: 0,
+        aggregated_output: Array.from({ length: 160 }, (_, index) => `src/file${index}.ts:${index + 1}: needle ${"x".repeat(24)}`).join("\n"),
+      }];
+
+      await contextCache.maybeCompressSessionItems(items, {
+        sessionType,
+        agentType: "codex-sdk",
+        liveToolCompactionEnabled: true,
+        liveToolCompactionMode: "aggressive",
+        liveToolCompactionMinChars: 1000,
+        liveToolCompactionTargetChars: 1200,
+        force: true,
+      });
+
+      const stats = contextCache.getShreddingStats();
+      expect(stats.some((entry) => entry.stage === "live_tool_compaction" && entry.sessionType === sessionType)).toBe(true);
+      expect(stats.some((entry) => entry.normalizedSessionType === expectedNormalized)).toBe(true);
+      expect(stats.some((entry) => entry.stage === "session_total" && entry.decision === "compressed")).toBe(true);
+    });
+  });
   // ── retrieveToolLog ────────────────────────────────────────────────────
 
   describe("retrieveToolLog", () => {
@@ -1341,7 +1375,6 @@ describe("live tool compaction", () => {
     expect(compacted.text).toContain("Hint: Signal coverage is low.");
   });
 });
-
 
 
 

@@ -1,5 +1,24 @@
 /* @import directives moved to <link> tags in index.html for parallel loading */
 
+:root {
+  --ws-badge-connected: #34d399;
+  --ws-badge-reconnecting: #fbbf24;
+  --ws-badge-offline: #fb7185;
+}
+
+.connection-badge-dot {
+  flex: 0 0 auto;
+}
+
+.connection-badge-pulse {
+  animation: connection-badge-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes connection-badge-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
 .floating-call-restore {
   position: fixed;
   right: 16px;
@@ -645,4 +664,3 @@
   color: var(--text-primary);
   font-size: 12px;
 }
-

@@ -502,7 +502,11 @@ const SETTINGS_STYLES = `
   width: 100%;
   box-sizing: border-box;
   padding-bottom: calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 48px);
-  overflow-x: clip;
+  overflow-x: auto;
+  min-width: 0;
+}
+.settings-content-constrained > * {
+  min-width: 0;
 }
 
 .setting-row .segmented-control {

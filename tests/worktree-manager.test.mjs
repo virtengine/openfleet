@@ -3,10 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
-vi.mock("node:child_process", () => ({
-  spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
-  execSync: vi.fn(),
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+    execSync: vi.fn(),
+  };
+});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal();
@@ -56,6 +60,7 @@ import {
   resetWorktreeManager,
   sanitizeBranchName,
   gitEnv,
+  fixGitConfigCorruption,
   TAG,
   DEFAULT_BASE_DIR,
   DEFAULT_MANAGED_TASK_BASE_DIR,
@@ -221,6 +226,44 @@ describe("worktree-manager", () => {
           else process.env[key] = value;
         }
       }
+    });
+  });
+
+  describe("fixGitConfigCorruption", () => {
+    it("repairs core.bare=true and unsets shared core.worktree", () => {
+      existsSync.mockImplementation((path) => String(path).replace(/\\/g, "/").endsWith("/.git/worktrees"));
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "config" && args?.[1] === "--bool" && args?.[2] === "--get" && args?.[3] === "core.bare") {
+          return { status: 0, stdout: "true\n", stderr: "" };
+        }
+        if (args?.[0] === "config" && args?.[1] === "--local" && args?.[2] === "--get" && args?.[3] === "core.worktree") {
+          return { status: 0, stdout: "/wrong/worktree\n", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      fixGitConfigCorruption(REPO_ROOT);
+
+      expect(spawnSync).toHaveBeenCalledWith("git", ["config", "--local", "core.bare", "false"], expect.any(Object));
+      expect(spawnSync).toHaveBeenCalledWith("git", ["config", "--local", "--unset-all", "core.worktree"], expect.any(Object));
+    });
+
+    it("repairs shared core.worktree even when core.bare is already false", () => {
+      existsSync.mockImplementation((path) => String(path).replace(/\\/g, "/").endsWith("/.git/worktrees"));
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "config" && args?.[1] === "--bool" && args?.[2] === "--get" && args?.[3] === "core.bare") {
+          return { status: 0, stdout: "false\n", stderr: "" };
+        }
+        if (args?.[0] === "config" && args?.[1] === "--local" && args?.[2] === "--get" && args?.[3] === "core.worktree") {
+          return { status: 0, stdout: "/wrong/worktree\n", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      fixGitConfigCorruption(REPO_ROOT);
+
+      expect(spawnSync).not.toHaveBeenCalledWith("git", ["config", "--local", "core.bare", "false"], expect.any(Object));
+      expect(spawnSync).toHaveBeenCalledWith("git", ["config", "--local", "--unset-all", "core.worktree"], expect.any(Object));
     });
   });
 
@@ -461,8 +504,12 @@ describe("worktree-manager", () => {
 
       bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
 
-      expect(ensureWorktreeRuntimeSetupMock).toHaveBeenCalledWith(resolve(REPO_ROOT), resolve(worktreePath));
-      expect(inspectWorktreeRuntimeSetupMock).toHaveBeenCalledWith(resolve(REPO_ROOT), resolve(worktreePath));
+      const [ensureRepoRoot, ensureWorktreePath] = ensureWorktreeRuntimeSetupMock.mock.calls[0] || [];
+      expect(String(ensureRepoRoot).replace(/\\/g, "/")).toMatch(/\/fake\/repo$/);
+      expect(String(ensureWorktreePath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123$/);
+      const [inspectRepoRoot, inspectWorktreePath] = inspectWorktreeRuntimeSetupMock.mock.calls[0] || [];
+      expect(String(inspectRepoRoot).replace(/\\/g, "/")).toMatch(/\/fake\/repo$/);
+      expect(String(inspectWorktreePath).replace(/\\/g, "/")).toMatch(/\/fake\/repo\/\.bosun\/worktrees\/task-abc123$/);
       expect(symlinkSync).toHaveBeenCalledTimes(1);
       const [targetPath, linkPath] = symlinkSync.mock.calls[0];
   expect(normalizePath(targetPath)).toBe(`${normalizedRepoRoot}/node_modules`);
@@ -1193,18 +1240,19 @@ describe("worktree-manager", () => {
           { path: mgr.repoRoot, branch: "refs/heads/main" },
         ]),
         stderr: "",
-      });
-      existsSync.mockImplementation((p) => {
-        return normalizePath(p) === managedTaskRoot;
-      });
-      readdirSync.mockImplementation((dirPath) => {
-        if (normalizePath(dirPath) === managedTaskRoot) {
+        });
+        existsSync.mockImplementation((p) => {
+          const normalized = String(p).replace(/\\/g, "/");
+          return normalized.endsWith(`/${DEFAULT_MANAGED_TASK_BASE_DIR}`);
+        });
+        readdirSync.mockImplementation((dirPath) => {
+        if (String(dirPath).replace(/\\/g, "/").endsWith(`/${DEFAULT_MANAGED_TASK_BASE_DIR}`)) {
           return [{ name: "task-abc123-deadbeef", isDirectory: () => true }];
         }
         return [];
       });
       statSync.mockImplementation((targetPath) => ({
-        mtimeMs: normalizePath(targetPath) === orphanPath
+        mtimeMs: String(targetPath).replace(/\\/g, "/").endsWith("/.bosun/worktrees/task-abc123-deadbeef")
           ? Date.now() - MAX_WORKTREE_AGE_MS - 10_000
           : Date.now(),
         isDirectory: () => true,

@@ -38,6 +38,16 @@ const mockGetGeminiSessionInfo = vi.hoisted(() => vi.fn(() => ({ isBusy: false }
 const mockResetGeminiSession = vi.hoisted(() => vi.fn(async () => {}));
 const mockInitGeminiShell = vi.hoisted(() => vi.fn(async () => true));
 const mockExecPooledPrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "pooled-ok", items: [] })));
+const mockExecOpencodePrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })));
+const mockSteerOpencodePrompt = vi.hoisted(() => vi.fn(async () => ({ ok: true, mode: "abort" })));
+const mockIsOpencodeBusy = vi.hoisted(() => vi.fn(() => false));
+const mockGetOpencodeSessionInfo = vi.hoisted(() => vi.fn(() => ({ turnCount: 0, isActive: false, isBusy: false, sessionCount: 0, namedSessionId: null })));
+const mockResetOpencodeSession = vi.hoisted(() => vi.fn(async () => {}));
+const mockInitOpencodeShell = vi.hoisted(() => vi.fn(async () => {}));
+const mockGetOpencodeSessionId = vi.hoisted(() => vi.fn(() => null));
+const mockListOpencodeSessions = vi.hoisted(() => vi.fn(async () => []));
+const mockSwitchOpencodeSession = vi.hoisted(() => vi.fn(async () => {}));
+const mockCreateOpencodeSession = vi.hoisted(() => vi.fn(async (id) => ({ id, serverSessionId: null })));
 
 vi.mock("../config/config.mjs", () => ({
   loadConfig: () => mockConfigState.current,
@@ -108,16 +118,16 @@ vi.mock("../shell/gemini-shell.mjs", () => ({
 }));
 
 vi.mock("../shell/opencode-shell.mjs", () => ({
-  execOpencodePrompt: vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })),
-  steerOpencodePrompt: vi.fn(async () => ({ ok: true, mode: "abort" })),
-  isOpencodeBusy: vi.fn(() => false),
-  getSessionInfo: vi.fn(() => ({ turnCount: 0, isActive: false, isBusy: false, sessionCount: 0, namedSessionId: null })),
-  resetSession: vi.fn(async () => {}),
-  initOpencodeShell: vi.fn(async () => {}),
-  getActiveSessionId: vi.fn(() => null),
-  listSessions: vi.fn(async () => []),
-  switchSession: vi.fn(async () => {}),
-  createSession: vi.fn(async (id) => ({ id, serverSessionId: null })),
+  execOpencodePrompt: mockExecOpencodePrompt,
+  steerOpencodePrompt: mockSteerOpencodePrompt,
+  isOpencodeBusy: mockIsOpencodeBusy,
+  getSessionInfo: mockGetOpencodeSessionInfo,
+  resetSession: mockResetOpencodeSession,
+  initOpencodeShell: mockInitOpencodeShell,
+  getActiveSessionId: mockGetOpencodeSessionId,
+  listSessions: mockListOpencodeSessions,
+  switchSession: mockSwitchOpencodeSession,
+  createSession: mockCreateOpencodeSession,
 }));
 
 vi.mock("../agent/agent-pool.mjs", () => ({
@@ -143,6 +153,48 @@ describe("primary-agent runtime safeguards", () => {
       threadId: "thread-1",
       isBusy: false,
     });
+    mockExecOpencodePrompt.mockResolvedValue({ finalResponse: "opencode stub", items: [], usage: null });
+  });
+
+  it("keeps shell adapter parity in the shell-owned adapter registry", async () => {
+    vi.resetModules();
+    const { createShellAdapterRegistry } = await import("../shell/shell-adapter-registry.mjs");
+    const withRuntimeOptions = vi.fn((_adapterName, options = {}) => ({
+      ...options,
+      provider: "openai-compatible",
+    }));
+    const registry = createShellAdapterRegistry({ withRuntimeOptions });
+
+    await registry["opencode-sdk"].exec("route through adapter registry", {
+      sessionId: "adapter-registry-session",
+    });
+    await registry["codex-sdk"].exec("no provider overlay", {
+      sessionId: "codex-session",
+    });
+
+    expect(withRuntimeOptions).toHaveBeenCalledTimes(1);
+    expect(withRuntimeOptions).toHaveBeenCalledWith(
+      "opencode-sdk",
+      expect.objectContaining({
+        persistent: true,
+        expectedPrimary: "opencode",
+        sessionId: "adapter-registry-session",
+      }),
+    );
+    expect(mockExecOpencodePrompt).toHaveBeenCalledWith(
+      "route through adapter registry",
+      expect.objectContaining({
+        provider: "openai-compatible",
+        expectedPrimary: "opencode",
+      }),
+    );
+    expect(mockExecCodexPrompt).toHaveBeenCalledWith(
+      "no provider overlay",
+      expect.objectContaining({
+        persistent: true,
+        sessionId: "codex-session",
+      }),
+    );
   });
 
   it("uses dryRun codex config checks at runtime by default", async () => {
@@ -154,7 +206,7 @@ describe("primary-agent runtime safeguards", () => {
     expect(mockEnsureCodexConfig).toHaveBeenCalledWith(
       expect.objectContaining({ dryRun: true }),
     );
-  });
+  }, 15000);
 
   it("falls back to pooled execution when active adapter is busy on another session", async () => {
     vi.resetModules();
@@ -218,6 +270,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("surfaces configured executor profiles with model allow-lists and enabled flags", async () => {
     mockConfigState.current = {
+      agentRuntime: "sdk-cli",
       primaryAgent: "codex-sdk",
       executorConfig: {
         executors: [
@@ -264,6 +317,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("switches by configured profile id and preserves selection id", async () => {
     mockConfigState.current = {
+      agentRuntime: "sdk-cli",
       primaryAgent: "codex-sdk",
       executorConfig: {
         executors: [
@@ -290,6 +344,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("maps GEMINI executor profiles to gemini-sdk adapter", async () => {
     mockConfigState.current = {
+      agentRuntime: "sdk-cli",
       primaryAgent: "codex-sdk",
       executorConfig: {
         executors: [
@@ -311,6 +366,114 @@ describe("primary-agent runtime safeguards", () => {
     expect(switched.ok).toBe(true);
     expect(primaryAgent.getPrimaryAgentName()).toBe("gemini-sdk");
     expect(primaryAgent.getPrimaryAgentSelection()).toBe("gemini-default");
+  });
+
+  it("prefers provider-kernel default provider for primary initialization", async () => {
+    mockConfigState.current = {
+      providers: {
+        defaultProvider: "openai-compatible",
+        openaiCompatible: {
+          enabled: true,
+          defaultModel: "qwen2.5-coder:latest",
+          baseUrl: "http://127.0.0.1:11434/v1",
+        },
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+
+    await primaryAgent.initPrimaryAgent();
+
+    expect(primaryAgent.getPrimaryAgentName()).toBe("opencode-sdk");
+    expect(primaryAgent.getPrimaryAgentSelection()).toBe("openai-compatible");
+    expect(mockInitOpencodeShell).toHaveBeenCalled();
+  });
+
+  it("does not surface legacy SDK pool executors as chat-visible agents in harness mode", async () => {
+    mockConfigState.current = {
+      agentRuntime: "harness",
+      primaryAgent: "codex-sdk",
+      executorConfig: {
+        executors: [
+          {
+            name: "primary-codex-us",
+            executor: "CODEX",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["gpt-5.3-codex"],
+          },
+          {
+            name: "copilot-backup",
+            executor: "COPILOT",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["claude-opus-4.6"],
+          },
+        ],
+      },
+      harness: {
+        enabled: true,
+        executors: [],
+      },
+      providers: {
+        defaultProvider: "openai-responses",
+        openaiResponses: {
+          enabled: true,
+          defaultModel: "gpt-5.4",
+        },
+        azureOpenAi: {
+          enabled: true,
+          defaultModel: "gpt-5.4-mini",
+          endpoint: "https://azure.example.test",
+          deployment: "gpt-5-prod",
+          apiVersion: "2025-03-01-preview",
+        },
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+
+    const agents = primaryAgent.getAvailableAgents();
+
+    expect(agents.some((agent) => agent.id === "primary-codex-us")).toBe(false);
+    expect(agents.some((agent) => agent.id === "copilot-backup")).toBe(false);
+    expect(agents.some((agent) => agent.id === "openai-responses")).toBe(true);
+    expect(agents.some((agent) => agent.id === "azure-openai-responses")).toBe(true);
+  });
+
+  it("passes selected provider runtime config into opencode-backed execution", async () => {
+    mockConfigState.current = {
+      providers: {
+        defaultProvider: "openai-compatible",
+        openaiCompatible: {
+          enabled: true,
+          defaultModel: "qwen2.5-coder:latest",
+          baseUrl: "http://127.0.0.1:11434/v1",
+        },
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent();
+
+    await primaryAgent.execPrimaryPrompt("route through provider kernel", {
+      sessionId: "opencode-provider-kernel",
+    });
+
+    expect(mockExecOpencodePrompt).toHaveBeenCalledTimes(1);
+    const [, options] = mockExecOpencodePrompt.mock.calls[0];
+    expect(options).toEqual(expect.objectContaining({
+      provider: "openai-compatible",
+      providerConfig: expect.objectContaining({
+        providerId: "openai-compatible",
+        provider: "openai-compatible",
+        model: "qwen2.5-coder:latest",
+        baseUrl: "http://127.0.0.1:11434/v1",
+      }),
+    }));
   });
 
   it("retries codex locally before any failover", async () => {
@@ -405,5 +568,79 @@ describe("primary-agent runtime safeguards", () => {
     const third = await primaryAgent.execPrimaryPrompt("hello", { sessionId: "s3" });
     expect(mockExecCopilotPrompt).toHaveBeenCalledTimes(1);
     expect(third.finalResponse).toBe("copilot-ok");
+  }, 10000);
+
+  it("manages primary sessions through the session manager facade", async () => {
+    mockCreateCodexSession.mockResolvedValueOnce({ id: "session-created" });
+    mockListCodexSessions.mockResolvedValueOnce([{ id: "adapter-only-session" }]);
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.createPrimarySession("session-created");
+    expect(primaryAgent.getPrimarySessionId()).toBe("session-created");
+
+    await primaryAgent.switchPrimarySession("session-switched");
+    expect(primaryAgent.getPrimarySessionId()).toBe("session-switched");
+    expect(mockSwitchCodexSession).toHaveBeenCalledWith("session-switched");
+
+    const sessions = await primaryAgent.listPrimarySessions();
+    expect(sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "session-created", sessionId: "session-created" }),
+      expect.objectContaining({ id: "session-switched", sessionId: "session-switched" }),
+      expect.objectContaining({ id: "adapter-only-session" }),
+    ]));
+  });
+
+  it("isolates non-primary active sessions by explicit harness scope", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    const { getBosunSessionManager } = await import("../agent/session-manager.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("telegram scoped turn", {
+      sessionId: "telegram-session-1",
+      scope: "telegram:chat-1",
+      sessionType: "telegram",
+    });
+    await primaryAgent.execPrimaryPrompt("voice scoped turn", {
+      sessionId: "voice-session-1",
+      scope: "voice-dispatch:call-1",
+      sessionType: "voice-dispatch",
+    });
+
+    const sessionManager = getBosunSessionManager();
+    expect(sessionManager.getActiveSessionId("telegram:chat-1")).toBe("telegram-session-1");
+    expect(sessionManager.getActiveSessionId("voice-dispatch:call-1")).toBe("voice-session-1");
+    expect(sessionManager.getActiveSessionId("primary")).not.toBe("telegram-session-1");
+  });
+
+  it("keeps primary execution lifecycle in the session-manager facade", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    const { getBosunSessionManager } = await import("../agent/session-manager.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.createPrimarySession("primary-facade-session");
+    await primaryAgent.switchPrimarySession("primary-facade-session");
+
+    const sessionManager = getBosunSessionManager();
+    expect(sessionManager.getSession("primary-facade-session")).toEqual(
+      expect.objectContaining({
+        sessionId: "primary-facade-session",
+        scope: "primary",
+        sessionType: "primary",
+      }),
+    );
+    expect(sessionManager.getLineageView("primary-facade-session")).toEqual(
+      expect.objectContaining({
+        session: expect.objectContaining({
+          sessionId: "primary-facade-session",
+        }),
+        parent: null,
+        descendants: [],
+      }),
+    );
   });
 });

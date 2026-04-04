@@ -7,7 +7,7 @@ function toText(value, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
-function uniqueStrings(values = []) {
+export function uniqueStrings(values = []) {
   return [...new Set(
     (Array.isArray(values) ? values : [values])
       .map((value) => String(value || "").trim())

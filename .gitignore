@@ -20,6 +20,7 @@ node_modules/
 .npm-cache*/
 *.tgz
 /.bosun/
+/.repo-mirror/
 
 # Auto-generated TLS certificates
 .cache/tls/
@@ -37,6 +38,7 @@ workspaces.json
 !bosun.schema.json
 /.codex-monitor/
 /.bosun/
+/.repo-mirror/
 *.bak
 .claude/settings.local.json
 __e2e-results.json
@@ -77,3 +79,6 @@ node-compile-cache/*
 _docs/2026-03-31-sibling-project-adoption-analysis.md
 .playwright-cli
 output/playwright
+_docs/internal-harness-v2/*
+output/playwright
+native/**/target/

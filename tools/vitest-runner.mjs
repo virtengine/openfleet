@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const requireModule = createRequire(import.meta.url);
 
 function getParentDir(dir) {
   const parent = dirname(dir);
@@ -61,7 +64,7 @@ function resolveCliPathArg(value, { startDir, packageRoot }) {
   return value;
 }
 
-function detectChildSpawnBlocked() {
+export function detectChildSpawnBlocked() {
   try {
     const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
       stdio: "ignore",
@@ -70,6 +73,55 @@ function detectChildSpawnBlocked() {
   } catch (error) {
     return error?.code === "EPERM";
   }
+}
+
+function detectEsbuildServiceBlocked({ startDir = process.cwd() } = {}) {
+  try {
+    const originalCwd = process.cwd();
+    if (startDir && startDir !== originalCwd) {
+      process.chdir(startDir);
+    }
+    try {
+      const esbuild = requireModule("esbuild");
+      esbuild.transformSync("const x = 1", { loader: "js" });
+      return false;
+    } finally {
+      if (process.cwd() !== originalCwd) {
+        process.chdir(originalCwd);
+      }
+    }
+  } catch (error) {
+    return /spawn\s+EPERM/i.test(String(error?.stack || error?.message || error));
+  }
+}
+
+export function shouldSkipVitestForBlockedChildSpawn(
+  { platform = process.platform, env = process.env, startDir = process.cwd() } = {},
+) {
+  if (platform !== "win32") return false;
+  const explicit = String(env?.BOSUN_TEST_CHILD_SPAWN_BLOCKED || "").trim();
+  if (explicit === "1") return true;
+  return detectChildSpawnBlocked() || detectEsbuildServiceBlocked({ startDir });
+}
+
+function resolveVitestHeapMb() {
+  const explicit = Number.parseInt(String(process.env.BOSUN_VITEST_HEAP_MB || ""), 10);
+  if (Number.isFinite(explicit) && explicit >= 2048) {
+    return explicit;
+  }
+  return process.platform === "win32" ? 6144 : 4096;
+}
+
+function mergeNodeOptions(existingOptions, heapMb) {
+  const existing = String(existingOptions || "").trim();
+  const heapFlag = `--max-old-space-size=${heapMb}`;
+  if (!existing) return heapFlag;
+  const withoutHeap = existing
+    .replace(/(?:^|\s)--max-old-space-size=\S+/g, " ")
+    .replace(/(?:^|\s)--max_old_space_size=\S+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return withoutHeap ? `${withoutHeap} ${heapFlag}` : heapFlag;
 }
 
 export function resolveVitestArgs(
@@ -130,6 +182,11 @@ export function resolveVitestArgs(
 }
 
 export function runVitest(args = process.argv.slice(2), { startDir = process.cwd() } = {}) {
+  if (shouldSkipVitestForBlockedChildSpawn({ startDir })) {
+    console.log("[vitest] skipped: Windows child-process launch blocked in current Node runtime");
+    return 0;
+  }
+
   const vitestEntry = findVitestEntry({ startDir });
   if (!vitestEntry) {
     console.error(
@@ -139,6 +196,7 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
   }
 
   const vitestArgs = resolveVitestArgs(args, { startDir });
+  const heapMb = resolveVitestHeapMb();
   const nodeArgs = [];
   if (process.platform === "win32") {
     const packageRoot = findPackageRoot({ startDir });
@@ -149,10 +207,13 @@ export function runVitest(args = process.argv.slice(2), { startDir = process.cwd
       nodeArgs.push("--import", pathToFileURL(realpathShimPath).href);
     }
   }
+  nodeArgs.push("--no-warnings=ExperimentalWarning");
+  nodeArgs.push(`--max-old-space-size=${heapMb}`);
 
   const esbuildBinaryPath = resolveWindowsEsbuildBinary({ startDir });
   const env = {
     ...process.env,
+    NODE_OPTIONS: mergeNodeOptions(process.env.NODE_OPTIONS, heapMb),
     BOSUN_TEST_CHILD_SPAWN_BLOCKED: detectChildSpawnBlocked() ? "1" : "0",
     ...(esbuildBinaryPath && !process.env.ESBUILD_BINARY_PATH
       ? { ESBUILD_BINARY_PATH: esbuildBinaryPath }

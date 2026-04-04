@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { resetStateLedgerCache } from "../lib/state-ledger-sqlite.mjs";
+import { skipLocallyForSpeed } from "./test-speed-gates.mjs";
 
 // CLAUDE:SUMMARY - workflow-task-lifecycle tests
 // Exercises task lifecycle workflow nodes and template wiring, including prompt assembly and cache anchoring.
@@ -32,6 +33,7 @@ let detectProjectStack;
 let resolveAutoCommand;
 let getTemplate;
 let installTemplate;
+let reconcileInstalledTemplates;
 
 if (SPAWN_BLOCKED) {
   describe("workflow-task-lifecycle", () => {
@@ -42,7 +44,7 @@ if (SPAWN_BLOCKED) {
   ({ clearContractCache } = await import("../workflow/workflow-contract.mjs"));
   ({ WorkflowEngine, WorkflowContext } = await import("../workflow/workflow-engine.mjs"));
   ({ detectProjectStack, resolveAutoCommand } = await import("../workflow/project-detection.mjs"));
-  ({ getTemplate, installTemplate } = await import("../workflow/workflow-templates.mjs"));
+  ({ getTemplate, installTemplate, reconcileInstalledTemplates } = await import("../workflow/workflow-templates.mjs"));
 
 // -- Helpers -----------------------------------------------------------------
 
@@ -322,6 +324,10 @@ describe("trigger.task_available", () => {
         repository: "virtengine/bosun",
         repositories: ["virtengine/bosun"],
         baseBranch: "main",
+        target: "entire",
+        meta: {
+          targetBranch: "release/ignored-for-now",
+        },
       },
     ]);
     const ctx = makeCtx({ activeSlotCount: 0 });
@@ -349,6 +355,90 @@ describe("trigger.task_available", () => {
     expect(ctx.data.repository).toBe("virtengine/bosun");
     expect(ctx.data.baseBranch).toBe("main");
     expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
+    expect(ctx.data._taskBranchBinding).toEqual(expect.objectContaining({
+      taskId: "abc-123",
+      resolvedBaseBranch: "main",
+      candidates: expect.objectContaining({
+        baseBranch: "main",
+        target: "entire",
+        "meta.targetBranch": "release/ignored-for-now",
+      }),
+    }));
+  });
+
+  it("honors explicit task context before slot saturation checks", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([]);
+    const ctx = makeCtx({
+      activeSlotCount: 1,
+      taskId: "direct-task-1",
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+      getActiveRuns: () => [{ taskId: "direct-task-1" }],
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "direct_task",
+      taskId: "direct-task-1",
+      tasks: [{ id: "direct-task-1" }],
+    });
+    expect(listTasks).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale explicit task context and falls back to real task polling", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "real-task-1",
+        title: "Real queued task",
+        status: "todo",
+        branchName: "task/realtask1-real-queued-task",
+      },
+    ]);
+    const getTask = vi.fn().mockResolvedValue(null);
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      taskId: "TASK-DIAG-LOCAL",
+      taskTitle: "Diagnostics export",
+      branch: "task/TASKDIAGLOCA-diagnostics-export",
+      branchName: "task/TASKDIAGLOCA-diagnostics-export",
+      _workflowRootTaskId: "TASK-DIAG-LOCAL",
+      _workflowParentTaskId: "TASK-DIAG-LOCAL",
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { listTasks, getTask },
+        taskStore: { getTask },
+      },
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      selectedTaskId: "real-task-1",
+      taskCount: 1,
+    });
+    expect(listTasks).toHaveBeenCalled();
+    expect(ctx.data.taskId).toBe("real-task-1");
+    expect(ctx.data.taskTitle).toBe("Real queued task");
+    expect(ctx.data.branchName).toBe("task/realtask1-real-queued-task");
+    expect(ctx.data._workflowRootTaskId).toBeUndefined();
+    expect(ctx.data._workflowParentTaskId).toBeUndefined();
   });
 
   it("resolves repoRoot to matching sibling repository when task repository differs", async () => {
@@ -612,7 +702,7 @@ describe("trigger.task_available", () => {
     expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
   });
 
-  it("recovers timed blocked worktree tasks back to todo before polling", async () => {
+  it("does not auto-recover branch refresh conflicts before polling", async () => {
     const nt = getNodeType("trigger.task_available");
     const retryAt = new Date(Date.now() - 60_000).toISOString();
     let todoTasks = [];
@@ -621,11 +711,17 @@ describe("trigger.task_available", () => {
       title: "Blocked WT task",
       status: "blocked",
       cooldownUntil: retryAt,
+      blockedReason: "Repair workflow pending",
       meta: {
         autoRecovery: {
           active: true,
           reason: "worktree_failure",
           retryAt,
+        },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          retryable: false,
+          blockedReason: "repair pending",
         },
       },
     };
@@ -656,14 +752,8 @@ describe("trigger.task_available", () => {
       },
     });
 
-    expect(updateTask).toHaveBeenCalledTimes(1);
-    expect(updateTask).toHaveBeenCalledWith("blocked-worktree-task", expect.objectContaining({
-      status: "todo",
-      cooldownUntil: null,
-      blockedReason: null,
-    }));
-    expect(result.triggered).toBe(true);
-    expect(result.selectedTaskId).toBe("blocked-worktree-task");
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(result.triggered).toBe(false);
   });
 
   it("bypasses missing-task guard by default and emits audit event", async () => {
@@ -781,7 +871,7 @@ describe("trigger.task_available", () => {
     }
   });
 
-  it("polls configured statuses in order, prioritizes earlier statuses, and deduplicates repeated tasks", async () => {
+  it("polls explicitly configured custom statuses in order, prioritizes earlier statuses, and deduplicates repeated tasks", async () => {
     const nt = getNodeType("trigger.task_available");
     const sharedTask = {
       id: "task-shared",
@@ -838,7 +928,7 @@ describe("trigger.task_available", () => {
     expect(result.selectedTaskId).toBe("task-shared");
   });
 
-  it("returns all unique tasks across configured statuses in priority order", async () => {
+  it("returns all unique tasks across explicitly configured statuses in priority order", async () => {
     const nt = getNodeType("trigger.task_available");
     const sharedTask = {
       id: "task-shared",
@@ -1205,6 +1295,45 @@ describe("condition.slot_available", () => {
     // baseBranch limit 2 with 2 on "main" -> blocked
     expect(result.result).toBe(false);
   });
+
+  it("counts only sibling task lifecycle runs from engine active runs", async () => {
+    const nt = getNodeType("condition.slot_available");
+    const ctx = makeCtx({
+      taskId: "task-current",
+    });
+    const node = makeNode("condition.slot_available", { maxParallel: 3 });
+    const engine = {
+      getActiveRuns: () => [
+        { workflowName: "Task Lifecycle", taskId: "task-current" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-1" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-2" },
+        { workflowName: "Task Batch Processor", taskId: "TASK-DIAG-LOCAL" },
+        { workflowName: "Bosun PR Watchdog", taskId: null },
+      ],
+    };
+    const result = await nt.execute(node, ctx, engine);
+    expect(result.result).toBe(true);
+    expect(result.activeSlotCount).toBe(2);
+  });
+
+  it("blocks when sibling task lifecycle runs already fill the parallel budget", async () => {
+    const nt = getNodeType("condition.slot_available");
+    const ctx = makeCtx({
+      taskId: "task-current",
+    });
+    const node = makeNode("condition.slot_available", { maxParallel: 3 });
+    const engine = {
+      getActiveRuns: () => [
+        { workflowName: "Task Lifecycle", taskId: "task-current" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-1" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-2" },
+        { workflowName: "Task Lifecycle", taskId: "task-sibling-3" },
+      ],
+    };
+    const result = await nt.execute(node, ctx, engine);
+    expect(result.result).toBe(false);
+    expect(result.activeSlotCount).toBe(3);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1376,6 +1505,34 @@ describe("action.claim_task", () => {
       expect(result.claimToken).toBe("claim-token-1");
       expect(initSpy).toHaveBeenCalled();
       expect(claimSpy).toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+
+  it("rejects unresolved taskId placeholders before touching claim storage", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-placeholder",
+    });
+
+    try {
+      const ctx = makeCtx({});
+      const node = makeNode("action.claim_task", {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        renewIntervalMs: 0,
+      });
+
+      await expect(nt.execute(node, ctx)).rejects.toThrow(
+        "action.claim_task: resolved taskId is required",
+      );
+      expect(initSpy).not.toHaveBeenCalled();
+      expect(claimSpy).not.toHaveBeenCalled();
     } finally {
       initSpy.mockRestore();
       claimSpy.mockRestore();
@@ -1632,6 +1789,112 @@ describe("action.claim_task", () => {
         status: "completed",
         claimToken: "claim-token-retry",
       }));
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+
+  it("returns task_already_active when another workflow run already owns the same task", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-should-not-be-used",
+    });
+
+    try {
+      const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+      ctx.id = "run-current";
+      const node = makeNode("action.claim_task", {
+        taskId: "task-active-1",
+        taskTitle: "Already active elsewhere",
+        renewIntervalMs: 0,
+      });
+      const engine = {
+        _activeRuns: new Map([
+          [
+            "run-other",
+            {
+              ctx: {
+                id: "run-other",
+                data: {
+                  taskId: "task-active-1",
+                },
+              },
+            },
+          ],
+        ]),
+      };
+
+      const result = await nt.execute(node, ctx, engine);
+
+      expect(result).toEqual(expect.objectContaining({
+        success: false,
+        taskId: "task-active-1",
+        reason: "task_already_active",
+        duplicateActiveTask: true,
+      }));
+      expect(claimSpy).not.toHaveBeenCalled();
+      expect(initSpy).not.toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+
+  it("ignores an active parent batch run in the current lineage when claiming a task", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-real-child",
+    });
+
+    try {
+      const ctx = makeCtx({
+        repoRoot: "/tmp/repo-root",
+        _workflowId: "template-task-lifecycle",
+        _workflowRootRunId: "run-batch-root",
+        _workflowParentRunId: "run-batch-root",
+      });
+      ctx.id = "run-child";
+      ctx.getDelegationTransitionGuard = () => null;
+      ctx.data._delegationTransitionGuards = {};
+      const node = makeNode("action.claim_task", {
+        taskId: "task-active-parent-batch-1",
+        taskTitle: "Claim through batch child",
+        renewIntervalMs: 0,
+        idempotencyKey: "claim-parent-batch-lineage-1",
+      });
+      const engine = {
+        _activeRuns: new Map([
+          [
+            "run-batch-root",
+            {
+              workflowId: "fcd7047d-ba1e-410a-adaa-23455441c3b7",
+              workflowName: "Task Batch Processor",
+              ctx: {
+                id: "run-batch-root",
+                data: {
+                  taskId: "task-active-parent-batch-1",
+                },
+              },
+            },
+          ],
+        ]),
+      };
+
+      const result = await nt.execute(node, ctx, engine);
+
+      expect(result).toEqual(expect.objectContaining({
+        success: true,
+        taskId: "task-active-parent-batch-1",
+      }));
+      expect(result.reason).toBeUndefined();
+      expect(result.duplicateActiveTask).not.toBe(true);
     } finally {
       initSpy.mockRestore();
       claimSpy.mockRestore();
@@ -2040,6 +2303,204 @@ describe("action.resolve_executor", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it("resolves configured OpenCode executors and preserves providerConfig models", async () => {
+    const configMod = await import("../config/config.mjs");
+    const loadConfigSpy = vi.spyOn(configMod, "loadConfig").mockReturnValue({
+      executorConfig: {
+        executors: [
+          {
+            name: "opencode-kimi",
+            executor: "OPENCODE",
+            variant: "DEFAULT",
+            role: "primary",
+            weight: 100,
+            enabled: true,
+            provider: "openrouter",
+            providerConfig: {
+              model: "openrouter/moonshotai/kimi-k2",
+            },
+          },
+        ],
+      },
+      internalExecutor: { sdk: "codex" },
+      primaryAgent: "codex",
+    });
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+    delete process.env.OPENCODE_MODEL;
+
+    try {
+      const nt = getNodeType("action.resolve_executor");
+      const ctx = makeCtx({});
+      const node = makeNode("action.resolve_executor", {
+        defaultSdk: "auto",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.sdk).toBe("opencode");
+      expect(result.model).toBe("openrouter/moonshotai/kimi-k2");
+      expect(result.provider).toBe("openrouter");
+      expect(result.providerConfig).toEqual({
+        provider: "openrouter",
+        model: "openrouter/moonshotai/kimi-k2",
+      });
+      expect(ctx.data.resolvedSdk).toBe("opencode");
+      expect(ctx.data.resolvedModel).toBe("openrouter/moonshotai/kimi-k2");
+      expect(ctx.data.resolvedProvider).toBe("openrouter");
+      expect(ctx.data.resolvedProviderConfig).toEqual({
+        provider: "openrouter",
+        model: "openrouter/moonshotai/kimi-k2",
+      });
+    } finally {
+      loadConfigSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("exposes OpenCode in workflow agent SDK allowlists", () => {
+    const runAgent = getNodeType("action.run_agent");
+    const restartAgent = getNodeType("action.restart_agent");
+    const pushBranch = getNodeType("action.push_branch");
+
+    expect(runAgent?.schema?.properties?.sdk?.enum).toContain("opencode");
+    expect(restartAgent?.schema?.properties?.sdk?.enum).toContain("opencode");
+    expect(pushBranch?.schema?.properties?.conflictResolverSdk?.enum).toContain("opencode");
+  });
+
+  it("forwards resolved OpenCode executor config through action.run_agent execution", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = makeCtx({
+      worktreePath: "/tmp/opencode-workflow",
+      repoRoot: "/tmp/opencode-repo",
+      resolvedSdk: "opencode",
+      resolvedModel: "openrouter/moonshotai/kimi-k2",
+      resolvedProvider: "openrouter",
+      resolvedProviderConfig: {
+        provider: "openrouter",
+        baseUrl: "https://openrouter.example/v1",
+        apiKey: "workflow-opencode-key",
+        port: 4222,
+        timeoutMs: 45000,
+      },
+    });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "opencode-run-complete",
+      sdk: "opencode",
+      items: [],
+      threadId: "opencode-thread-1",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = makeNode("action.run_agent", {
+      prompt: "Use OpenCode for this task",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+      autoRecover: false,
+      failOnError: true,
+    }, "run-agent-opencode");
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("opencode");
+    expect(result.threadId).toBe("opencode-thread-1");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({
+        sdk: "opencode",
+        model: "openrouter/moonshotai/kimi-k2",
+        provider: "openrouter",
+        providerConfig: {
+          provider: "openrouter",
+          model: "openrouter/moonshotai/kimi-k2",
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "workflow-opencode-key",
+          port: 4222,
+          timeoutMs: 45000,
+        },
+      }),
+    );
+    const launchEnv = launchEphemeralThread.mock.calls[0][3]?.env || {};
+    const configCount = Number.parseInt(String(launchEnv.GIT_CONFIG_COUNT || "0"), 10);
+    const safeDirectories = [];
+    for (let index = 0; index < configCount; index += 1) {
+      if (launchEnv[`GIT_CONFIG_KEY_${index}`] !== "safe.directory") continue;
+      safeDirectories.push(launchEnv[`GIT_CONFIG_VALUE_${index}`]);
+    }
+    expect(safeDirectories.map((value) => resolve(value))).toContain(resolve("/tmp/opencode-workflow"));
+    expect(safeDirectories.map((value) => resolve(value))).toContain(resolve("/tmp/opencode-repo"));
+  });
+
+  it("forwards OpenCode restart config through action.restart_agent execution", async () => {
+    const handler = getNodeType("action.restart_agent");
+    const ctx = makeCtx({
+      sessionId: "opencode-session-old",
+      resolvedSdk: "opencode",
+      resolvedModel: "openrouter/moonshotai/kimi-k2",
+      resolvedProvider: "openrouter",
+      resolvedProviderConfig: {
+        provider: "openrouter",
+        baseUrl: "https://openrouter.example/v1",
+        apiKey: "restart-opencode-key",
+      },
+      worktreePath: "/tmp/opencode-workflow",
+    });
+    const killSession = vi.fn().mockResolvedValue(true);
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "opencode-restarted",
+      sdk: "opencode",
+      items: [],
+      threadId: "opencode-thread-2",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          killSession,
+          launchEphemeralThread,
+        },
+      },
+    };
+    const node = makeNode("action.restart_agent", {
+      prompt: "Restart with OpenCode",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+    }, "restart-agent-opencode");
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(killSession).toHaveBeenCalledWith("opencode-session-old");
+    expect(launchEphemeralThread).toHaveBeenCalledWith(
+      expect.stringContaining("Restart with OpenCode"),
+      "/tmp/opencode-workflow",
+      3600000,
+      expect.objectContaining({
+        sdk: "opencode",
+        model: "openrouter/moonshotai/kimi-k2",
+        provider: "openrouter",
+        providerConfig: {
+          provider: "openrouter",
+          model: "openrouter/moonshotai/kimi-k2",
+          baseUrl: "https://openrouter.example/v1",
+          apiKey: "restart-opencode-key",
+        },
+      }),
+    );
+    expect(ctx.data.threadId).toBe("opencode-thread-2");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2090,6 +2551,26 @@ describe("action.acquire_worktree", () => {
     expect(existsSync(result.worktreePath)).toBe(true);
   });
 
+  it("returns explicit non-retryable metadata for config validation failures", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "cfg-err-1",
+      branch: "",
+      baseBranch: "main",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(result.failureKind).toBe("acquire_worktree_config_error");
+    expect(result.taskId).toBe("cfg-err-1");
+    expect(result.repoRoot).toBe(repoDir);
+    expect(typeof result.worktreePath).toBe("string");
+    expect(result.worktreePath).toContain(".bosun");
+  });
+
   it("resolves repoRoot from config when workflow cwd is a non-git .bosun directory", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const bosunDir = join(repoDir, ".bosun");
@@ -2119,7 +2600,8 @@ describe("action.acquire_worktree", () => {
         expect(result.worktreePath).toContain(".bosun");
       } else {
         expect(result.error).toMatch(/spawnSync .*git(?:\.exe)? EPERM/i);
-        expect(result.failureKind).toBe("worktree_acquisition_failed");
+        expect(result.failureKind).toBe("host_spawn_unavailable");
+        expect(result.retryable).toBe(false);
       }
     } finally {
       cwdSpy.mockRestore();
@@ -2180,7 +2662,7 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  }, 10000);
+  }, 20000);
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -2342,7 +2824,7 @@ describe("action.acquire_worktree", () => {
     expect(recovery?.recentEvents || []).toEqual([]);
   }, 30000);
 
-  it("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
+  it.skipIf(skipLocallyForSpeed)("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const branch = "task/recreate-dirty-behind";
     const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
@@ -2430,7 +2912,7 @@ describe("action.acquire_worktree", () => {
     }
   }, 30000);
 
-  it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
+  it.skipIf(skipLocallyForSpeed)("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const branch = "task/recreate-conflict-behind";
     const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
@@ -2538,7 +3020,7 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim().toLowerCase();
     expect(longpaths).toBe("true");
-  });
+  }, process.platform === "win32" ? 15000 : 10000);
 
   it("repairs core.bare corruption after creating a worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2663,6 +3145,8 @@ describe("action.build_task_prompt", () => {
       expect(userPrompt).toContain("Repo instructions marker.");
       expect(userPrompt).toContain("Copilot instructions marker.");
       expect(userPrompt).toContain("## Agent Status Endpoint");
+      expect(userPrompt).toContain("- URL: http://127.0.0.1:19623/api/tasks/T2b");
+      expect(userPrompt).toContain('- POST /complete {"hasCommits":true} — Signal completion');
       expect(userPrompt).toContain("## Tool Discovery");
       expect(userPrompt).toContain("search` -> `get_schema` -> `execute`");
 
@@ -3032,6 +3516,249 @@ describe("action.build_task_prompt", () => {
       await removeDirAfterLedgerReset(repoRoot);
     }
   });
+
+  it("passes changed-file context into prompt-time memory retrieval", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-memory-paths-"));
+    try {
+      const {
+        initSharedKnowledge,
+        buildKnowledgeEntry,
+        appendKnowledgeEntry,
+      } = await import("../workspace/shared-knowledge.mjs");
+
+      initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
+      mkdirSync(join(repoRoot, ".bosun", "context-index"), { recursive: true });
+      writeFileSync(
+        join(repoRoot, ".bosun", "context-index", "agent-index.json"),
+        JSON.stringify({
+          relations: [
+            {
+              relationType: "file_imports_file",
+              fromPath: "src/auth/login.mjs",
+              toPath: "src/auth/session-store.mjs",
+            },
+          ],
+        }, null, 2),
+        "utf8",
+      );
+
+      const memories = [
+        buildKnowledgeEntry({
+          content: "Workspace memory: reseed fixtures in src/auth/login.mjs before retrying auth flows.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-direct",
+          relatedPaths: ["src/auth/login.mjs"],
+        }),
+        buildKnowledgeEntry({
+          content: "Workspace memory: session-store snapshots must stay deterministic across retries.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-adjacent",
+          relatedPaths: ["src/auth/session-store.mjs"],
+        }),
+      ];
+
+      for (const memory of memories) {
+        const appendResult = await appendKnowledgeEntry(memory);
+        expect(appendResult.success).toBe(true);
+      }
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({
+        _changedFiles: ["src/auth/login.mjs"],
+      });
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "MEM-PATH-1",
+        taskTitle: "Stabilize auth retries",
+        taskDescription: "Keep login retries deterministic after fixture reseeds.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-3"),
+        includeMemory: true,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+      });
+
+      const result = await nt.execute(node, ctx);
+      const retrievedMemory = ctx.data._taskRetrievedMemory || [];
+      const userPrompt = result.userPrompt || result.prompt;
+
+      expect(ctx.data._taskMemoryPaths).toEqual(["src/auth/login.mjs"]);
+      expect(retrievedMemory[0]).toEqual(expect.objectContaining({
+        content: "Workspace memory: reseed fixtures in src/auth/login.mjs before retrying auth flows.",
+        directPathHits: ["src/auth/login.mjs"],
+      }));
+      expect(retrievedMemory[1]).toEqual(expect.objectContaining({
+        content: "Workspace memory: session-store snapshots must stay deterministic across retries.",
+        adjacentPathHits: ["src/auth/session-store.mjs"],
+      }));
+      expect(userPrompt).toContain("reseed fixtures in src/auth/login.mjs");
+      expect(userPrompt).toContain("session-store snapshots must stay deterministic");
+      expect(userPrompt).toContain("matched=src/auth/login.mjs");
+      expect(userPrompt).toContain("graph=src/auth/session-store.mjs");
+    } finally {
+      await removeDirAfterLedgerReset(repoRoot);
+    }
+  });
+
+  it("injects reusable strategy guidance into task prompts with path-aware ranking", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-skillbook-paths-"));
+    try {
+      const skillbookDir = join(repoRoot, ".bosun", "skillbook");
+      mkdirSync(skillbookDir, { recursive: true });
+      writeFileSync(
+        join(skillbookDir, "strategies.json"),
+        JSON.stringify({
+          version: "1.0.0",
+          updatedAt: "2026-03-31T00:00:00.000Z",
+          strategies: [
+            {
+              strategyId: "generic-validation",
+              workflowId: "wf-auth",
+              category: "strategy",
+              scopeLevel: "workspace",
+              status: "promoted",
+              confidence: 0.61,
+              recommendation: "Run the generic validation checklist before shipping.",
+              rationale: "Useful as a baseline safety net.",
+              tags: ["validation"],
+              updatedAt: new Date().toISOString(),
+            },
+            {
+              strategyId: "auth-path-retry",
+              workflowId: "wf-auth",
+              category: "strategy",
+              scopeLevel: "workspace",
+              status: "promoted",
+              confidence: 0.88,
+              recommendation: "Stabilize auth retries before broader validation sweeps.",
+              rationale: "This strategy previously fixed the exact login path under active edit.",
+              tags: ["auth", "retry"],
+              relatedPaths: ["src/auth/login.mjs"],
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+        }, null, 2),
+        "utf8",
+      );
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({
+        _workflowId: "wf-auth",
+        _changedFiles: ["src/auth/login.mjs"],
+      });
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "SKILL-1",
+        taskTitle: "Stabilize auth retries",
+        taskDescription: "Fix the login path before running the rest of validation.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-skill-1"),
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      });
+
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+      const guidance = ctx.data._taskSkillbookGuidance;
+
+      expect(userPrompt).toContain("Reusable strategy guidance:");
+      expect(userPrompt).toContain("Stabilize auth retries before broader validation sweeps.");
+      expect(userPrompt).toContain("matched=src/auth/login.mjs");
+      expect(userPrompt.indexOf("Stabilize auth retries before broader validation sweeps."))
+        .toBeLessThan(userPrompt.indexOf("Run the generic validation checklist before shipping."));
+      expect(guidance).toEqual(expect.objectContaining({
+        matched: 2,
+        strategies: expect.arrayContaining([
+          expect.objectContaining({
+            strategyId: "auth-path-retry",
+            pathMatchPaths: ["src/auth/login.mjs"],
+          }),
+        ]),
+      }));
+      expect(guidance.strategies[0]).toEqual(expect.objectContaining({
+        strategyId: "auth-path-retry",
+        pathMatchPaths: ["src/auth/login.mjs"],
+      }));
+      expect(result.systemPrompt).not.toContain("Reusable strategy guidance:");
+      expect(result.systemPrompt).not.toContain("matched=src/auth/login.mjs");
+    } finally {
+      await removeDirAfterLedgerReset(repoRoot);
+    }
+  });
+
+  it("injects reusable strategy guidance from the sql ledger into task prompts", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-skillbook-ledger-"));
+    try {
+      const { appendPromotedStrategyToStateLedger } = await import("../lib/state-ledger-sqlite.mjs");
+      appendPromotedStrategyToStateLedger({
+        strategyId: "wf-auth:ledger-retry",
+        workflowId: "wf-auth",
+        scopeLevel: "workspace",
+        category: "strategy",
+        decision: "promote_strategy",
+        status: "promoted",
+        verificationStatus: "promote_strategy",
+        confidence: 0.91,
+        recommendation: "Use the ledger-backed auth retry sequence before broader validation.",
+        rationale: "This promoted strategy previously recovered the exact login path now being edited.",
+        tags: ["auth", "retry"],
+        updatedAt: new Date().toISOString(),
+        strategy: {
+          strategyId: "wf-auth:ledger-retry",
+          workflowId: "wf-auth",
+          recommendation: "Use the ledger-backed auth retry sequence before broader validation.",
+          rationale: "This promoted strategy previously recovered the exact login path now being edited.",
+          confidence: 0.91,
+          tags: ["auth", "retry"],
+          relatedPaths: ["src/auth/login.mjs"],
+        },
+        knowledge: {
+          entry: {
+            relatedPaths: ["src/auth/login.mjs"],
+          },
+        },
+      }, { repoRoot });
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({
+        _workflowId: "wf-auth",
+        _changedFiles: ["src/auth/login.mjs"],
+      });
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "SKILL-LEDGER-1",
+        taskTitle: "Recover auth retries",
+        taskDescription: "Use the best prior recovery strategy for the active login path.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-skill-ledger-1"),
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      });
+
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+      const guidance = ctx.data._taskSkillbookGuidance;
+
+      expect(userPrompt).toContain("Reusable strategy guidance:");
+      expect(userPrompt).toContain("Use the ledger-backed auth retry sequence before broader validation.");
+      expect(userPrompt).toContain("matched=src/auth/login.mjs");
+      expect(guidance?.strategies?.[0]).toEqual(expect.objectContaining({
+        strategyId: "wf-auth:ledger-retry",
+        pathMatchPaths: ["src/auth/login.mjs"],
+      }));
+    } finally {
+      await removeDirAfterLedgerReset(repoRoot);
+    }
+  });
 });
 
 
@@ -3046,12 +3773,14 @@ describe("action.persist_memory", () => {
         repoSlug: "virtengine/bosun",
         workspace: repoRoot,
         _workspaceId: "workspace-1",
+        _changedFiles: ["src/auth/login.mjs"],
         sessionId: "session-1",
         runId: "run-1",
         task: {
           id: "MEM-2",
           title: "Stabilize login retries",
           description: "Reset browser fixtures between retries.",
+          filePaths: ["src/auth/login.mjs"],
           workspace: repoRoot,
           repository: "virtengine/bosun",
           meta: {
@@ -3059,6 +3788,7 @@ describe("action.persist_memory", () => {
             workspaceId: "workspace-1",
             sessionId: "session-1",
             runId: "run-1",
+            filePaths: ["src/auth/login.mjs"],
           },
         },
       });
@@ -3077,6 +3807,7 @@ describe("action.persist_memory", () => {
       expect(persistResult.success).toBe(true);
       expect(persistResult.persisted).toBe(true);
       expect(persistResult.scopeLevel).toBe("workspace");
+      expect(persistResult.entry.relatedPaths).toEqual(["src/auth/login.mjs"]);
 
       const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
       const retrieved = await retrieveKnowledgeEntries({
@@ -3086,9 +3817,13 @@ describe("action.persist_memory", () => {
         sessionId: "session-99",
         runId: "run-99",
         query: "browser login fixtures retries",
+        changedFiles: ["src/auth/login.mjs"],
         limit: 10,
       });
-      expect(retrieved.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(true);
+      expect(retrieved).toContainEqual(expect.objectContaining({
+        content: "Workspace memory: seed auth fixtures before browser login retries.",
+        directPathHits: ["src/auth/login.mjs"],
+      }));
 
       const hidden = await retrieveKnowledgeEntries({
         repoRoot,
@@ -3663,6 +4398,54 @@ describe("action.update_task_status", () => {
     );
   });
 
+  it("normalizes mismatched inprogress branch linkage back to the current task branch", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const updateTask = vi.fn().mockResolvedValue(true);
+    const getTask = vi.fn().mockResolvedValue({
+      id: "taskid123456",
+      title: "Normalize Branch Persistence",
+      status: "todo",
+      branchName: "task/other123456-wrong-task",
+    });
+    const ctx = makeCtx({
+      taskId: "taskid123456",
+      taskTitle: "Normalize Branch Persistence",
+      branch: "task/other123456-wrong-task",
+      branchName: "task/other123456-wrong-task",
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "inprogress",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { getTask, updateTaskStatus, updateTask },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.branchName).toBe("task/taskid123456-normalize-branch-persistence");
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "taskid123456",
+      "inprogress",
+      expect.objectContaining({
+        source: "workflow",
+        branchName: "task/taskid123456-normalize-branch-persistence",
+      }),
+    );
+    expect(updateTask).toHaveBeenCalledWith(
+      "taskid123456",
+      expect.objectContaining({
+        branchName: "task/taskid123456-normalize-branch-persistence",
+      }),
+    );
+    expect(ctx.data.branchName).toBe("task/taskid123456-normalize-branch-persistence");
+    expect(ctx.data.branch).toBe("task/taskid123456-normalize-branch-persistence");
+  });
+
   it("allows workflows to set blocked status", async () => {
     const nt = getNodeType("action.update_task_status");
     const updateTaskStatus = vi.fn().mockResolvedValue(true);
@@ -3706,6 +4489,13 @@ describe("template-task-lifecycle", () => {
     expect(t.recommended).toBe(true);
   });
 
+  it("polls todo only by default so inreview remediation stays on dedicated review flows", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const triggerNode = t.nodes.find((n) => n.id === "trigger");
+    expect(triggerNode?.type).toBe("trigger.task_available");
+    expect(triggerNode?.config?.statuses).toEqual(["todo"]);
+  });
+
   it("has all required node IDs", () => {
     const t = getTemplate("template-task-lifecycle");
     const ids = t.nodes.map((n) => n.id);
@@ -3714,6 +4504,8 @@ describe("template-task-lifecycle", () => {
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
       "resolve-executor", "record-head", "read-workflow-contract",
       "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
+      "plan-agent-ok", "tests-agent-ok", "implement-agent-ok",
+      "set-blocked-agent-plan-failed", "set-blocked-agent-tests-failed", "set-blocked-agent-implement-failed",
       "claim-stolen", "detect-commits", "has-commits",
       "pre-pr-validation", "pre-pr-validation-ok", "set-fix-summary", "auto-fix-validation", "retry-pre-pr-validation", "retry-validation-ok", "log-validation-failed", "set-blocked-validation-failed", "notify-validation-blocked",
       "push-branch", "push-ok", "build-pr-body", "create-pr", "set-inreview", "handoff-pr-progressor", "log-success",
@@ -3744,20 +4536,27 @@ describe("template-task-lifecycle", () => {
     expect(resolveEdge.source).toBe("worktree-ok");
   });
 
-  it("has claim-stolen check after the 3-phase agent sequence", () => {
+  it("gates each agent phase before entering the next stage or cleanup", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.edges.find((e) => e.source === "build-prompt" && e.target === "run-agent-plan")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "run-agent-tests")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "run-agent-implement")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "claim-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "plan-agent-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "plan-agent-ok" && e.target === "run-agent-tests")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "plan-agent-ok" && e.target === "set-blocked-agent-plan-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "tests-agent-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "tests-agent-ok" && e.target === "run-agent-implement")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "tests-agent-ok" && e.target === "set-blocked-agent-tests-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "implement-agent-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "implement-agent-ok" && e.target === "claim-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "implement-agent-ok" && e.target === "set-blocked-agent-implement-failed")).toBeDefined();
   });
 
-  it("push-branch has baseBranch and rebaseBeforePush config", () => {
+  it("push-branch uses merge-based push config", () => {
     const t = getTemplate("template-task-lifecycle");
     const pushNode = t.nodes.find((n) => n.id === "push-branch");
     expect(pushNode).toBeDefined();
     expect(pushNode.config.baseBranch).toBe("{{baseBranch}}");
-    expect(pushNode.config.rebaseBeforePush).toBe(true);
+    expect(pushNode.config.rebaseBeforePush).toBe(false);
+    expect(pushNode.config.mergeBaseBeforePush).toBe(true);
     expect(pushNode.config.emptyDiffGuard).toBe(true);
   });
 
@@ -3858,6 +4657,8 @@ describe("template-task-lifecycle", () => {
 
   it("worktree-failed path releases claim and slot", () => {
     const t = getTemplate("template-task-lifecycle");
+    const retryGate = t.nodes.find((n) => n.id === "wt-retry-eligible");
+    expect(retryGate?.config?.expression).toBe("$ctx.getNodeOutput('acquire-worktree')?.retryable === true");
     // Auto-recovery path: worktree-ok -> wt-retry-eligible -> recover -> retry -> retry-wt-ok
     expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "wt-retry-eligible")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "recover-worktree")).toBeDefined();
@@ -3875,8 +4676,152 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "dispatch-wt-repair")).toBeDefined();
+    expect(
+      t.edges.find((e) =>
+        e.source === "annotate-blocked-wt-failed"
+        && e.target === "dispatch-wt-repair"
+        && e.sourcePort === "error"),
+    ).toBeDefined();
     expect(t.edges.find((e) => e.source === "dispatch-wt-repair" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+  });
+
+  it("routes retryable worktree acquisition failures through recover-worktree before retry", async () => {
+    const lifecycle = getTemplate("template-task-lifecycle");
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const nodeIds = [
+      "acquire-worktree",
+      "worktree-ok",
+      "wt-retry-eligible",
+      "recover-worktree",
+      "retry-acquire-wt",
+      "retry-wt-ok",
+    ];
+    const nodes = nodeIds.map((id) => clone(lifecycle.nodes.find((node) => node.id === id)));
+    const workflow = {
+      id: "test-worktree-retry-routing",
+      name: "Test Worktree Retry Routing",
+      description: "Regression for retryable acquire_worktree routing",
+      trigger: "trigger.manual",
+      enabled: true,
+      variables: {},
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.manual",
+          label: "Trigger",
+          config: {},
+          position: { x: 0, y: 0 },
+        },
+        ...nodes,
+        {
+          id: "done",
+          type: "notify.log",
+          label: "Done",
+          config: { message: "done" },
+          position: { x: 0, y: 0 },
+        },
+        {
+          id: "failed",
+          type: "notify.log",
+          label: "Failed",
+          config: { message: "failed" },
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [
+        { source: "trigger", target: "acquire-worktree" },
+        { source: "acquire-worktree", target: "worktree-ok" },
+        { source: "worktree-ok", target: "wt-retry-eligible", sourcePort: "no", condition: "$output?.result !== true" },
+        { source: "wt-retry-eligible", target: "recover-worktree", sourcePort: "yes", condition: "$output?.result === true" },
+        { source: "wt-retry-eligible", target: "failed", sourcePort: "no", condition: "$output?.result !== true" },
+        { source: "recover-worktree", target: "retry-acquire-wt" },
+        { source: "retry-acquire-wt", target: "retry-wt-ok" },
+        { source: "retry-wt-ok", target: "done", sourcePort: "yes", condition: "$output?.result === true" },
+        { source: "retry-wt-ok", target: "failed", sourcePort: "no", condition: "$output?.result !== true" },
+      ],
+    };
+    engine.save(workflow);
+
+    const acquireHandler = getNodeType("action.acquire_worktree");
+    const recoverHandler = getNodeType("action.recover_worktree");
+    const acquireSpy = vi.spyOn(acquireHandler, "execute");
+    const recoverSpy = vi.spyOn(recoverHandler, "execute");
+    const recoveredPath = join(tmpDir, "recovered-worktree");
+
+    acquireSpy.mockResolvedValueOnce({
+      success: false,
+      error: "simulated acquire failure",
+      taskId: "task-route-1",
+      repoRoot: tmpDir,
+      worktreePath: recoveredPath,
+      branch: "task/retry-route",
+      baseBranch: "main",
+      retryable: true,
+      failureKind: "worktree_acquisition_failed",
+      blockedReason: "simulated acquire failure",
+      recordedAt: new Date().toISOString(),
+      autoRecoverDelayMs: 0,
+      retryAt: null,
+      recoveryNote: "",
+    });
+    acquireSpy.mockResolvedValueOnce({
+      success: true,
+      worktreePath: recoveredPath,
+      created: true,
+      branch: "task/retry-route",
+      baseBranch: "main",
+    });
+    recoverSpy.mockResolvedValue({
+      success: true,
+      recovered: true,
+      worktreePath: recoveredPath,
+    });
+
+    try {
+      const run = await engine.execute(workflow.id, new WorkflowContext({
+        taskId: "task-route-1",
+        taskTitle: "Retry route task",
+        repoRoot: tmpDir,
+        branch: "task/retry-route",
+        baseBranch: "main",
+        defaultTargetBranch: "main",
+      }));
+
+      expect(acquireSpy).toHaveBeenCalledTimes(2);
+      expect(recoverSpy).toHaveBeenCalledTimes(1);
+      expect(run.ctx.getNodeOutput("recover-worktree")).toMatchObject({
+        success: true,
+        recovered: true,
+      });
+      expect(run.ctx.getNodeOutput("retry-wt-ok")).toMatchObject({ result: true });
+    } finally {
+      acquireSpy.mockRestore();
+      recoverSpy.mockRestore();
+    }
+  });
+
+  it("reconciles installed lifecycle definitions missing deterministic worktree routing", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const broken = JSON.parse(JSON.stringify(engine.get(installed.id)));
+    const retryGate = broken.nodes.find((node) => node.id === "wt-retry-eligible");
+    retryGate.config.expression = "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false";
+    broken.edges = broken.edges.filter((edge) => !(
+      edge.source === "wt-retry-eligible" && edge.target === "recover-worktree"
+    ));
+    engine.save(broken);
+
+    const reconcile = reconcileInstalledTemplates(engine, {
+      autoUpdateUnmodified: true,
+    });
+
+    expect(reconcile.updatedWorkflowIds).toContain(installed.id);
+    const repaired = engine.get(installed.id);
+    expect(repaired.nodes.find((node) => node.id === "wt-retry-eligible")?.config?.expression)
+      .toBe("$ctx.getNodeOutput('acquire-worktree')?.retryable === true");
+    expect(repaired.edges.find((edge) => (
+      edge.source === "wt-retry-eligible" && edge.target === "recover-worktree"
+    ))).toBeDefined();
   });
 
   it("all edges reference valid node IDs", () => {

@@ -18,6 +18,7 @@ import {
   validateSetting as validateAppSetting,
 } from "../ui/modules/settings-schema.js";
 import {
+  guardrailsData,
   isPlaceholderTaskDescription,
   sanitizeTaskText,
 } from "../ui/modules/state.js";
@@ -296,6 +297,25 @@ function normalizeTaskWorkflowRunEntry(entry) {
     meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
   };
 }
+
+describe("modular UI state regressions", () => {
+  it("exports guardrails state and keeps the mirrored site loader wired", () => {
+    expect(guardrailsData).toBeDefined();
+    expect(typeof guardrailsData).toBe("object");
+    expect("value" in guardrailsData).toBe(true);
+
+    const appStateSource = readFileSync(resolve(process.cwd(), "ui/modules/state.js"), "utf8");
+    const siteStateSource = readFileSync(resolve(process.cwd(), "site/ui/modules/state.js"), "utf8");
+
+    expect(appStateSource).toContain("export const guardrailsData = signal(null);");
+    expect(appStateSource).toContain("export async function loadGuardrails()");
+    expect(appStateSource).toContain("guardrails: () => loadGuardrails()");
+
+    expect(siteStateSource).toContain("export const guardrailsData = signal(null);");
+    expect(siteStateSource).toContain("export async function loadGuardrails()");
+    expect(siteStateSource).toContain("guardrails: () => loadGuardrails()");
+  });
+});
 
 function buildTaskWorkflowRunLineageBadges(run) {
   const runGraph = run?.runGraph && typeof run.runGraph === "object" ? run.runGraph : null;
@@ -1013,6 +1033,25 @@ describe("restart delay settings", () => {
       valid: false,
       error: "Maximum: 1800000",
     });
+  });
+});
+
+describe("executor routing settings", () => {
+  it("accepts weighted EXECUTORS values with dotted variants and optional model allow-lists in both schemas", () => {
+    const appExecutors = appSettingsSchema.find((def) => def.key === "EXECUTORS");
+    const siteExecutors = siteSettingsSchema.find((def) => def.key === "EXECUTORS");
+    const dottedVariant = "CODEX:GPT-5.4:70,COPILOT:DEFAULT:30";
+    const withModels = "CODEX:GPT-5.4:70:gpt-5.4|gpt-5.3-codex,COPILOT:DEFAULT:30";
+
+    expect(validateAppSetting(appExecutors, dottedVariant)).toEqual({ valid: true });
+    expect(validateSiteSetting(siteExecutors, dottedVariant)).toEqual({ valid: true });
+    expect(validateAppSetting(appExecutors, withModels)).toEqual({ valid: true });
+    expect(validateSiteSetting(siteExecutors, withModels)).toEqual({ valid: true });
+  });
+
+  it("keeps executor pool row ids stable by index so typing does not remount the active input", () => {
+    const settingsSource = readFileSync(resolve(process.cwd(), "ui/tabs/settings.js"), "utf8");
+    expect(settingsSource).toContain("id: `executor-pool-${index}`");
   });
 });
 

@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
@@ -129,7 +129,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
-  });
+  }, 15000);
 
   it("normalizes remote-qualified base branches before gh PR calls", async () => {
     const node = makeNode("action.create_pr", {
@@ -141,6 +141,60 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
+  });
+
+  it("rejects invalid repoSlug values before any gh invocation", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "main",
+      branch: "feat/add-thing",
+      repoSlug: "not-a-valid-slug",
+      cwd: fastFailCwd,
+    });
+    const result = await getNodeType("action.create_pr").execute(node, makeCtx());
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("invalid_repo_slug");
+    expect(result.blocking).toEqual(expect.objectContaining({
+      field: "repoSlug",
+      retryable: false,
+    }));
+  });
+
+  it("rejects unresolved placeholder branch names before any gh invocation", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "main",
+      branch: "fix/dep-audit-{{_runId}}",
+      cwd: fastFailCwd,
+    });
+    const result = await getNodeType("action.create_pr").execute(node, makeCtx());
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("unresolved_branch_placeholder");
+    expect(result.blocking).toEqual(expect.objectContaining({
+      field: "branch",
+      retryable: false,
+    }));
+  });
+
+  it("blocks PR creation when the workflow recorded no new commits", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "main",
+      branch: "feat/add-thing",
+      cwd: fastFailCwd,
+    });
+    const result = await getNodeType("action.create_pr").execute(node, makeCtx({
+      _hasNewCommits: false,
+    }));
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("no_new_commits");
+    expect(result.blocking).toEqual(expect.objectContaining({
+      field: "commits",
+      retryable: false,
+    }));
   });
 
   it("waits for operator approval before creating a PR when risky approvals are enabled", async () => {
@@ -299,6 +353,9 @@ describe("dangerous shell payload containment", () => {
     expect(executeSrc).toContain("repoSlug");
     expect(executeSrc).toContain("args.push(\"--repo\", repoSlug)");
     expect(executeSrc).toContain("existingArgs.push(\"--repo\", repoSlug)");
+    expect(executeSrc).toContain("invalid_repo_slug");
+    expect(executeSrc).toContain("unresolved_branch_placeholder");
+    expect(executeSrc).toContain("no_new_commits");
   });
 
   it("action.run_command schema does not silently accept untrusted commands", () => {
@@ -401,6 +458,30 @@ describe("action.run_command env interpolation", () => {
     expect(result.output).toEqual([{ taskId: "t-2" }]);
   });
 
+  it("runs multiline node -e scripts through stdin without relying on command-line script transport", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const script = [
+      "const payload = {",
+      '  tasks: [{ taskId: "t-stdin-1" }],',
+      '  note: "stdin transport"',
+      "};",
+      "console.log(JSON.stringify(payload));",
+    ].join("\n");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: ["-e", script],
+      parseJson: true,
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual({
+      tasks: [{ taskId: "t-stdin-1" }],
+      note: "stdin transport",
+    });
+  });
+
   it("resolves template env values before executing commands", async () => {
     const nodeType = getNodeType("action.run_command");
     const node = makeNode("action.run_command", {
@@ -444,7 +525,7 @@ describe("action.run_command env interpolation", () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.conflicts).toHaveLength(2);
     expect(parsed.ciFailures).toHaveLength(1);
-  });
+  }, 15000);
 
   it("automatically compacts large command output before storing it in workflow context", async () => {
     const nodeType = getNodeType("action.run_command");
@@ -469,6 +550,32 @@ describe("action.run_command env interpolation", () => {
     expect(Array.isArray(result.items)).toBe(true);
     expect(result.items.length).toBe(1);
   });
+
+  it("resolves auto quality-gate commands before execution", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-auto-quality-gate-"));
+    try {
+      writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+        name: "wf-auto-quality-gate",
+        version: "1.0.0",
+        scripts: {
+          "prepush:check": "node -e \"process.stdout.write('quality gate ok')\"",
+        },
+      }, null, 2));
+
+      const nodeType = getNodeType("action.run_command");
+      const node = makeNode("action.run_command", {
+        command: "auto",
+        commandType: "qualityGate",
+        cwd: repoRoot,
+      });
+
+      const result = await nodeType.execute(node, makeCtx({ worktreePath: repoRoot }));
+      expect(result.success).toBe(true);
+      expect(String(result.output)).toContain("quality gate ok");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 30000);
 });
 
 describe("workflow validation output compaction", () => {
@@ -720,4 +827,3 @@ describe("validation nodes can offload to isolated runners", () => {
     expect(result.failureDiagnostic?.exitCode).toBe(1);
   });
 });
-

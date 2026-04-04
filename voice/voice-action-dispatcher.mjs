@@ -376,6 +376,7 @@ registerAction("agent.delegate", async (params, context) => {
       model,
       cwd,
       sessionId,
+      scope: `voice-dispatch:${sessionId}`,
       sessionType: "voice-dispatch",
       timeoutMs: 5 * 60 * 1000,
     });
@@ -554,19 +555,20 @@ registerAction("system.fleet", async () => {
 registerAction("system.config", async (params) => {
   const cfg = loadConfig();
   const key = String(params.key || "").trim();
-  if (key) {
-    const value = cfg[key];
-    return value !== undefined ? { [key]: value } : { error: `Config key "${key}" not found.` };
-  }
-  return {
-    primaryAgent: cfg.primaryAgent,
-    mode: cfg.mode,
-    kanbanBackend: cfg.kanbanBackend || cfg.kanban?.backend,
-    projectName: cfg.projectName,
+  const normalizedConfig = {
+    primaryAgent: cfg.primaryAgent || getPrimaryAgentName(),
+    mode: cfg.mode || "generic",
+    kanbanBackend: cfg.kanbanBackend || cfg.kanban?.backend || "internal",
+    projectName: cfg.projectName || cfg.project || process.env.PROJECT_NAME || "unknown",
     autoFixEnabled: cfg.autoFixEnabled,
     watchEnabled: cfg.watchEnabled,
     voiceEnabled: cfg.voice?.enabled !== false,
   };
+  if (key) {
+    const value = normalizedConfig[key] ?? cfg[key];
+    return value !== undefined ? { [key]: value } : { error: `Config key "${key}" not found.` };
+  }
+  return normalizedConfig;
 });
 
 registerAction("system.health", async () => {
