@@ -19,7 +19,8 @@ function toConnectionId(value, fallback = "") {
   const normalized = toTrimmedString(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
   return normalized || fallback || `connection-${Date.now()}`;
 }
 
@@ -473,7 +474,7 @@ export async function testConnectionTarget(endpoint, apiKey = "", options = {}) 
       method: "GET",
       headers,
       timeout: timeoutMs,
-      rejectUnauthorized: false,
+      rejectUnauthorized: options.rejectUnauthorized ?? false,
     }, (res) => {
       const statusCode = Number(res.statusCode || 0);
       res.resume();

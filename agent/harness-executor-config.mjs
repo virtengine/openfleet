@@ -8,7 +8,8 @@ function sanitizeId(value, fallback = "harness-executor") {
   const normalized = toTrimmedString(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
   return normalized || fallback;
 }
 
@@ -33,7 +34,8 @@ function normalizeEnvBindingKey(value) {
   return toTrimmedString(value)
     .replace(/[^A-Za-z0-9_]/g, "_")
     .replace(/__+/g, "_")
-    .replace(/^_+|_+$/g, "");
+    .replace(/^_+/, "")
+    .replace(/_+$/, "");
 }
 
 function parseBooleanLike(value, fallback = true) {

@@ -157,7 +157,7 @@ function normalizeScopeLevel(value) {
 function extractPathCandidatesFromText(value, repoRoot = knowledgeState.repoRoot || process.cwd()) {
   const text = normalizeText(value);
   if (!text) return [];
-  const matches = text.match(/[A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,8}/g) || [];
+  const matches = text.match(/[A-Za-z0-9_/\\-]+(?:\.[A-Za-z0-9_/\\-]+)*\.[A-Za-z0-9]{1,8}/g) || [];
   return normalizeRelatedPaths(matches, { repoRoot, maxItems: 24 });
 }
 
