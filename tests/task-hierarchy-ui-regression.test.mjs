@@ -29,6 +29,14 @@ const taskStyleSources = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
+const kanbanStyleSources = [
+  "ui/styles/kanban.css",
+  "site/ui/styles/kanban.css",
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
+}));
+
 describe("task hierarchy shared model", () => {
   it("exports reusable hierarchy builders for both UI trees", () => {
     expect(typeof uiHierarchy.buildTaskHierarchyModel).toBe("function");
@@ -96,6 +104,16 @@ for (const { relPath, source } of kanbanSources) {
       expect(source).toContain("const hierarchyView = useMemo(() => deriveTaskHierarchyView");
       expect(source).toContain("[...hierarchyView.visibleTaskIds]");
     });
+
+    it("renders parent shells instead of only isolated child cards", () => {
+      expect(source).toContain("buildKanbanColumnItems(");
+      expect(source).toContain("KanbanGroupShell");
+      expect(source).toContain('kind: "group"');
+      expect(source).toContain("kanban-group-shell");
+      expect(source).toContain("kanban-group-children");
+      expect(source).toContain("forceExpanded");
+      expect(source).toContain("compact=${group?.kind !== \"epic\"}");
+    });
   });
 }
 
@@ -109,6 +127,18 @@ for (const { relPath, source } of taskStyleSources) {
       expect(source).toContain(".task-tree-progress-pill");
       expect(source).toContain(".task-tree-action-btn");
       expect(source).toContain(".task-tree-status-select");
+    });
+  });
+}
+
+for (const { relPath, source } of kanbanStyleSources) {
+  describe(`Kanban hierarchy styles (${relPath})`, () => {
+    it("defines grouped shell, checklist child rows, and icon caps", () => {
+      expect(source).toContain(".kanban-group-shell");
+      expect(source).toContain(".kanban-group-children");
+      expect(source).toContain(".kanban-checklist-row");
+      expect(source).toContain(".kanban-icon-cap");
+      expect(source).toContain(".kanban-group-pill");
     });
   });
 }

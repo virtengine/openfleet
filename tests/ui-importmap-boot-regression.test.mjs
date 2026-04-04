@@ -13,7 +13,10 @@ describe("ui index module boot", () => {
 
     expect(importMapIndex).toBeGreaterThanOrEqual(0);
     expect(moduleBootIndex).toBeGreaterThan(importMapIndex);
-    expect(indexSource).toContain('import("/app.js")');
+    expect(
+      indexSource.includes('import("/app.js")')
+      || indexSource.includes('import(new URL("/app.js", window.location.origin).href)'),
+    ).toBe(true);
   });
 
   it("does not preload or dynamically import the app entry before import maps exist", () => {

@@ -119,6 +119,17 @@ describe("chat session regressions", () => {
     expect(source.indexOf("// Clear one-shot stop UI lock as soon as the selected agent reports idle.")).toBeGreaterThan(source.indexOf("const composerBusy ="));
   });
 
+  it("queues follow-up chat submits by default while the agent is busy and renders the pending queue", () => {
+    const source = read("ui/tabs/chat.js");
+    expect(source).toContain('deliveryMode: "queue"');
+    expect(source).toContain('if (composerBusy) {');
+    expect(source).toContain("handleAddToQueue();");
+    expect(source).toContain("Queue message (Enter)");
+    expect(source).toContain("Queued Follow-ups");
+    expect(source).toContain('primary="Steer with Message"');
+    expect(source).toContain('secondary="Alt+Enter"');
+  });
+
   it("stops hidden comparison sessions before resetting them and exposes executor controls", () => {
     const source = read("ui/tabs/context-compression-lab.js");
     expect(source).toContain("Stop & Reset Sessions");
@@ -128,14 +139,19 @@ describe("chat session regressions", () => {
     expect(source).toContain('label="Model"');
     expect(source).toContain("agent: paneConfigs.left?.agent || undefined");
     expect(source).toContain("agent: paneConfigs.right?.agent || undefined");
+    expect(source).toContain('deliveryMode: forcedDeliveryMode || (leftBusy ? "queue" : "auto")');
+    expect(source).toContain('deliveryMode: forcedDeliveryMode || (rightBusy ? "queue" : "auto")');
+    expect(source).toContain("Queue to Both");
+    expect(source).toContain("Steer Both Now");
+    expect(source).toContain("Queued Follow-ups");
   });
 
   it("lets session messages override and persist the executor/model for harness runs", () => {
     const source = read("server/routes/harness-sessions.mjs");
     expect(source).toContain("body?.providerSelection || body?.agent || session?.metadata?.agent");
     expect(source).toContain("refreshedSession.metadata = nextMetadata");
-    expect(source).toContain("providerSelection: messageAgent");
-    expect(source).toContain("model: messageModel");
+    expect(source).toContain("providerSelection: turnAgent");
+    expect(source).toContain("model: turnModel");
   });
 
   it("records codex lab compression stats against the owning session id and returns usage", () => {

@@ -656,7 +656,11 @@ for (const relPath of ["ui/tabs/tasks.js", "site/ui/tabs/tasks.js"]) {
       expect(source).toContain('Sprint nodes: <span class="numeral">${dagSprintGraphView.nodes.length}</span>');
       expect(source).toContain('Global nodes: <span class="numeral">${dagGlobalGraphView.nodes.length}</span>');
       expect(source).toContain('Epic nodes: <span class="numeral">${dagEpicGraphView.nodes.length}</span>');
-      expect(source).toContain('<span class="numeral">${visible.length}</span> shown');
+      expect(
+        source.includes('<span class="numeral">${visible.length}</span> shown')
+        || source.includes('<span class="numeral">${isList ? listVisibleCount : visible.length}</span> shown')
+        || source.includes('<span class="numeral">${visibleShownCount}</span> shown'),
+      ).toBe(true);
       expect(source).toContain('Page <span class="numeral">${page + 1}</span> / <span class="numeral">${totalPages}</span>');
     });
   });

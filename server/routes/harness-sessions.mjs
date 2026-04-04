@@ -993,12 +993,16 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const exec = session.type === "primary"
         ? await resolveInteractiveSessionExecutor(deps)
         : null;
-      const persistRoutingMetadata = () => {
+      const persistRoutingMetadata = ({
+        nextAgent = messageAgent,
+        nextModel = messageModel,
+        nextAgentProfileId = messageAgentProfileId,
+      } = {}) => {
         const nextMetadata = tracker.updateSessionMetadata?.(sessionId, (currentMetadata = {}) => ({
           ...currentMetadata,
-          ...(messageAgent ? { agent: messageAgent } : {}),
-          ...(messageModel ? { model: messageModel } : {}),
-          ...(messageAgentProfileId ? { agentProfileId: messageAgentProfileId } : {}),
+          ...(nextAgent ? { agent: nextAgent } : {}),
+          ...(nextModel ? { model: nextModel } : {}),
+          ...(nextAgentProfileId ? { agentProfileId: nextAgentProfileId } : {}),
           contextCompressionMode,
         }));
         if (nextMetadata) {
@@ -1013,6 +1017,9 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const runInteractiveTurn = async ({
         turnContent = "",
         turnAttachments = [],
+        turnAgent = messageAgent,
+        turnModel = messageModel,
+        turnAgentProfileId = messageAgentProfileId,
         skipQueuedDrain = false,
       } = {}) => {
         if (!exec) return false;
@@ -1035,7 +1042,11 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           userMessageRecorded = true;
         };
 
-        persistRoutingMetadata();
+        persistRoutingMetadata({
+          nextAgent: turnAgent,
+          nextModel: turnModel,
+          nextAgentProfileId: turnAgentProfileId,
+        });
         recordUserMessageOnce();
         tracker.updateSessionStatus(sessionId, "active");
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
@@ -1066,10 +1077,10 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           sessionId,
           sessionType: "primary",
           mode: messageMode,
-          model: messageModel,
-          agent: messageAgent,
-          providerSelection: messageAgent,
-          agentProfileId: messageAgentProfileId,
+          model: turnModel,
+          agent: turnAgent,
+          providerSelection: turnAgent,
+          agentProfileId: turnAgentProfileId,
           cwd: sessionWorkspaceDir,
           persistent: true,
           skipUserMessageRecord: userMessageRecorded,
@@ -1138,6 +1149,8 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
               await runInteractiveTurn({
                 turnContent: String(nextQueued.entry.content || ""),
                 turnAttachments: Array.isArray(nextQueued.entry.attachments) ? nextQueued.entry.attachments : [],
+                turnAgent: toTrimmedString(nextQueued.entry.agent || "") || messageAgent,
+                turnModel: toTrimmedString(nextQueued.entry.model || "") || messageModel,
               });
             }
           }

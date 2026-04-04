@@ -387,10 +387,8 @@ export function ChatTab() {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const sendMenuRef = useRef(null);
-  const messageQueueRef = useRef([]);
   const chatDropDepthRef = useRef(0);
   const [showSendMenu, setShowSendMenu] = useState(false);
-  const [queueCount, setQueueCount] = useState(0);
   const [stoppingAgent, setStoppingAgent] = useState(false);
   const routeSessionId = String(routeParams.value?.sessionId || "").trim();
   const isLoadingSessionList = sessionsLoading.value === true;
@@ -629,7 +627,7 @@ export function ChatTab() {
   }
 
   /* ── Send message or command ── */
-  async function handleSend(explicitContent) {
+  async function handleSend(explicitContent, sendOptions = {}) {
     const content = (typeof explicitContent === "string" ? explicitContent : inputValue).trim();
     const attachments = Array.isArray(pendingAttachments)
       ? pendingAttachments.filter(Boolean)
@@ -645,6 +643,7 @@ export function ChatTab() {
     const asModeMessage = Boolean(modeOverride && cmdArgs);
     const outboundContent = asModeMessage ? cmdArgs : content;
     const outboundMode = modeOverride || agentMode.value;
+    const deliveryMode = sendOptions?.deliveryMode;
     let createdSessionId = "";
 
     try {
@@ -709,6 +708,7 @@ export function ChatTab() {
               agentProfileId: activeManualAgentId.value || undefined,
               yolo: yoloMode.peek(),
               model: selectedModel.value || undefined,
+              ...(deliveryMode ? { deliveryMode } : {}),
               attachments,
             }),
           });
@@ -750,8 +750,12 @@ export function ChatTab() {
               body: JSON.stringify({
                 content: outboundContent,
                 mode: outboundMode,
+                agent: activeAgent.value || undefined,
+                providerSelection: activeAgent.value || undefined,
+                agentProfileId: activeManualAgentId.value || undefined,
                 yolo: yoloMode.peek(),
                 model: selectedModel.value || undefined,
+                ...(deliveryMode ? { deliveryMode } : {}),
                 attachments,
               }),
             });
@@ -846,30 +850,64 @@ export function ChatTab() {
   }
 
   /* ── Add message to queue for delivery after current task ── */
-  function handleAddToQueue() {
+  async function handleAddToQueue() {
     const content = inputValue.trim();
-    if (!content) return;
+    const attachments = Array.isArray(pendingAttachments)
+      ? pendingAttachments.filter(Boolean)
+      : [];
+    const composerBusy = Boolean(activeAgentInfo.value?.busy);
+    if ((!content && attachments.length === 0) || uploadingAttachments) return;
     setShowSendMenu(false);
-    messageQueueRef.current.push(content);
-    setQueueCount(messageQueueRef.current.length);
-    setInputValue("");
-    showToast(`Message queued (${messageQueueRef.current.length} pending)`, "success");
+    if (!sessionId || !composerBusy) {
+      await handleSend();
+      return;
+    }
+    const messagePath = sessionApiPath(sessionId, "message");
+    if (!messagePath) {
+      showToast("Session path unavailable", "error");
+      return;
+    }
+    setSending(true);
+    try {
+      const res = await apiFetch(messagePath, {
+        method: "POST",
+        body: JSON.stringify({
+          content,
+          mode: agentMode.value,
+          agent: activeAgent.value || undefined,
+          providerSelection: activeAgent.value || undefined,
+          agentProfileId: activeManualAgentId.value || undefined,
+          yolo: yoloMode.peek(),
+          model: selectedModel.value || undefined,
+          attachments,
+          deliveryMode: "queue",
+        }),
+      });
+      const depth = Number(res?.queueDepth || 0) || 0;
+      setInputValue("");
+      setPendingAttachments([]);
+      pendingDraftTextBySessionId.delete(String(sessionId || DRAFT_SESSION_KEY));
+      pendingAttachmentsBySessionId.delete(String(sessionId || DRAFT_SESSION_KEY));
+      persistDraftTextCache();
+      persistDraftAttachmentCache();
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+      await refreshPrimarySessions();
+      loadSessionMessages(sessionId, { limit: 50 });
+      showToast(depth > 0 ? `Message queued (${depth} pending)` : "Message queued", "success");
+    } catch (err) {
+      showToast("Failed to queue message: " + (err.message || "Unknown error"), "error");
+    } finally {
+      setSending(false);
+    }
   }
 
   /* ── Steer with message (send to running session) ── */
   async function handleSteerWithMessage() {
     setShowSendMenu(false);
-    await handleSend();
+    await handleSend(undefined, { deliveryMode: "steer" });
   }
-
-  /* ── Auto-send queued messages when agent becomes free ── */
-  useEffect(() => {
-    if (!sending && messageQueueRef.current.length > 0) {
-      const next = messageQueueRef.current.shift();
-      setQueueCount(messageQueueRef.current.length);
-      handleSend(next);
-    }
-  }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Close send menu when clicking outside ── */
   useEffect(() => {
@@ -920,17 +958,21 @@ export function ChatTab() {
       }
     }
 
-    // Alt+Enter = Add to Queue
+    // Alt+Enter = Steer immediately
     if (e.key === "Enter" && e.altKey) {
       e.preventDefault();
-      handleAddToQueue();
+      handleSteerWithMessage();
       return;
     }
 
-    // Send on Enter (shift+enter = newline)
+    // Enter queues by default while the agent is busy; otherwise it sends.
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (activeAgentInfo.value?.busy) {
+        handleAddToQueue();
+      } else {
+        handleSend();
+      }
     }
   }
 
@@ -1044,6 +1086,10 @@ export function ChatTab() {
   const sessionRuntime = getSessionRuntimeState(activeSession);
   const sessionFreshnessAt = getSessionRecencyTimestamp(activeSession);
   const sessionFreshnessLabel = sessionFreshnessAt ? new Date(sessionFreshnessAt).toLocaleString() : "unknown";
+  const queuedFollowups = Array.isArray(activeSession?.metadata?.queuedFollowups)
+    ? activeSession.metadata.queuedFollowups
+    : [];
+  const queuedFollowupCount = queuedFollowups.length;
   const sessionMeta = [
     activeSession?.type,
     `Lifecycle: ${sessionLifecycle.label}`,
@@ -1424,8 +1470,8 @@ export function ChatTab() {
                 <${IconButton}
                   color="primary"
                   disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
-                  onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
-                  title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
+                  onClick=${activeAgentInfo.value?.busy ? handleAddToQueue : handleSend}
+                  title=${activeAgentInfo.value?.busy ? "Queue message (Enter)" : "Send (Enter)"}
                   size="small"
                 >➤<//>
                 <${IconButton}
@@ -1442,27 +1488,49 @@ export function ChatTab() {
                         <${ListItemIcon} sx=${{ minWidth: 28 }}>⊳<//>
                         <${ListItemText} primary="Stop and Send" />
                       <//>
-                      <${ListItemButton} onClick=${handleAddToQueue}>
+                      <${ListItemButton} selected=${activeAgentInfo.value?.busy} onClick=${handleAddToQueue}>
                         <${ListItemIcon} sx=${{ minWidth: 28 }}>+<//>
-                        <${ListItemText} primary="Add to Queue" secondary="Alt+Enter" />
+                        <${ListItemText} primary="Add to Queue" secondary="Enter" />
                       <//>
-                      <${ListItemButton} selected onClick=${handleSteerWithMessage}>
+                      <${ListItemButton} selected=${!activeAgentInfo.value?.busy} onClick=${handleSteerWithMessage}>
                         <${ListItemIcon} sx=${{ minWidth: 28 }}>→<//>
-                        <${ListItemText} primary="Steer with Message" secondary="Enter" />
+                        <${ListItemText} primary="Steer with Message" secondary="Alt+Enter" />
                       <//>
                     <//>
                   <//>
                 `}
               <//>
             <//>
+            ${queuedFollowupCount > 0 && html`
+              <${Paper}
+                variant="outlined"
+                sx=${{ mx: 1, mb: 0.75, px: 1.25, py: 1, borderRadius: 2, borderColor: "info.light", bgcolor: "rgba(59,130,246,0.05)" }}
+              >
+                <${Stack} spacing=${0.75}>
+                  <${Typography} variant="caption" sx=${{ fontWeight: 700, color: "info.main" }}>
+                    Queued Follow-ups
+                  </${Typography}>
+                  ${queuedFollowups.map((entry) => html`
+                    <${Box} key=${entry.id || entry.queuedAt} sx=${{ borderTop: "1px solid rgba(148,163,184,0.18)", pt: 0.75 }}>
+                      <${Typography} variant="caption" color="text.secondary">
+                        ${entry.queuedAt ? new Date(entry.queuedAt).toLocaleTimeString() : "queued"}${entry.model ? ` · ${entry.model}` : ""}${entry.agent ? ` · ${entry.agent}` : ""}
+                      </${Typography}>
+                      <${Typography} variant="body2" sx=${{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        ${entry.content || (Array.isArray(entry.attachments) && entry.attachments.length > 0 ? "(attachment-only follow-up)" : "")}
+                      </${Typography}>
+                    </${Box}>
+                  `)}
+                </${Stack}>
+              </${Paper}>
+            `}
             <${Stack} direction="row" spacing=${1} className="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
               <${Typography} variant="caption" color="text.secondary">Shift+Enter for new line<//>
               <${Typography} variant="caption" color="text.secondary">Type / for commands<//>
               ${offlineQueueSize.peek() > 0 && html`
                 <${Chip} label=${`${offlineQueueSize.peek()} queued`} size="small" color="warning" variant="outlined" />
               `}
-              ${queueCount > 0 && html`
-                <${Chip} label=${`⏳ ${queueCount} pending`} size="small" color="info" variant="outlined" />
+              ${queuedFollowupCount > 0 && html`
+                <${Chip} label=${`⏳ ${queuedFollowupCount} pending`} size="small" color="info" variant="outlined" />
               `}
             <//>
           <//>

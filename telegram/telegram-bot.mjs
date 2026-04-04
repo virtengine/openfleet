@@ -1096,7 +1096,7 @@ function getMeetingBrowserUrlOptions(callType = "voice", extra = {}) {
 }
 
 function syncUiUrlsFromServer() {
-  const currentUiUrl = getTunnelUrl() || getTelegramUiUrl() || null;
+  const currentUiUrl = getTunnelUrl() || getTelegramUiUrl?.() || null;
   telegramUiUrl = currentUiUrl;
   telegramWebAppUrl = getTelegramWebAppUrl(currentUiUrl);
   return {

@@ -2517,6 +2517,106 @@ describeUiServer("ui-server mini app", () => {
     }
   }, 15000);
 
+  it("persists queued session follow-ups and drains them after the active turn completes", async () => {
+    const turnResolvers = [];
+    const execPrimaryPrompt = vi.fn().mockImplementation((_content, _opts = {}) => new Promise((resolve) => {
+      turnResolvers.push(resolve);
+    }));
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      dependencies: { execPrimaryPrompt },
+    });
+
+    try {
+      const port = server.address().port;
+      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "primary", prompt: "hello" }),
+      });
+      const createJson = await createResponse.json();
+      const sessionId = createJson.session.id;
+
+      const firstMessageResponse = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ content: "run until complete", mode: "agent" }),
+        },
+      );
+      const firstMessageJson = await firstMessageResponse.json();
+      expect(firstMessageResponse.status).toBe(200);
+      expect(firstMessageJson.ok).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+      });
+
+      const queuedResponse = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content: "follow up after the current turn",
+            mode: "agent",
+            deliveryMode: "queue",
+          }),
+        },
+      );
+      const queuedJson = await queuedResponse.json();
+      expect(queuedResponse.status).toBe(202);
+      expect(queuedJson).toMatchObject({
+        ok: true,
+        queued: true,
+        deliveryMode: "queue",
+        sessionId,
+        queueDepth: 1,
+        queuedMessage: expect.objectContaining({
+          content: "follow up after the current turn",
+        }),
+      });
+
+      const queuedSession = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?full=1`,
+      ).then((r) => r.json());
+      expect(queuedSession.session?.metadata?.queuedFollowups).toEqual([
+        expect.objectContaining({
+          content: "follow up after the current turn",
+        }),
+      ]);
+
+      turnResolvers.shift()?.({ finalResponse: "first complete", items: [] });
+
+      await vi.waitFor(() => {
+        expect(execPrimaryPrompt).toHaveBeenCalledTimes(2);
+      });
+      expect(execPrimaryPrompt.mock.calls[1][0]).toBe("follow up after the current turn");
+
+      turnResolvers.shift()?.({ finalResponse: "second complete", items: [] });
+
+      await vi.waitFor(async () => {
+        const settledSession = await fetch(
+          `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?full=1`,
+        ).then((r) => r.json());
+        expect(settledSession.session?.metadata?.queuedFollowups || []).toHaveLength(0);
+        expect(settledSession.session?.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ role: "user", content: "run until complete" }),
+            expect.objectContaining({ role: "user", content: "follow up after the current turn" }),
+          ]),
+        );
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await settleUiRuntimeCleanup();
+    }
+  }, 15000);
+
   it("routes sdk commands with the session workspace cwd", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-sdk-workspace-"));
     const configPath = join(tmpDir, "bosun.config.json");

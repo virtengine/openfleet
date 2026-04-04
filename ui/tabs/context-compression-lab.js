@@ -408,7 +408,7 @@ export function ContextCompressionLabTab() {
     }
   }, [selectedDetails.left, selectedDetails.right]);
 
-  const sendPromptToBoth = useCallback(async () => {
+  const sendPromptToBoth = useCallback(async (forcedDeliveryMode = "") => {
     const trimmed = toTrimmedString(prompt);
     if (!trimmed || sending) return;
     const leftId = toTrimmedString(sessionIds.left);
@@ -419,6 +419,8 @@ export function ContextCompressionLabTab() {
     }
     setSending(true);
     try {
+      const leftBusy = toTrimmedString(snapshots.left?.session?.status).toLowerCase() === "active";
+      const rightBusy = toTrimmedString(snapshots.right?.session?.status).toLowerCase() === "active";
       await Promise.all([
         apiFetch(buildSessionApiPath(leftId, "message", {
           workspace: "active",
@@ -429,6 +431,7 @@ export function ContextCompressionLabTab() {
             agent: paneConfigs.left?.agent || undefined,
             model: paneConfigs.left?.model || undefined,
             contextCompressionMode: LAB_SIDES.left.mode,
+            deliveryMode: forcedDeliveryMode || (leftBusy ? "queue" : "auto"),
           }),
         }),
         apiFetch(buildSessionApiPath(rightId, "message", {
@@ -440,6 +443,7 @@ export function ContextCompressionLabTab() {
             agent: paneConfigs.right?.agent || undefined,
             model: paneConfigs.right?.model || undefined,
             contextCompressionMode: LAB_SIDES.right.mode,
+            deliveryMode: forcedDeliveryMode || (rightBusy ? "queue" : "auto"),
           }),
         }),
       ]);
@@ -451,7 +455,19 @@ export function ContextCompressionLabTab() {
     } finally {
       setSending(false);
     }
-  }, [paneConfigs.left, paneConfigs.right, prompt, refreshSnapshots, sending, sessionIds.left, sessionIds.right]);
+  }, [paneConfigs.left, paneConfigs.right, prompt, refreshSnapshots, sending, sessionIds.left, sessionIds.right, snapshots.left?.session?.status, snapshots.right?.session?.status]);
+
+  const handlePromptKeyDown = useCallback((event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    const leftBusy = toTrimmedString(snapshots.left?.session?.status).toLowerCase() === "active";
+    const rightBusy = toTrimmedString(snapshots.right?.session?.status).toLowerCase() === "active";
+    if (leftBusy || rightBusy) {
+      sendPromptToBoth("queue");
+      return;
+    }
+    sendPromptToBoth();
+  }, [sendPromptToBoth, snapshots.left?.session?.status, snapshots.right?.session?.status]);
 
   const selectEventDetail = useCallback(async (sideKey, event) => {
     const safeSessionId = toTrimmedString(sessionIds[sideKey]);
@@ -532,6 +548,7 @@ export function ContextCompressionLabTab() {
         ? Math.min(100, Math.max(6, Math.round((Number(metrics?.tokenUsage?.cacheInputTokens || 0) / Math.max(1, Number(metrics?.tokenUsage?.totalTokens || 1))) * 100)))
         : 0;
     const messages = Array.isArray(session?.messages) ? session.messages : [];
+    const queuedFollowups = Array.isArray(session?.metadata?.queuedFollowups) ? session.metadata.queuedFollowups : [];
     return html`
       <${Paper}
         variant="outlined"
@@ -645,6 +662,24 @@ export function ContextCompressionLabTab() {
             }}
           />
         </${Box}>
+
+        <${Divider} />
+
+        <${Typography} variant="subtitle2">Queued Follow-ups</${Typography}>
+        <${Stack} spacing=${1} sx=${{ maxHeight: 180, overflow: "auto", pr: 0.5 }}>
+          ${queuedFollowups.length === 0
+            ? html`<${Typography} variant="caption" color="text.secondary">No queued follow-ups.</${Typography}>`
+            : queuedFollowups.map((entry) => html`
+                <${Paper} key=${entry.id || entry.queuedAt} variant="outlined" sx=${{ p: 1.25, borderRadius: 2.5, borderColor: `${side.accent}22` }}>
+                  <${Typography} variant="caption" color="text.secondary">
+                    ${entry.queuedAt ? formatRelative(entry.queuedAt) : "queued"}${entry.agent ? ` · ${entry.agent}` : ""}${entry.model ? ` · ${entry.model}` : ""}
+                  </${Typography}>
+                  <${Typography} variant="body2" sx=${{ mt: 0.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                    ${toTrimmedString(entry.content) || "(attachment-only follow-up)"}
+                  </${Typography}>
+                </${Paper}>
+              `)}
+        </${Stack}>
 
         <${Divider} />
 
@@ -780,6 +815,7 @@ export function ContextCompressionLabTab() {
                 placeholder="Ask both sessions to do the same task so you can compare how retained context, compaction events, and overall cost diverge."
                 value=${prompt}
                 onInput=${(event) => setPrompt(event.target.value)}
+                onKeyDown=${handlePromptKeyDown}
               />
               <${Stack} direction="row" spacing=${1}>
                 <${Button}
@@ -787,7 +823,14 @@ export function ContextCompressionLabTab() {
                   disabled=${loadingPair || sending || resetting || !toTrimmedString(prompt)}
                   onClick=${sendPromptToBoth}
                 >
-                  ${sending ? "Sending..." : "Send to Both"}
+                  ${sending ? "Sending..." : ((toTrimmedString(snapshots.left?.session?.status).toLowerCase() === "active" || toTrimmedString(snapshots.right?.session?.status).toLowerCase() === "active") ? "Queue to Both" : "Send to Both")}
+                </${Button}>
+                <${Button}
+                  variant="text"
+                  disabled=${loadingPair || sending || resetting || !toTrimmedString(prompt) || !(toTrimmedString(snapshots.left?.session?.status).toLowerCase() === "active" || toTrimmedString(snapshots.right?.session?.status).toLowerCase() === "active")}
+                  onClick=${() => sendPromptToBoth("steer")}
+                >
+                  Steer Both Now
                 </${Button}>
                 <${Button}
                   variant="outlined"
