@@ -715,6 +715,8 @@ export function ChatTab() {
             body: JSON.stringify({
               content: msg,
               mode: outboundMode,
+              agent: activeAgent.value || undefined,
+              providerSelection: activeAgent.value || undefined,
               agentProfileId: activeManualAgentId.value || undefined,
               yolo: yoloMode.peek(),
               model: selectedModel.value || undefined,
@@ -760,6 +762,8 @@ export function ChatTab() {
               body: JSON.stringify({
                 content: outboundContent,
                 mode: outboundMode,
+                agent: activeAgent.value || undefined,
+                providerSelection: activeAgent.value || undefined,
                 yolo: yoloMode.peek(),
                 model: selectedModel.value || undefined,
                 attachments,

@@ -280,7 +280,7 @@
     };
   </script>
   <script type="module">
-    import("/app.js")
+    import(new URL("/app.js", window.location.origin).href)
       .then(() => {
         if (window.__bosunAppModuleState) {
           window.__bosunAppModuleState.loaded = true;

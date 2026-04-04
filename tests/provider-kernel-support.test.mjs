@@ -20,7 +20,7 @@ vi.mock("../agent/provider-registry.mjs", () => ({
   }),
 }));
 
-import { createProviderSession } from "../agent/provider-session.mjs";
+import { buildCompactedContinuationHistory, createProviderSession } from "../agent/provider-session.mjs";
 
 describe("provider kernel support", () => {
   it("normalizes turn payloads, stream events, and provider results", () => {
@@ -239,6 +239,85 @@ describe("provider kernel support", () => {
       threadId: "provider-thread-1",
       reasoningText: "Streaming reasoning",
     });
+  });
+
+  it("compacts completed continuation history down to text-only messages between turns", async () => {
+    const runTurn = vi.fn()
+      .mockResolvedValueOnce({
+        finalResponse: "Repository inspection complete.",
+        sessionId: "provider-session-compacted",
+        threadId: "provider-thread-compacted",
+        finish_reason: "stop",
+        items: [
+          {
+            role: "assistant",
+            content: [
+              { type: "reasoning", text: "Inspect the session history before continuing." },
+              { type: "tool_use", id: "tool-compacted-1", name: "Read", input: { path: "agent/provider-session.mjs" } },
+              { type: "tool_result", tool_use_id: "tool-compacted-1", content: "messageHistory = finalMessages" },
+              { type: "text", text: "Repository inspection complete." },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        finalResponse: "Second turn complete.",
+        sessionId: "provider-session-compacted",
+        threadId: "provider-thread-compacted",
+        finish_reason: "stop",
+      });
+    const session = createProviderSession("codex-sdk", {
+      model: "gpt-5.4",
+      runTurn,
+    });
+
+    await session.runTurn("Inspect the current continuation history.");
+    await session.runTurn("Continue with the next step.");
+
+    const secondPayload = runTurn.mock.calls[1][0];
+    expect(secondPayload.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        text: "Inspect the current continuation history.",
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        text: "Repository inspection complete.",
+        content: [{ type: "text", text: "Repository inspection complete." }],
+      }),
+      expect.objectContaining({
+        role: "user",
+        text: "Continue with the next step.",
+      }),
+    ]);
+    expect(secondPayload.messages.some((message) => message.role === "tool")).toBe(false);
+    expect(secondPayload.messages.some((message) => Array.isArray(message.toolCalls) && message.toolCalls.length > 0)).toBe(false);
+    expect(secondPayload.messages.some((message) => Array.isArray(message.toolResults) && message.toolResults.length > 0)).toBe(false);
+    expect(secondPayload.messages.some((message) => Array.isArray(message.reasoning) && message.reasoning.length > 0)).toBe(false);
+  });
+
+  it("synthesizes a text breadcrumb when compacting tool-only assistant steps", () => {
+    const history = buildCompactedContinuationHistory([
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "Need a breadcrumb for the next turn." },
+          { type: "tool_call", name: "Read", input: { path: "ui/components/chat-view.js" } },
+          { type: "tool_result", output: "chat view contents" },
+        ],
+      },
+    ]);
+
+    expect(history).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        text: "Completed prior step using 1 tool call, 1 tool result, 1 reasoning step.",
+        content: [{
+          type: "text",
+          text: "Completed prior step using 1 tool call, 1 tool result, 1 reasoning step.",
+        }],
+      }),
+    ]);
   });
 
   it("executes provider-requested tools through the canonical session loop before returning the final answer", async () => {

@@ -10060,11 +10060,15 @@ registerNodeType("action.build_task_prompt", {
     if (includeStatusEndpoint) {
       const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
       if (port) {
+        const statusBaseUrl = normalizedTaskId
+          ? `http://127.0.0.1:${port}/api/tasks/${encodeURIComponent(normalizedTaskId)}`
+          : `http://127.0.0.1:${port}`;
         userParts.push("## Agent Status Endpoint");
-        userParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-        userParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-        userParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-        userParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+        userParts.push(`- URL: ${statusBaseUrl}`);
+        userParts.push(`- POST /status {"status":"inreview"} — Report progress`);
+        userParts.push("- POST /heartbeat {} — Heartbeat ping");
+        userParts.push('- POST /error {"error":"..."} — Report errors');
+        userParts.push('- POST /complete {"hasCommits":true} — Signal completion');
         userParts.push("");
       }
     }

@@ -31,7 +31,6 @@ import { buildAgentConfigurationGuide } from "../lib/agent-configuration-guide.m
 import { resolveSharedOAuthToken } from "../agent/provider-auth-state.mjs";
 import {
   listHarnessExecutorProviderOptions,
-  normalizeHarnessExecutor,
   readHarnessExecutorFabric,
 } from "../agent/harness-executor-config.mjs";
 
@@ -3287,7 +3286,6 @@ async function updateTaskReplanState(adapter, task, proposal, options = {}) {
     status: options.status || proposal?.status || "proposed",
     ...(options.appliedAt ? { appliedAt: options.appliedAt } : {}),
     ...(options.createdTaskIds ? { createdTaskIds: uniqueTaskIds(options.createdTaskIds) } : {}),
-    ...(queuePlan ? { queuePlan } : {}),
   };
   const nextProposal = {
     ...(proposal && typeof proposal === "object" ? proposal : {}),
@@ -3297,15 +3295,21 @@ async function updateTaskReplanState(adapter, task, proposal, options = {}) {
     ...(options.createdTaskIds ? { createdTaskIds: uniqueTaskIds(options.createdTaskIds) } : {}),
     ...(queuePlan ? { queuePlan } : {}),
   };
+  const decomposeProposal = planningMode === "decompose"
+    ? { ...nextProposal }
+    : null;
+  const decompositionPlannerState = planningMode === "decompose"
+    ? { ...plannerState }
+    : null;
   const nextMeta = buildTaskMetaPatch(task?.meta, {
     replanProposal: nextProposal,
-    ...(planningMode === "decompose" ? { decomposeProposal: nextProposal } : {}),
+    ...(planningMode === "decompose" ? { decomposeProposal } : {}),
     plannerState: {
       ...(task?.meta?.plannerState && typeof task.meta.plannerState === "object"
         ? task.meta.plannerState
         : {}),
       latestReplan: plannerState,
-      ...(planningMode === "decompose" ? { latestDecomposition: plannerState } : {}),
+      ...(planningMode === "decompose" ? { latestDecomposition: decompositionPlannerState } : {}),
     },
   });
   const patch = {
@@ -3463,12 +3467,14 @@ async function generateTaskPlanningProposal({ taskId, url, mode }) {
     return false;
   });
   let auditActivity = null;
-  try {
-    auditActivity = buildTaskAuditActivity(taskId, {
-      repoRoot: workspaceContext?.workspaceDir || repoRoot,
-    });
-  } catch (auditErr) {
-    console.warn(`[ui] task ${planning.modeLabel} audit lookup failed: ${auditErr?.message || auditErr}`);
+  if (isUiAuditSummaryEnabled()) {
+    try {
+      auditActivity = buildTaskAuditActivity(taskId, {
+        repoRoot: workspaceContext?.workspaceDir || repoRoot,
+      });
+    } catch (auditErr) {
+      console.warn(`[ui] task ${planning.modeLabel} audit lookup failed: ${auditErr?.message || auditErr}`);
+    }
   }
   const context = buildTaskReplanContext(task, {
     mode: planning.mode,
@@ -3548,7 +3554,6 @@ async function generateTaskPlanningProposal({ taskId, url, mode }) {
     body: {
       ok: true,
       planningMode: planning.mode,
-      data: proposal,
       proposal,
       task: updatedTask,
     },
@@ -3713,13 +3718,6 @@ async function applyTaskPlanningProposal({ taskId, body, url, mode }) {
     body: {
       ok: true,
       planningMode: planning.mode,
-      data: {
-        proposal: appliedProposal,
-        queuePlan: proposal.queuePlan,
-        taskGraph: graphResult,
-        createdSubtasks: persistedSubtasks.filter(Boolean),
-        task: updatedTask,
-      },
       proposal: appliedProposal,
       queuePlan: proposal.queuePlan,
       taskGraph: graphResult,
@@ -7001,6 +6999,36 @@ function pickWorkspaceRepoDir(workspace) {
   return "";
 }
 
+function pickWorkspaceRootDir(workspace, workspaceDir = "", fallbackRoot = "") {
+  const normalizedWorkspaceDir = normalizeCandidatePath(workspaceDir);
+  const normalizedFallbackRoot = normalizeCandidatePath(fallbackRoot);
+  const workspacePath = normalizeCandidatePath(workspace?.path);
+  if (workspacePath) {
+    if (!normalizedWorkspaceDir || workspacePath === normalizedWorkspaceDir || isPathWithinPath(workspacePath, normalizedWorkspaceDir)) {
+      return workspacePath;
+    }
+  }
+
+  const repos = Array.isArray(workspace?.repos) ? workspace.repos : [];
+  const activeRepoName = String(workspace?.activeRepo || "").trim();
+  const selectedRepo =
+    (activeRepoName
+      ? repos.find((repo) => String(repo?.name || "").trim() === activeRepoName)
+      : null) ||
+    repos.find((repo) => repo?.primary) ||
+    repos[0] ||
+    null;
+  const selectedRepoName = String(selectedRepo?.name || "").trim().toLowerCase();
+  if (normalizedWorkspaceDir && selectedRepoName) {
+    const repoBaseName = basename(normalizedWorkspaceDir).trim().toLowerCase();
+    if (repoBaseName === selectedRepoName) {
+      return dirname(normalizedWorkspaceDir);
+    }
+  }
+
+  return workspacePath || normalizedWorkspaceDir || normalizedFallbackRoot;
+}
+
 function resolveActiveWorkspaceExecutionContext() {
   const fallback = { workspaceId: "", workspaceDir: repoRoot, workspaceRoot: repoRoot };
   const { configDir, listed, active } = resolveManagedWorkspaceInventory();
@@ -7072,8 +7100,8 @@ function resolveActiveWorkspaceExecutionContext() {
   }
 
   const workspaceId = String(workspace.id || "").trim();
-  const workspaceRoot = normalizeCandidatePath(workspace.path) || fallback.workspaceRoot;
-  const workspaceDir = pickWorkspaceRepoDir(workspace) || workspaceRoot || fallback.workspaceDir;
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || fallback.workspaceDir;
+  const workspaceRoot = pickWorkspaceRootDir(workspace, workspaceDir, fallback.workspaceRoot);
   return {
     workspaceId,
     workspaceDir,
@@ -7212,7 +7240,6 @@ function createManualFlowTaskManager(workspaceContext = {}, opts = {}) {
           clientId: String(entry?.clientId || "").trim() || null,
           taskId: created?.id || created?._id || null,
           title: created?.title || entry?.title || null,
-          task: created,
         });
       }
 
@@ -7267,8 +7294,8 @@ function resolveWorkspaceContextById(workspaceId = "") {
   );
   if (!workspace) return null;
   const id = String(workspace.id || "").trim();
-  const workspaceRoot = normalizeCandidatePath(workspace.path) || repoRoot;
-  const workspaceDir = pickWorkspaceRepoDir(workspace) || workspaceRoot || repoRoot;
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || repoRoot;
+  const workspaceRoot = pickWorkspaceRootDir(workspace, workspaceDir, repoRoot);
   return {
     workspaceId: id,
     workspaceDir,
@@ -7537,6 +7564,10 @@ function buildTaskAuditActivity(taskId, options = {}) {
     console.warn("[tasks] Failed to build task audit activity:", err?.message || err);
     return null;
   }
+}
+
+function isUiAuditSummaryEnabled() {
+  return parseBooleanEnv(process.env.BOSUN_UI_AUDIT_SUMMARY_ENABLED, false);
 }
 
 const SERVER_STATE_SECTION_ORDER = Object.freeze([
@@ -10674,6 +10705,122 @@ function buildHarnessExecutorInventory(configData = null, rawSettings = null, pr
     providerOptions: listHarnessExecutorProviderOptions(),
     providers: effectiveProviderInventory,
   };
+}
+
+function normalizeAgentRuntimeValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "sdk-cli" ? "sdk-cli" : "harness";
+}
+
+function normalizeAgentCapabilitiesList(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value).filter((key) => value[key]);
+  }
+  return [];
+}
+
+function formatAgentApiStyleLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || normalized === "provider-default") return "";
+  if (normalized === "responses") return "Responses API";
+  if (normalized === "chat-completions") return "Chat Completions API";
+  return normalized;
+}
+
+function buildAgentSubtitle(agent = {}, providerEntry = null) {
+  const providerLabel =
+    String(
+      providerEntry?.label
+      || agent?.providerLabel
+      || agent?.providerId
+      || agent?.provider
+      || "",
+    ).trim();
+  const modelLabel = String(
+    agent?.defaultModel
+    || agent?.modelCatalog?.defaultModel
+    || agent?.model
+    || "",
+  ).trim();
+  const apiStyleLabel = formatAgentApiStyleLabel(
+    agent?.apiStyle
+    || agent?.transportConfig?.apiStyle
+    || providerEntry?.transport?.apiStyle
+    || "",
+  );
+  return [providerLabel, modelLabel, apiStyleLabel].filter(Boolean).join(" · ");
+}
+
+function buildHarnessVisibleAgentInventory(executorFabric = {}, providerAgents = [], providerInventory = null) {
+  const providersBySelectionId = new Map(
+    providerAgents.map((entry) => [String(entry?.id || "").trim(), entry]).filter(([id]) => id),
+  );
+  const providersByProviderId = new Map();
+  for (const entry of providerAgents) {
+    const providerId = String(entry?.providerId || "").trim();
+    if (!providerId || providersByProviderId.has(providerId)) continue;
+    providersByProviderId.set(providerId, entry);
+  }
+  const providerInventoryById = new Map(
+    (providerInventory?.items || [])
+      .map((entry) => [String(entry?.providerId || "").trim(), entry])
+      .filter(([id]) => id),
+  );
+  return (executorFabric?.executors || [])
+    .filter((entry) => entry?.enabled !== false)
+    .map((entry) => {
+      const selectionId = String(entry?.id || "").trim();
+      const providerId = String(entry?.providerId || "").trim();
+      const runtimeEntry =
+        providersBySelectionId.get(selectionId)
+        || providersByProviderId.get(providerId)
+        || null;
+      const providerEntry = providerInventoryById.get(providerId) || null;
+      const runtimeModels = Array.isArray(runtimeEntry?.models)
+        ? runtimeEntry.models.map((model) => String(model || "").trim()).filter(Boolean)
+        : [];
+      const providerModels = Array.isArray(providerEntry?.modelCatalog?.models)
+        ? providerEntry.modelCatalog.models.map((model) => String(model?.id || model || "").trim()).filter(Boolean)
+        : [];
+      const executorModels = Array.isArray(entry?.models)
+        ? entry.models.map((model) => String(model || "").trim()).filter(Boolean)
+        : [];
+      return {
+        ...(runtimeEntry || {}),
+        id: selectionId || providerId,
+        name: String(entry?.name || runtimeEntry?.name || providerEntry?.label || selectionId || providerId).trim(),
+        providerId: providerId || String(runtimeEntry?.providerId || "").trim() || null,
+        providerLabel: String(providerEntry?.label || runtimeEntry?.providerLabel || providerId || "").trim() || null,
+        apiStyle: entry?.apiStyle || runtimeEntry?.apiStyle || providerEntry?.transport?.apiStyle || null,
+        transportConfig: entry?.transport || runtimeEntry?.transportConfig || providerEntry?.transport || null,
+        source: entry?.source || runtimeEntry?.source || "configured",
+        enabled: entry?.enabled !== false,
+        available:
+          runtimeEntry?.available !== undefined
+            ? runtimeEntry.available
+            : (providerEntry?.auth?.canRun === true || providerEntry?.enabled !== false),
+        busy: runtimeEntry?.busy === true,
+        defaultModel:
+          String(entry?.defaultModel || runtimeEntry?.defaultModel || providerEntry?.modelCatalog?.defaultModel || "").trim()
+          || null,
+        models: executorModels.length > 0 ? executorModels : (runtimeModels.length > 0 ? runtimeModels : providerModels),
+        capabilities: normalizeAgentCapabilitiesList(runtimeEntry?.capabilities || providerEntry?.capabilities),
+        auth: runtimeEntry?.auth || providerEntry?.auth || null,
+        modelCatalog: runtimeEntry?.modelCatalog || providerEntry?.modelCatalog || null,
+        runtimeKind: "harness",
+        subtitle: buildAgentSubtitle({
+          ...runtimeEntry,
+          ...entry,
+          defaultModel:
+            String(entry?.defaultModel || runtimeEntry?.defaultModel || providerEntry?.modelCatalog?.defaultModel || "").trim()
+            || null,
+          apiStyle: entry?.apiStyle || runtimeEntry?.apiStyle || providerEntry?.transport?.apiStyle || null,
+        }, providerEntry),
+      };
+    });
 }
 
 function buildEnvOverrideMapForConfigEditor(schema) {
@@ -18565,6 +18712,16 @@ async function resolveTaskLinkedWorktreePath(task, tracker = null) {
     if (existsSync(candidate)) return candidate;
   }
 
+  const sessionTracker = tracker || getSessionTracker();
+  for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker)) {
+    const session =
+      sessionTracker?.getSessionById?.(sessionId) ||
+      sessionTracker?.getSessionMessages?.(sessionId) ||
+      sessionTracker?.getSession?.(sessionId);
+    const worktreePath = await resolveSessionWorktreePath(session);
+    if (worktreePath && existsSync(worktreePath)) return worktreePath;
+  }
+
   try {
     const active = await listActiveWorktrees(repoRoot);
     const matched = findWorktreeMatch(active || [], {
@@ -18581,16 +18738,6 @@ async function resolveTaskLinkedWorktreePath(task, tracker = null) {
     if (matchedPath && existsSync(matchedPath)) return matchedPath;
   } catch {
     /* best effort */
-  }
-
-  const sessionTracker = tracker || getSessionTracker();
-  for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker)) {
-    const session =
-      sessionTracker?.getSessionById?.(sessionId) ||
-      sessionTracker?.getSessionMessages?.(sessionId) ||
-      sessionTracker?.getSession?.(sessionId);
-    const worktreePath = await resolveSessionWorktreePath(session);
-    if (worktreePath && existsSync(worktreePath)) return worktreePath;
   }
 
   return null;
@@ -24099,6 +24246,14 @@ if (path === "/api/agent-logs/context") {
       const { rawValues } = buildResolvedSettingsState();
       const providerInventory = buildProviderInventory();
       const executorFabric = buildHarnessExecutorInventory(configData, rawValues, providerInventory);
+      const agentRuntime = normalizeAgentRuntimeValue(
+        rawValues?.BOSUN_AGENT_RUNTIME || configData?.agentRuntime || "harness",
+      );
+      const providerInventoryById = new Map(
+        (providerInventory?.items || [])
+          .map((entry) => [String(entry?.providerId || "").trim(), entry])
+          .filter(([id]) => id),
+      );
       const modelsByProviderId = new Map(
         (providerInventory?.items || []).map((entry) => [
           String(entry?.providerId || "").trim(),
@@ -24107,9 +24262,12 @@ if (path === "/api/agent-logs/context") {
             : [],
         ]),
       );
-      const agents = getAvailableAgents().map((entry) => {
+      const providerAgents = getAvailableAgents().map((entry) => {
         const providerId = String(entry?.providerId || entry?.id || entry?.provider || "").trim();
-        const models = modelsByProviderId.get(providerId) || [];
+        const providerEntry = providerInventoryById.get(providerId) || null;
+        const models = Array.isArray(entry?.models) && entry.models.length > 0
+          ? entry.models.map((model) => String(model || "").trim()).filter(Boolean)
+          : (modelsByProviderId.get(providerId) || []);
         const capabilities = Array.isArray(entry?.capabilities)
           ? entry.capabilities.slice()
           : (entry?.capabilities && typeof entry.capabilities === "object"
@@ -24118,16 +24276,38 @@ if (path === "/api/agent-logs/context") {
         return {
           ...entry,
           providerId,
+          providerLabel: String(providerEntry?.label || entry?.providerLabel || entry?.provider || providerId).trim() || null,
           apiStyle: entry?.apiStyle || null,
           transportConfig: entry?.transportConfig || null,
           source: entry?.source || null,
           models,
           capabilities,
+          subtitle: buildAgentSubtitle({
+            ...entry,
+            providerId,
+            models,
+            capabilities,
+          }, providerEntry),
+          runtimeKind: agentRuntime === "harness" ? "harness" : "sdk-cli",
         };
       });
+      const agents = agentRuntime === "harness"
+        ? buildHarnessVisibleAgentInventory(executorFabric, providerAgents, providerInventory)
+        : providerAgents;
+      let activeSelection = getPrimaryAgentSelection() || getPrimaryAgentName();
+      if (executorFabric.primaryExecutorId && agents.some((entry) => entry.id === executorFabric.primaryExecutorId)) {
+        const activeInInventory = agents.some((entry) => entry.id === activeSelection);
+        if (!activeInInventory || activeSelection !== executorFabric.primaryExecutorId) {
+          const switched = await switchPrimaryAgent(executorFabric.primaryExecutorId).catch(() => null);
+          activeSelection =
+            switched?.ok === false
+              ? executorFabric.primaryExecutorId
+              : (getPrimaryAgentSelection() || executorFabric.primaryExecutorId);
+        }
+      }
       jsonResponse(res, 200, {
         ok: true,
-        active: getPrimaryAgentSelection() || getPrimaryAgentName(),
+        active: activeSelection,
         mode: getAgentMode(),
         agents,
         manualAgents: [],
@@ -25710,9 +25890,25 @@ if (path === "/api/agent-logs/context") {
           actorId,
           note,
         });
-        const refreshedRun = typeof engine.getRunDetail === "function"
+        const refreshedRunFromEngine = typeof engine.getRunDetail === "function"
           ? await engine.getRunDetail(runId, { decorate: false })
           : run;
+        const refreshedRun = resolved?.updateResult?.detail && typeof resolved.updateResult.detail === "object"
+          ? {
+              ...(refreshedRunFromEngine && typeof refreshedRunFromEngine === "object" ? refreshedRunFromEngine : run),
+              executionPolicy:
+                resolved.updateResult.executionPolicy
+                || resolved.updateResult.detail.executionPolicy
+                || refreshedRunFromEngine?.executionPolicy
+                || run.executionPolicy,
+              policyOutcome:
+                resolved.updateResult.policyOutcome
+                || resolved.updateResult.detail.policyOutcome
+                || refreshedRunFromEngine?.policyOutcome
+                || run.policyOutcome,
+              detail: resolved.updateResult.detail,
+            }
+          : refreshedRunFromEngine;
         invalidateApiCache("server-state");
         invalidateApiCache("workflows:approvals:");
         invalidateApiCache("workflows:runs:");

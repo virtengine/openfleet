@@ -22,6 +22,7 @@ import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
+import { buildTaskHierarchyModel, deriveTaskHierarchyView } from "../modules/task-hierarchy.js";
 import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Menu, MenuItem, Paper, Tooltip, Badge } from "@mui/material";
 
 const html = htm.bind(h);
@@ -1161,12 +1162,18 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "", hierarchyModel = null, tasks = null }) {
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const [hydratedWorkspaceScope, setHydratedWorkspaceScope] = useState(workspaceScope);
   const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
-  const allTasks = tasksData.value || [];
+  const allTasks = Array.isArray(tasks) ? tasks : (tasksData.value || []);
   const boardTasksLoaded = Boolean(tasksLoaded.value);
+  const sharedHierarchyModel = useMemo(
+    () => hierarchyModel && typeof hierarchyModel === "object"
+      ? hierarchyModel
+      : buildTaskHierarchyModel(allTasks),
+    [allTasks, hierarchyModel],
+  );
   const knownRepos = useMemo(() => {
     const repos = new Set();
     for (const task of allTasks) {
@@ -1211,22 +1218,26 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     persistBoardFilters({ workspaceId: workspaceScope, filters });
   }, [workspaceScope, hydratedWorkspaceScope, filters]);
 
-  const filteredTasks = useMemo(() => {
-    let tasks = allTasks;
-    if (filters.repo) tasks = tasks.filter((t) => (t.repo || t.repository) === filters.repo);
-    if (filters.assignee) tasks = tasks.filter((t) => t.assignee === filters.assignee);
-    if (filters.priority) tasks = tasks.filter((t) => t.priority === filters.priority);
-    if (filters.search) {
-      const q = filters.search.toLowerCase();
-      tasks = tasks.filter((t) =>
-        (t.title || "").toLowerCase().includes(q) ||
-        (t.id || "").toString().toLowerCase().includes(q) ||
-        (t.repo || "").toLowerCase().includes(q) ||
-        (t.assignee || "").toLowerCase().includes(q)
-      );
-    }
-    return tasks;
-  }, [allTasks, filters]);
+  const hierarchyView = useMemo(() => deriveTaskHierarchyView(sharedHierarchyModel, {
+    matchTask: (task) => {
+      if (filters.repo && (task?.repo || task?.repository) !== filters.repo) return false;
+      if (filters.assignee && task?.assignee !== filters.assignee) return false;
+      if (filters.priority && task?.priority !== filters.priority) return false;
+      if (filters.search) {
+        const q = filters.search.toLowerCase();
+        const searchDoc = `${task?.title || ""} ${task?.description || ""} ${task?.id || ""} ${task?.repo || task?.repository || ""} ${task?.assignee || ""}`.toLowerCase();
+        if (!searchDoc.includes(q)) return false;
+      }
+      return true;
+    },
+  }), [filters, sharedHierarchyModel]);
+
+  const filteredTasks = useMemo(
+    () => [...hierarchyView.visibleTaskIds]
+      .map((taskId) => sharedHierarchyModel.taskById.get(taskId))
+      .filter(Boolean),
+    [hierarchyView.visibleTaskIds, sharedHierarchyModel],
+  );
 
   const cols = useMemo(() => {
     const result = {};

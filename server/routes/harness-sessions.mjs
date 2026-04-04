@@ -103,11 +103,20 @@ function compactSessionMetadata(metadata = {}) {
     "hiddenInLists",
     "title",
     "contextCompressionMode",
+    "queuedFollowups",
   ];
   for (const key of keys) {
     if (metadata[key] !== undefined) compact[key] = metadata[key];
   }
   return compact;
+}
+
+function normalizeSessionDeliveryMode(value, fallback = "auto") {
+  const normalized = toTrimmedString(value).toLowerCase();
+  if (normalized === "queue" || normalized === "queued" || normalized === "enqueue") return "queue";
+  if (normalized === "steer" || normalized === "interrupt" || normalized === "immediate") return "steer";
+  if (normalized === "send" || normalized === "run" || normalized === "default" || normalized === "auto") return "auto";
+  return fallback;
 }
 
 function normalizeContextCompressionMode(value, fallback = "normal") {
@@ -349,6 +358,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
     normalizeCandidatePath,
     repoRoot,
     getPrimaryAgentName,
+    getPrimaryAgentSelection,
     getAgentMode,
     broadcastUiEvent,
     broadcastSessionsSnapshot,
@@ -609,14 +619,15 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const resolvedWorkspaceRoot = requestedWorkspaceRoot || baseWorkspaceRoot || baseWorkspaceDir || repoRoot;
       const resolvedWorkspaceDir =
         requestedWorkspaceDir
-        || (baseWorkspaceDir && isPathWithinPath(normalizeCandidatePath, resolvedWorkspaceRoot, baseWorkspaceDir)
-          ? baseWorkspaceDir
-          : "")
+        || baseWorkspaceDir
         || baseWorkspaceRoot
         || baseWorkspaceDir
         || repoRoot;
       const requestedAgentProfileId = toTrimmedString(body?.agentProfileId || "");
-      const requestedAgent = toTrimmedString(body?.providerSelection || body?.agent || "") || getPrimaryAgentName();
+      const requestedAgent =
+        toTrimmedString(body?.providerSelection || body?.agent || "")
+        || toTrimmedString(getPrimaryAgentSelection?.() || "")
+        || getPrimaryAgentName();
       const requestedModel = toTrimmedString(body?.model || "") || undefined;
       const tracker = getSessionTracker();
       const session = tracker.createSession({
@@ -706,6 +717,46 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       tracker.updateSessionStatus(sessionId, nextStatus);
     }
     return wasRunning;
+  };
+
+  const sessionHasActiveTurn = () => {
+    const abortController = sessionRunAbortControllers.get(sessionId);
+    return Boolean(abortController && !abortController.signal?.aborted);
+  };
+
+  const listQueuedFollowups = (session = null) => {
+    const metadata =
+      session?.metadata && typeof session.metadata === "object"
+        ? session.metadata
+        : {};
+    return Array.isArray(metadata.queuedFollowups) ? metadata.queuedFollowups : [];
+  };
+
+  const queueSessionFollowup = (payload = {}) => {
+    const queued = tracker.enqueueFollowup?.(sessionId, payload) || null;
+    if (!queued?.entry) return null;
+    invalidateDurableSessionListCache();
+    broadcastUiEvent(["sessions"], "invalidate", {
+      reason: "session-followup-queued",
+      sessionId,
+      queueDepth: queued.queuedFollowups.length,
+    });
+    broadcastSessionsSnapshot();
+    return queued;
+  };
+
+  const dequeueSessionFollowup = () => {
+    const dequeued = tracker.dequeueFollowup?.(sessionId) || { entry: null, queuedFollowups: [] };
+    if (dequeued.entry) {
+      invalidateDurableSessionListCache();
+      broadcastUiEvent(["sessions"], "invalidate", {
+        reason: "session-followup-dequeued",
+        sessionId,
+        queueDepth: dequeued.queuedFollowups.length,
+      });
+      broadcastSessionsSnapshot();
+    }
+    return dequeued;
   };
 
   if (!action && req.method === "GET") {
@@ -921,9 +972,12 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
         jsonResponse(res, 400, { ok: false, error: "content is required" });
         return true;
       }
-      const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const messageContent = typeof content === "string" ? content : "";
       const messageMode = body?.mode || undefined;
+      const deliveryMode = normalizeSessionDeliveryMode(
+        body?.deliveryMode || body?.submitMode || body?.sendMode,
+        "auto",
+      );
       const messageAgent = toTrimmedString(
         body?.providerSelection || body?.agent || session?.metadata?.agent || "",
       ) || undefined;
@@ -936,48 +990,54 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
       const messageAgentProfileId = toTrimmedString(
         body?.agentProfileId || session?.metadata?.agentProfileId || "",
       ) || undefined;
-      let userMessageRecorded = false;
-      const recordUserMessageOnce = () => {
-        if (userMessageRecorded) return;
-        tracker.recordEvent(sessionId, {
-          role: "user",
-          content: messageContent,
-          attachments,
-          timestamp: new Date().toISOString(),
-          _sessionType: session.type === "primary" ? "primary" : undefined,
-          _mode: messageMode || undefined,
-        });
-        userMessageRecorded = true;
-      };
-
       const exec = session.type === "primary"
         ? await resolveInteractiveSessionExecutor(deps)
         : null;
-      if (exec) {
-        const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
-        if (messageAgent || messageModel || messageAgentProfileId || contextCompressionMode) {
-          const nextMetadata = {
-            ...(session?.metadata && typeof session.metadata === "object" ? session.metadata : {}),
-            ...(messageAgent ? { agent: messageAgent } : {}),
-            ...(messageModel ? { model: messageModel } : {}),
-            ...(messageAgentProfileId ? { agentProfileId: messageAgentProfileId } : {}),
-            contextCompressionMode,
-          };
-          const refreshedSession = tracker.getSessionById(sessionId);
+      const persistRoutingMetadata = () => {
+        const nextMetadata = tracker.updateSessionMetadata?.(sessionId, (currentMetadata = {}) => ({
+          ...currentMetadata,
+          ...(messageAgent ? { agent: messageAgent } : {}),
+          ...(messageModel ? { model: messageModel } : {}),
+          ...(messageAgentProfileId ? { agentProfileId: messageAgentProfileId } : {}),
+          contextCompressionMode,
+        }));
+        if (nextMetadata) {
+          const refreshedSession = tracker.getSessionById?.(sessionId) || session;
           if (refreshedSession && typeof refreshedSession === "object") {
             refreshedSession.metadata = nextMetadata;
-            upsertSessionRecordToStateLedger({
-              ...refreshedSession,
-              document: {
-                ...refreshedSession,
-                metadata: nextMetadata,
-              },
-            }, resolveUiStateLedgerOptions(workspaceContext));
-            invalidateDurableSessionListCache();
           }
+          invalidateDurableSessionListCache();
         }
+      };
+
+      const runInteractiveTurn = async ({
+        turnContent = "",
+        turnAttachments = [],
+        skipQueuedDrain = false,
+      } = {}) => {
+        if (!exec) return false;
+        const liveSession = tracker.getSessionById(sessionId) || session;
+        if (!liveSession) return false;
+        const sessionWorkspaceDir = resolveSessionWorkspaceDir(liveSession);
+        let userMessageRecorded = false;
+        const safeContent = typeof turnContent === "string" ? turnContent : "";
+        const safeAttachments = Array.isArray(turnAttachments) ? turnAttachments.filter(Boolean) : [];
+        const recordUserMessageOnce = () => {
+          if (userMessageRecorded) return;
+          tracker.recordEvent(sessionId, {
+            role: "user",
+            content: safeContent,
+            attachments: safeAttachments,
+            timestamp: new Date().toISOString(),
+            _sessionType: liveSession.type === "primary" ? "primary" : undefined,
+            _mode: messageMode || undefined,
+          });
+          userMessageRecorded = true;
+        };
+
+        persistRoutingMetadata();
         recordUserMessageOnce();
-        jsonResponse(res, 200, { ok: true, messageId, sessionId });
+        tracker.updateSessionStatus(sessionId, "active");
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         broadcastSessionsSnapshot();
 
@@ -1001,7 +1061,8 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
 
         const abortController = new AbortController();
         sessionRunAbortControllers.set(sessionId, abortController);
-        exec(messageContent, {
+        let completedNormally = false;
+        exec(safeContent, {
           sessionId,
           sessionType: "primary",
           mode: messageMode,
@@ -1016,11 +1077,12 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           forceContextShredding,
           skipContextShredding,
           contextCompressionMode,
-          attachments,
+          attachments: safeAttachments,
           attachmentsAppended,
           onEvent: streamOnEvent,
           abortController,
         }).then(() => {
+          completedNormally = true;
           const latestSession = tracker.getSessionById(sessionId);
           if (latestSession?.status === "active") {
             tracker.updateSessionStatus(sessionId, "completed");
@@ -1062,7 +1124,7 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
           }
           broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           broadcastSessionsSnapshot();
-        }).finally(() => {
+        }).finally(async () => {
           if (sessionRunAbortControllers.get(sessionId) === abortController) {
             sessionRunAbortControllers.delete(sessionId);
           }
@@ -1070,9 +1132,65 @@ export async function tryHandleHarnessSessionRoutes(context = {}) {
             reason: "session-turn-finished",
             sessionId,
           });
+          if (!skipQueuedDrain && completedNormally) {
+            const nextQueued = dequeueSessionFollowup();
+            if (nextQueued?.entry) {
+              await runInteractiveTurn({
+                turnContent: String(nextQueued.entry.content || ""),
+                turnAttachments: Array.isArray(nextQueued.entry.attachments) ? nextQueued.entry.attachments : [],
+              });
+            }
+          }
+        });
+        return true;
+      };
+
+      if (exec) {
+        const queueRequested = deliveryMode === "queue" && sessionHasActiveTurn();
+        if (queueRequested) {
+          persistRoutingMetadata();
+          const queued = queueSessionFollowup({
+            content: messageContent,
+            attachments,
+            deliveryMode,
+            agent: messageAgent,
+            model: messageModel,
+          });
+          if (!queued?.entry) {
+            jsonResponse(res, 500, { ok: false, error: "Could not queue follow-up" });
+            return true;
+          }
+          jsonResponse(res, 202, {
+            ok: true,
+            queued: true,
+            deliveryMode: "queue",
+            queueDepth: queued.queuedFollowups.length,
+            sessionId,
+            queuedMessage: queued.entry,
+          });
+          return true;
+        }
+
+        const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await runInteractiveTurn({
+          turnContent: messageContent,
+          turnAttachments: attachments,
+        });
+        jsonResponse(res, 200, {
+          ok: true,
+          messageId,
+          sessionId,
+          deliveryMode: deliveryMode === "steer" ? "steer" : "send",
         });
       } else {
-        recordUserMessageOnce();
+        tracker.recordEvent(sessionId, {
+          role: "user",
+          content: messageContent,
+          attachments,
+          timestamp: new Date().toISOString(),
+          _sessionType: session.type === "primary" ? "primary" : undefined,
+          _mode: messageMode || undefined,
+        });
         tracker.recordEvent(sessionId, {
           role: "system",
           type: "error",

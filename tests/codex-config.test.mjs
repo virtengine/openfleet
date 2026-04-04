@@ -352,6 +352,57 @@ describe("codex-config defaults", () => {
     expect(result.toml).toContain('base_url = "https://example-resource.openai.azure.com/openai/v1"');
     expect(result.toml).not.toContain('/openai/deployments/gpt-5/chat/completions');
   });
+
+  it("ignores ambient Codex home config when explicit env selects an Azure runtime", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-home-ambient-"));
+    const codexDir = join(home, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        '[model_providers.openai-direct]',
+        'name = "OpenAI Direct"',
+        'base_url = "https://api.openai.com/v1"',
+        'env_key = "OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        '',
+      ].join("\n"),
+      "utf8",
+    );
+
+    const azureEnv = {
+      HOME: home,
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "azure-key",
+      CODEX_MODEL: "gpt-5-deployment",
+    };
+    const explicitAzureEnv = {
+      OPENAI_BASE_URL: azureEnv.OPENAI_BASE_URL,
+      OPENAI_API_KEY: azureEnv.OPENAI_API_KEY,
+      CODEX_MODEL: azureEnv.CODEX_MODEL,
+    };
+
+    const runtimeWithHome = resolveCodexProfileRuntime(azureEnv);
+    expect(runtimeWithHome.provider).toBe("azure");
+
+    const features = ensureFeatureFlags("[features]\nremote_models = true\n", explicitAzureEnv);
+    expect(features.toml).toContain("remote_models = false");
+
+    const providers = ensureModelProviderSectionsFromEnv(
+      [
+        "[model_providers.azure]",
+        'name = "Azure OpenAI"',
+        'base_url = "https://example-resource.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2024-10-21"',
+        'env_key = "AZURE_OPENAI_API_KEY"',
+        'wire_api = "responses"',
+        "",
+      ].join("\n"),
+      explicitAzureEnv,
+    );
+    expect(providers.updated).toContain("azure.base_url");
+    expect(providers.toml).toContain('base_url = "https://example-resource.openai.azure.com/openai/v1"');
+  });
+
   it("selects the Azure provider whose endpoint matches OPENAI_BASE_URL", () => {
     const home = mkdtempSync(join(tmpdir(), "codex-home-"));
     const codexDir = join(home, ".codex");

@@ -56,6 +56,11 @@ import {
 } from "../modules/utils.js";
 import { navigateTo } from "../modules/router.js";
 import {
+  buildTaskHierarchyModel,
+  deriveTaskHierarchyView,
+  flattenTaskHierarchyView,
+} from "../modules/task-hierarchy.js";
+import {
   loadSessions,
   loadSessionMessages,
   selectedSessionId,
@@ -67,6 +72,7 @@ import {
   SkeletonCard,
   EmptyState
 } from "../components/shared.js";
+import { MarkdownTaskEditor, MarkdownTaskViewer } from "../components/task-markdown.js";
 import { DiffViewer } from "../components/diff-viewer.js";
 import {
   SegmentedControl,
@@ -427,21 +433,146 @@ function normalizeTaskDueDateInput(task) {
   return date.toISOString().slice(0, 10);
 }
 
+function normalizeSubtaskRow(entry, fallbackParentTaskId = "") {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: toText(entry.id || entry.taskId),
+    title: toText(entry.title || entry.summary || entry.name, "(untitled subtask)"),
+    status: toText(entry.status || entry.state),
+    assignee: toText(entry.assignee || entry.owner),
+    storyPoints: toText(entry.storyPoints || entry.points),
+    parentTaskId: toText(
+      entry.parentTaskId || entry.parentId || entry.parent_task_id || entry?.meta?.parentTaskId,
+      fallbackParentTaskId,
+    ),
+  };
+}
+
 function normalizeSubtasksPayload(raw) {
   const payload = extractDagPayload(raw);
   const rows = toArray(payload?.subtasks || payload?.items || payload?.tasks || payload);
   return rows
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      return {
-        id: toText(entry.id || entry.taskId),
-        title: toText(entry.title || entry.summary || entry.name, "(untitled subtask)"),
-        status: toText(entry.status || entry.state),
-        assignee: toText(entry.assignee || entry.owner),
-        storyPoints: toText(entry.storyPoints || entry.points),
-      };
-    })
+    .map((entry) => normalizeSubtaskRow(entry))
     .filter((entry) => entry && entry.id);
+}
+
+function mergeSubtaskLists(...lists) {
+  const merged = new Map();
+  for (const list of lists) {
+    for (const entry of Array.isArray(list) ? list : []) {
+      const normalized = normalizeSubtaskRow(entry);
+      if (!normalized?.id) continue;
+      merged.set(normalized.id, {
+        ...(merged.get(normalized.id) || {}),
+        ...normalized,
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
+function buildTaskSearchDocument(task) {
+  return `${task?.title || ""} ${task?.description || ""} ${task?.id || ""} ${getTaskBaseBranch(task)} ${getTaskTags(task).join(" ")}`
+    .toLowerCase();
+}
+
+function getTaskListIssueTypeLabel(task) {
+  const type = normalizeTaskTypeValue(
+    task?.taskType || task?.type || task?.kind || task?.meta?.taskType || task?.meta?.type,
+    "task",
+  );
+  return type === "epic" ? "Epic" : type === "subtask" ? "Sub-task" : "Task";
+}
+
+function getTaskListStatusTone(status) {
+  const normalized = normalizeTaskStatusValue(status);
+  if (["done", "completed", "closed", "merged", "cancelled"].includes(normalized)) return "done";
+  if (["blocked", "error", "failed"].includes(normalized)) return "blocked";
+  if (["inreview", "review", "pr-open", "pr-review"].includes(normalized)) return "review";
+  if (["inprogress", "working", "active", "assigned", "running"].includes(normalized)) return "active";
+  if (["draft"].includes(normalized)) return "draft";
+  return "backlog";
+}
+
+function compareTasksForHierarchicalList(a, b, listSortCol = "", listSortDir = "desc") {
+  if (!listSortCol) return 0;
+  const dir = listSortDir === "asc" ? 1 : -1;
+  let av;
+  let bv;
+  if (listSortCol === "priority") {
+    av = PRIORITY_ORDER[a?.priority || ""] ?? 4;
+    bv = PRIORITY_ORDER[b?.priority || ""] ?? 4;
+    return dir * (av - bv);
+  }
+  if (listSortCol === "updated") {
+    const tsA = a?.updated_at || a?.updated;
+    const tsB = b?.updated_at || b?.updated;
+    av = tsA ? (typeof tsA === "number" ? tsA : new Date(tsA).getTime()) : 0;
+    bv = tsB ? (typeof tsB === "number" ? tsB : new Date(tsB).getTime()) : 0;
+    return dir * (av - bv);
+  }
+  if (listSortCol === "status") {
+    av = a?.status || "";
+    bv = b?.status || "";
+  } else if (listSortCol === "title") {
+    av = (a?.title || "").toLowerCase();
+    bv = (b?.title || "").toLowerCase();
+  } else if (listSortCol === "repo") {
+    av = a?.repository || a?.workspace || "";
+    bv = b?.repository || b?.workspace || "";
+  } else if (listSortCol === "branch") {
+    av = getTaskBaseBranch(a);
+    bv = getTaskBaseBranch(b);
+  } else {
+    return 0;
+  }
+  return dir * String(av).localeCompare(String(bv));
+}
+
+function buildHierarchicalTaskRows(rootNodes = [], options = {}) {
+  const rows = [];
+  const sortChildren = typeof options?.sortChildren === "function" ? options.sortChildren : (items) => items;
+  const collapsedState = options?.collapsedState || {};
+  const hasSearch = options?.hasSearch === true;
+
+  const visit = (node, depth = 0, forceShowDescendants = false) => {
+    if (!node?.task) return;
+    const childStates = Array.isArray(node.children) ? node.children : [];
+    const hasChildren = childStates.length > 0;
+    const shouldAttachChildren = !hasSearch || forceShowDescendants || node.directMatch;
+    const visibleChildren = shouldAttachChildren
+      ? childStates
+      : childStates.filter((entry) => entry?.visible);
+    const orderedChildren = sortChildren(visibleChildren);
+    const autoExpanded = hasSearch && (node.descendantMatch || node.directMatch);
+    const isCollapsed = hasChildren ? (!autoExpanded && collapsedState[node.collapseKey] === true) : false;
+
+    rows.push({
+      id: node.id,
+      task: node.task,
+      node,
+      depth,
+      hasChildren,
+      isCollapsed,
+      isExpanded: hasChildren && !isCollapsed,
+      progressDone: node.completedDescendantCount || 0,
+      progressTotal: node.descendantCount || 0,
+      blockedCount: node.blockedDescendantCount || 0,
+      matchState: node.searchMatchState || "none",
+    });
+
+    if (hasChildren && !isCollapsed) {
+      for (const child of orderedChildren) {
+        visit(child, depth + 1, shouldAttachChildren);
+      }
+    }
+  };
+
+  for (const root of sortChildren(rootNodes)) {
+    if (!root?.task) continue;
+    if (!hasSearch || root.visible) visit(root, 0, false);
+  }
+  return rows;
 }
 
 function extractDagPayload(raw) {
@@ -3051,9 +3182,11 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       ${(liveTask?.description || task.description) && html`
         <div class="tr-section" style="padding-top:0;">
           <div class="tr-section-title">Description</div>
-          <div class="meta-text" style="white-space:pre-wrap;line-height:1.6;max-height:120px;overflow-y:auto;">
-            ${(liveTask?.description || task.description).slice(0, 600)}
-          </div>
+          <${MarkdownTaskViewer}
+            value=${liveTask?.description || task.description}
+            className="task-review-markdown"
+            maxHeight="220px"
+          />
         </div>
       `}
       ${reviewAttachments.length > 0 && html`
@@ -3100,7 +3233,13 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 }
 
 /* ─── TaskDetailModal ─── */
-export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false }) {
+export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false, hierarchyModel = null, hierarchyNodeState = null, onUpdateHierarchySubtasks = null }) {
+  const hierarchySubtasks = useMemo(
+    () => (hierarchyNodeState?.children || [])
+      .map((entry) => normalizeSubtaskRow(entry?.task || { id: entry?.id, parentTaskId: task?.id }, task?.id))
+      .filter(Boolean),
+    [hierarchyNodeState, task?.id],
+  );
   const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
   const [description, setDescription] = useState(buildTaskDescriptionFallback(task?.title, task?.description));
   const [baseBranch, setBaseBranch] = useState(getTaskBaseBranch(task));
@@ -3183,7 +3322,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [parentTaskId, setParentTaskId] = useState(
     toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
   );
-  const [subtasks, setSubtasks] = useState([]);
+  const [subtasks, setSubtasks] = useState(() => mergeSubtaskLists(hierarchySubtasks));
   const [subtasksLoading, setSubtasksLoading] = useState(false);
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [creatingSubtask, setCreatingSubtask] = useState(false);
@@ -3685,6 +3824,13 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
   const dependencySuggestions = useMemo(() => taskCatalogOptions.filter((entry) => !currentDependencyIds.includes(toText(entry?.id))).slice(0, 10), [currentDependencyIds, taskCatalogOptions]);
   const currentEpicEntry = useMemo(() => (epicCatalog || []).find((entry) => entry.id === epicId) || null, [epicCatalog, epicId]);
+  const currentParentTask = useMemo(() => {
+    const nextParentId = toText(parentTaskId);
+    if (!nextParentId) return null;
+    return hierarchyModel?.taskById?.get?.(nextParentId)
+      || taskCatalogOptions.find((entry) => toText(entry?.id) === nextParentId)
+      || null;
+  }, [hierarchyModel, parentTaskId, taskCatalogOptions]);
 
   const editableSnapshot = useMemo(
     () => ({
@@ -3806,6 +3952,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     setCoordinationLevel(toText(pickTaskField(task, ["coordinationLevel"])));
     setDueDate(normalizeTaskDueDateInput(task));
     setParentTaskId(toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])));
+    setSubtasks(mergeSubtaskLists(hierarchySubtasks));
     initialSnapshotRef.current = {
       title: nextTitle,
       description: nextDescription,
@@ -3831,7 +3978,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
     };
     setBaselineVersion((v) => v + 1);
-  }, [task?.id]);
+  }, [hierarchySubtasks, task?.id]);
+
+  useEffect(() => {
+    setSubtasks((prev) => mergeSubtaskLists(hierarchySubtasks, prev));
+  }, [hierarchySubtasks]);
 
   useEffect(() => {
     setReplanProposal(
@@ -4130,13 +4281,15 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       const res = await apiFetch(`/api/tasks/subtasks?taskId=${encodeURIComponent(task.id)}`, {
         _silent: true,
       });
-      setSubtasks(normalizeSubtasksPayload(res));
+      const nextSubtasks = normalizeSubtasksPayload(res);
+      setSubtasks(mergeSubtaskLists(hierarchySubtasks, nextSubtasks));
+      onUpdateHierarchySubtasks?.(task.id, nextSubtasks);
     } catch {
-      setSubtasks([]);
+      setSubtasks(mergeSubtaskLists(hierarchySubtasks));
     } finally {
       setSubtasksLoading(false);
     }
-  }, [task?.id]);
+  }, [hierarchySubtasks, onUpdateHierarchySubtasks, task?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4771,16 +4924,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-section">
           <div class="task-section-title">Description</div>
           <div class="task-section-body">
-            <div class="textarea-with-mic" style="position:relative">
-              <${TextField} multiline rows=${4} size="small" placeholder="Add a description..." value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
-              <${VoiceMicButton}
-                onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
-                disabled=${saving || rewriting}
-                size="sm"
-                className="textarea-mic-btn"
-              />
-            </div>
-            <div style="display:flex;gap:6px;margin-top:8px;">
+            <${MarkdownTaskEditor}
+              value=${description}
+              onChange=${setDescription}
+              placeholder="Add scope, acceptance criteria, dependencies, and key files..."
+              minHeight=${340}
+              disabled=${saving}
+            />
+            <div class="task-markdown-toolbar">
+              <div class="task-markdown-help">Rich Markdown supported. Use the mode switch for preview or WYSIWYG editing.</div>
+              <div class="task-markdown-toolbar-actions">
+                <${VoiceMicButton}
+                  onTranscript=${(t) => setDescription((prev) => (prev ? `${prev}\n\n${t}` : t))}
+                  disabled=${saving || rewriting}
+                  size="sm"
+                />
               <${Tooltip} title="Use AI to expand and improve this task description">
                 <${Button}
                   variant="text" size="small"
@@ -4811,6 +4969,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   }
                 <//>
               <//>
+              </div>
             </div>
           </div>
         </div>
@@ -5505,6 +5664,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               onInput=${(e) => setParentTaskId(e.target.value)}
               fullWidth
             />
+            ${currentParentTask && html`
+              <div class="meta-text" style=${{ marginTop: "6px" }}>
+                Linked parent: <strong>${currentParentTask.title || currentParentTask.id}</strong>
+              </div>
+            `}
           </div>
         </div>
 
@@ -7262,6 +7426,7 @@ export function TasksTab() {
   const [kanbanLoadingMore, setKanbanLoadingMore] = useState(false);
   const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
+  const [collapsedHierarchyRows, setCollapsedHierarchyRows] = useState({});
   const [dagLoading, setDagLoading] = useState(false);
   const [dagError, setDagError] = useState("");
   const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
@@ -7277,6 +7442,7 @@ export function TasksTab() {
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
   const [showCreateSprint, setShowCreateSprint] = useState(false);
+  const [hierarchySubtasksByParentId, setHierarchySubtasksByParentId] = useState({});
   const detailRequestIdRef = useRef(0);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
@@ -7287,6 +7453,20 @@ export function TasksTab() {
   });
   const searchRef = useRef(null);
   const actionsRef = useRef(null);
+  const handleHierarchySubtasksUpdate = useCallback((parentTaskId, nextSubtasks) => {
+    const parentId = toText(parentTaskId);
+    if (!parentId) return;
+    setHierarchySubtasksByParentId((prev) => {
+      const nextRows = normalizeSubtasksPayload({ subtasks: nextSubtasks });
+      const prevRows = Array.isArray(prev?.[parentId]) ? prev[parentId] : [];
+      const mergedRows = mergeSubtaskLists(prevRows, nextRows);
+      if (!mergedRows.length && !prevRows.length) return prev;
+      return {
+        ...prev,
+        [parentId]: mergedRows,
+      };
+    });
+  }, []);
   const listStateRef = useRef({
     filter: tasksFilter?.value ?? "all",
     priority: tasksPriority?.value ?? "",
@@ -7632,13 +7812,17 @@ export function TasksTab() {
 
   /* Search (local fuzzy filter on already-loaded data) */
   const searchLower = trimmedSearch.toLowerCase();
-  const visible = searchLower
-    ? tasks.filter((t) =>
-        `${t.title || ""} ${t.description || ""} ${t.id || ""} ${getTaskBaseBranch(t)} ${getTaskTags(t).join(" ")}`
-          .toLowerCase()
-          .includes(searchLower),
-      )
-    : tasks;
+  const sharedTaskHierarchyModel = useMemo(
+    () => buildTaskHierarchyModel(tasks, { subtasksByParentId: hierarchySubtasksByParentId }),
+    [hierarchySubtasksByParentId, tasks],
+  );
+  const sharedTaskHierarchyView = useMemo(() => deriveTaskHierarchyView(sharedTaskHierarchyModel, {
+    matchTask: (task) => !searchLower || buildTaskSearchDocument(task).includes(searchLower),
+  }), [searchLower, sharedTaskHierarchyModel]);
+  const visible = useMemo(
+    () => flattenTaskHierarchyView(sharedTaskHierarchyView, { includeHidden: !searchLower }),
+    [searchLower, sharedTaskHierarchyView],
+  );
 
   const summaryMetrics = useMemo(() => {
     const counts = {
@@ -7674,32 +7858,25 @@ export function TasksTab() {
     ];
   }, [tasks]);
 
-  /* ── Client-side table sort (list mode) ── */
-  const sortedForTable = useMemo(() => {
-    if (!listSortCol) return visible;
-    return [...visible].sort((a, b) => {
-      let av, bv;
-      const dir = listSortDir === "asc" ? 1 : -1;
-      if (listSortCol === "priority") {
-        av = PRIORITY_ORDER[a.priority || ""] ?? 4;
-        bv = PRIORITY_ORDER[b.priority || ""] ?? 4;
-        return dir * (av - bv);
-      }
-      if (listSortCol === "updated") {
-        const tsA = a.updated_at || a.updated;
-        const tsB = b.updated_at || b.updated;
-        av = tsA ? (typeof tsA === 'number' ? tsA : new Date(tsA).getTime()) : 0;
-        bv = tsB ? (typeof tsB === 'number' ? tsB : new Date(tsB).getTime()) : 0;
-        return dir * (av - bv);
-      }
-      if (listSortCol === "status") { av = a.status || ""; bv = b.status || ""; }
-      else if (listSortCol === "title") { av = (a.title || "").toLowerCase(); bv = (b.title || "").toLowerCase(); }
-      else if (listSortCol === "repo") { av = a.repository || a.workspace || ""; bv = b.repository || b.workspace || ""; }
-      else if (listSortCol === "branch") { av = getTaskBaseBranch(a); bv = getTaskBaseBranch(b); }
-      else { return 0; }
-      return dir * String(av).localeCompare(String(bv));
-    });
-  }, [visible, listSortCol, listSortDir]);
+  const sortHierarchyNodeStates = useCallback((items = []) => (
+    [...items].sort((left, right) => {
+      const sorted = compareTasksForHierarchicalList(left?.task, right?.task, listSortCol, listSortDir);
+      if (sorted !== 0) return sorted;
+      const leftOrder = sharedTaskHierarchyModel.originalOrderById.get(String(left?.id || left?.task?.id || "")) || 0;
+      const rightOrder = sharedTaskHierarchyModel.originalOrderById.get(String(right?.id || right?.task?.id || "")) || 0;
+      return leftOrder - rightOrder;
+    })
+  ), [listSortCol, listSortDir, sharedTaskHierarchyModel.originalOrderById]);
+
+  const hierarchicalListRows = useMemo(() => buildHierarchicalTaskRows(
+    sharedTaskHierarchyView.rootNodes,
+    {
+      collapsedState: collapsedHierarchyRows,
+      hasSearch: Boolean(searchLower),
+      sortChildren: sortHierarchyNodeStates,
+    },
+  ), [collapsedHierarchyRows, searchLower, sharedTaskHierarchyView.rootNodes, sortHierarchyNodeStates]);
+  const listVisibleCount = hierarchicalListRows.length;
 
   const dagTaskFocusIds = useMemo(() => {
     if (dagFocusMode === "backlog") return dagPlanningState.backlogTaskIds;
@@ -7798,6 +7975,32 @@ export function TasksTab() {
     setIsSearching(false);
     await refreshTab("tasks");
   }, [triggerServerSearch]);
+
+  const toggleHierarchyRow = useCallback((collapseKey) => {
+    if (!collapseKey) return;
+    setCollapsedHierarchyRows((prev) => ({
+      ...prev,
+      [collapseKey]: !prev[collapseKey],
+    }));
+  }, []);
+
+  const handleQuickCreateChildTask = useCallback((task) => {
+    if (!task?.id) return;
+    haptic();
+    setCreateSeed({
+      taskType: "subtask",
+      parentTaskId: task.id,
+      epicId: toText(task?.epicId || task?.meta?.epicId),
+      sprintId: getTaskSprintId(task),
+      draft: true,
+    });
+    setShowCreate(true);
+  }, []);
+
+  const handleInlineListStatusChange = useCallback(async (task, nextStatus) => {
+    if (!task?.id || !nextStatus || normalizeTaskStatusValue(task?.status) === normalizeTaskStatusValue(nextStatus)) return;
+    await applyTaskLifecycleTransition(task, nextStatus);
+  }, []);
 
   const handleToggleFilters = useCallback(() => {
     haptic();
@@ -8481,7 +8684,7 @@ export function TasksTab() {
           />
           ${showKbdHint && !searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;opacity:0.55;white-space:nowrap;pointer-events:none">${isMac ? "⌘K" : "Ctrl+K"}</span>`}
           ${isSearching && html`<span class="pill" style="font-size:10px;padding:2px 7px;color:var(--accent);white-space:nowrap">Searching…</span>`}
-          ${!isSearching && searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;white-space:nowrap">${visible.length} result${visible.length !== 1 ? "s" : ""}</span>`}
+          ${!isSearching && searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;white-space:nowrap">${isList ? listVisibleCount : visible.length} result${(isList ? listVisibleCount : visible.length) !== 1 ? "s" : ""}</span>`}
           </div>
           <div class=${`tasks-toolbar-actions ${isCompact ? "compact" : ""}`}>
             ${isCompact
@@ -8568,7 +8771,7 @@ export function TasksTab() {
                       html`<${MenuItem} key=${o.value} value=${o.value}>${o.label}</${MenuItem}>`,
                   )}
                 </${Select}>
-                <span class="pill"><span class="numeral">${visible.length}</span> shown</span>
+                <span class="pill"><span class="numeral">${isList ? listVisibleCount : visible.length}</span> shown</span>
               </div>
             </div>
             <div class="tasks-filter-section">
@@ -8807,7 +9010,7 @@ export function TasksTab() {
       }
     </style>
 
-    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} workspaceId=${activeWorkspaceId.value || ""} />`}
+    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} workspaceId=${activeWorkspaceId.value || ""} hierarchyModel=${sharedTaskHierarchyModel} tasks=${tasks} />`}
 
     ${isDag && html`
       <div class="task-dag-shell">
@@ -9019,85 +9222,170 @@ export function TasksTab() {
       </div>
     `}
 
-    ${isList && visible.length > 0 && html`
+    ${isList && listVisibleCount > 0 && html`
       <div class="task-table-wrap">
-        <table class="task-table">
-          <thead>
-            <tr>
-              ${[
-                { col: "status", label: "Status" },
-                { col: "priority", label: "Pri" },
-                { col: "title", label: "Title", grow: true },
-                { col: "branch", label: "Branch" },
-                { col: "repo", label: "Repo" },
-                { col: "updated", label: "Updated" },
-              ].map(({ col, label, grow }) => {
-                const active = listSortCol === col;
-                const arrow = active ? (listSortDir === "asc" ? "▲" : "▼") : "⇅";
-                return html`
-                  <th
-                    key=${col}
-                    class="task-th ${active ? "task-th-active" : ""} ${grow ? "task-th-grow" : ""}"
-                    onClick=${() => {
-                      if (listSortCol === col) {
-                        setListSortDir(listSortDir === "asc" ? "desc" : "asc");
-                      } else {
-                        setListSortCol(col);
-                        setListSortDir("desc");
-                      }
-                    }}
-                  >${label} <span class="task-th-arrow">${arrow}</span></th>
-                `;
-              })}
-            </tr>
-          </thead>
-          <tbody>
-            ${sortedForTable.map((task) => {
-              const isManual = isTaskManual(task);
-              const branch = getTaskBaseBranch(task);
+        <div class="task-list-header" role="row">
+          <button
+            type="button"
+            class="task-list-header-sort"
+            onClick=${() => {
+              if (listSortCol === "title") setListSortDir(listSortDir === "asc" ? "desc" : "asc");
+              else { setListSortCol("title"); setListSortDir("asc"); }
+            }}
+          >
+            Hierarchy <span class="task-th-arrow">${listSortCol === "title" ? (listSortDir === "asc" ? "▲" : "▼") : "⇅"}</span>
+          </button>
+          <div class="task-list-header-actions">
+            ${[
+              { col: "status", label: "Status" },
+              { col: "priority", label: "Priority" },
+              { col: "updated", label: "Updated" },
+            ].map(({ col, label }) => {
+              const active = listSortCol === col;
+              const arrow = active ? (listSortDir === "asc" ? "▲" : "▼") : "⇅";
               return html`
-                <tr
-                  key=${task.id}
-                  class="task-tr ${batchMode && selectedIds.has(task.id) ? "task-tr-selected" : ""}"
-                  data-status=${task.status || ""}
-                  onClick=${() => batchMode ? toggleSelect(task.id) : openDetail(task.id)}
+                <button
+                  type="button"
+                  key=${col}
+                  class="task-list-header-sort"
+                  onClick=${() => {
+                    if (listSortCol === col) setListSortDir(listSortDir === "asc" ? "desc" : "asc");
+                    else { setListSortCol(col); setListSortDir(col === "updated" ? "desc" : "asc"); }
+                  }}
                 >
-                  <td class="task-td task-td-status">
-                    <${Badge} status=${task.status} text=${task.status} />
-                    ${isManual && html`<${Badge} status="warning" text="manual" />`}
-                  </td>
-                  <td class="task-td task-td-pri">
-                    ${task.priority
-                      ? html`<${Badge} status=${task.priority} text=${task.priority} />`
-                      : html`<span class="task-td-empty">—</span>`}
-                  </td>
-                  <td class="task-td task-td-title">
-                    <div class="task-td-title-text">${task.title || "(untitled)"}</div>
-                    ${task.id && html`<div class="task-td-id">${task.id}</div>`}
-                  </td>
-                  <td class="task-td task-td-branch">
-                    ${branch
-                      ? html`<code class="task-td-code">${branch}</code>`
-                      : html`<span class="task-td-empty">—</span>`}
-                  </td>
-                  <td class="task-td task-td-repo">
-                    ${(task.repository || task.workspace)
-                      ? html`<span>${task.repository || task.workspace}</span>`
-                      : html`<span class="task-td-empty">—</span>`}
-                  </td>
-                  <td class="task-td task-td-updated">
-                    ${(task.updated_at || task.updated)
-                      ? html`<span class="task-td-date">${formatRelative(task.updated_at || task.updated)}</span>`
-                      : html`<span class="task-td-empty">—</span>`}
-                  </td>
-                </tr>
+                  ${label} <span class="task-th-arrow">${arrow}</span>
+                </button>
               `;
             })}
-          </tbody>
-        </table>
+          </div>
+        </div>
+        <div class="task-tree-list" role="tree" aria-label="Task hierarchy list">
+          ${hierarchicalListRows.map((row) => {
+            const task = row.task;
+            const statusTone = getTaskListStatusTone(task.status);
+            const isManual = isTaskManual(task);
+            const branch = getTaskBaseBranch(task);
+            const repoName = task.repository || task.workspace || "";
+            const updatedLabel = task.updated_at || task.updated ? formatRelative(task.updated_at || task.updated) : "";
+            const issueTypeLabel = getTaskListIssueTypeLabel(task);
+            const selected = batchMode && selectedIds.has(task.id);
+            return html`
+              <div
+                key=${task.id}
+                class="task-tree-row ${selected ? "task-tree-row-selected" : ""}"
+                data-status=${task.status || ""}
+                data-tone=${statusTone}
+                data-depth=${row.depth}
+                data-match=${row.matchState}
+                role="treeitem"
+                aria-level=${row.depth + 1}
+                aria-expanded=${row.hasChildren ? String(row.isExpanded) : undefined}
+                tabIndex=${0}
+                onClick=${() => batchMode ? toggleSelect(task.id) : openDetail(task.id)}
+                onKeyDown=${(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === "ArrowRight" && row.hasChildren && row.isCollapsed) {
+                    event.preventDefault();
+                    toggleHierarchyRow(row.node.collapseKey);
+                  } else if (event.key === "ArrowLeft" && row.hasChildren && row.isExpanded) {
+                    event.preventDefault();
+                    toggleHierarchyRow(row.node.collapseKey);
+                  } else if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    if (batchMode) toggleSelect(task.id);
+                    else openDetail(task.id);
+                  }
+                }}
+              >
+                <div class="task-tree-main" style=${{ "--task-tree-depth": row.depth }}>
+                  <div class="task-tree-title-line">
+                    ${row.hasChildren
+                      ? html`
+                          <button
+                            type="button"
+                            class="task-tree-disclosure"
+                            aria-label=${row.isExpanded ? "Collapse children" : "Expand children"}
+                            onClick=${(event) => {
+                              event.stopPropagation();
+                              toggleHierarchyRow(row.node.collapseKey);
+                            }}
+                          >
+                            ${row.isExpanded ? "▾" : "▸"}
+                          </button>
+                        `
+                      : html`<span class="task-tree-disclosure task-tree-disclosure-placeholder">•</span>`}
+                    ${batchMode && html`
+                      <button
+                        type="button"
+                        class="task-tree-select"
+                        aria-label=${selected ? "Deselect task" : "Select task"}
+                        aria-pressed=${selected ? "true" : "false"}
+                        onClick=${(event) => {
+                          event.stopPropagation();
+                          toggleSelect(task.id);
+                        }}
+                      >
+                        ${selected ? "✓" : ""}
+                      </button>
+                    `}
+                    <span class="task-tree-issue-type" data-kind=${issueTypeLabel.toLowerCase().replace(/[^a-z]+/g, "-")}>${issueTypeLabel}</span>
+                    <span class="task-tree-title">${task.title || "(untitled)"}</span>
+                    ${row.progressTotal > 0 && html`<span class="task-tree-progress-pill">${row.progressDone}/${row.progressTotal} done</span>`}
+                    ${row.blockedCount > 0 && html`<span class="task-tree-alert-pill">${row.blockedCount} blocked</span>`}
+                    ${isManual && html`<span class="task-tree-meta-pill">Manual</span>`}
+                    ${row.matchState === "descendant" && html`<span class="task-tree-meta-pill">Matched child</span>`}
+                  </div>
+                  <div class="task-tree-meta-line">
+                    ${task.id ? html`<span class="task-tree-id">${task.id}</span>` : null}
+                    ${task.priority ? html`<span class="task-tree-meta-pill" data-tone=${task.priority}>${task.priority}</span>` : null}
+                    ${repoName ? html`<span>${repoName}</span>` : null}
+                    ${branch ? html`<code class="task-td-code">${branch}</code>` : null}
+                    ${task.assignee ? html`<span>@${task.assignee}</span>` : null}
+                    ${updatedLabel ? html`<span>${updatedLabel}</span>` : null}
+                    ${toText(task?.epicId || task?.meta?.epicId) ? html`<span>Epic ${toText(task?.epicId || task?.meta?.epicId)}</span>` : null}
+                  </div>
+                </div>
+                <div class="task-tree-actions" onClick=${(event) => event.stopPropagation()}>
+                  <${Select}
+                    size="small"
+                    value=${normalizeTaskStatusValue(task.status || "todo")}
+                    className="task-tree-status-select"
+                    onChange=${async (event) => {
+                      await handleInlineListStatusChange(task, event.target.value);
+                    }}
+                  >
+                    ${["draft", "todo", "inprogress", "inreview", "blocked", "done", "cancelled"].map((statusOption) => html`
+                      <${MenuItem} value=${statusOption}>${statusOption}</${MenuItem}>
+                    `)}
+                  </${Select}>
+                  <button
+                    type="button"
+                    class="task-tree-action-btn"
+                    onClick=${(event) => {
+                      event.stopPropagation();
+                      openDetail(task.id);
+                    }}
+                  >
+                    Open
+                  </button>
+                  <button
+                    type="button"
+                    class="task-tree-action-btn"
+                    onClick=${(event) => {
+                      event.stopPropagation();
+                      handleQuickCreateChildTask(task);
+                    }}
+                  >
+                    + Child
+                  </button>
+                </div>
+              </div>
+            `;
+          })}
+        </div>
       </div>
     `}
-    ${isList && !visible.length &&
+    ${isList && !listVisibleCount &&
     html`
       <${EmptyState}
         message="No tasks match those filters"
@@ -9198,6 +9486,9 @@ export function TasksTab() {
         presentation=${isDag ? "side-sheet" : "modal"}
         taskCatalog=${dagTaskCatalog}
         epicCatalog=${dagEpicCatalog}
+        hierarchyModel=${sharedTaskHierarchyModel}
+        hierarchyNodeState=${sharedTaskHierarchyView.nodeStateById.get(String(detailTask?.id || "")) || null}
+        onUpdateHierarchySubtasks=${handleHierarchySubtasksUpdate}
       />
     `}
     ${startTarget &&
@@ -9712,43 +10003,35 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
           />
         </div>
 
-        <!-- Description — compact 2-row textarea -->
-        <div class="textarea-with-mic" style="position:relative">
-          <${TextField}
-            multiline
-            rows=${2}
-            size="small"
-            placeholder="What needs to be done? (optional)"
-            value=${description}
-            onInput=${(e) => {
-              setDescription(e.target.value);
-              // auto-grow up to 6 rows
-              e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
-            }}
-            style=${{ paddingRight: "36px" }}
-            fullWidth
-          />
-          <${VoiceMicButton}
-            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
-            disabled=${submitting || rewriting}
-            size="sm"
-            className="textarea-mic-btn"
-          />
-        </div>
+        <${MarkdownTaskEditor}
+          value=${description}
+          onChange=${setDescription}
+          placeholder="What needs to be done? Scope, acceptance checks, dependencies, and constraints..."
+          minHeight=${300}
+          disabled=${submitting}
+        />
 
-        <!-- Rewrite / Improve button -->
-        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
-          variant="text" size="small"
-          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
-          disabled=${!title.trim() || rewriting || submitting}
-          onClick=${handleRewrite}
-        >
-          ${rewriting
-            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
-            : html`${iconText(":star: Improve with AI")}`
-          }
-        <//><//>
+        <div class="task-markdown-toolbar">
+          <div class="task-markdown-help">Rich Markdown supported. Write in Markdown or switch modes for a visual editor.</div>
+          <div class="task-markdown-toolbar-actions">
+            <${VoiceMicButton}
+              onTranscript=${(t) => setDescription((prev) => (prev ? `${prev}\n\n${t}` : t))}
+              disabled=${submitting || rewriting}
+              size="sm"
+            />
+            <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
+              variant="text" size="small"
+              style=${{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
+              disabled=${!title.trim() || rewriting || submitting}
+              onClick=${handleRewrite}
+            >
+              ${rewriting
+                ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
+                : html`${iconText(":star: Improve with AI")}`
+              }
+            <//><//>
+          </div>
+        </div>
 
         <!-- Priority — always visible, most commonly changed -->
         <${SegmentedControl}

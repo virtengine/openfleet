@@ -22,6 +22,7 @@ import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
+import { buildTaskHierarchyModel, deriveTaskHierarchyView, getTaskHierarchyTaskType } from "../modules/task-hierarchy.js";
 import { AppContextMenu, useContextMenuState } from "./context-menu.js";
 import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Menu, MenuItem, Paper, Tooltip, Badge, Divider } from "@mui/material";
 
@@ -360,6 +361,118 @@ function getTaskStoryPoints(task) {
 
 function getTaskDueDate(task) {
   return String(task?.dueDate || task?.due_date || task?.meta?.dueDate || "").trim();
+}
+
+function getHierarchySortOrder(model, id) {
+  return model?.originalOrderById?.get?.(String(id || "")) ?? Number.MAX_SAFE_INTEGER;
+}
+
+function summarizeChildStatusRollup(tasks = []) {
+  const counts = { active: 0, review: 0, blocked: 0, done: 0, backlog: 0 };
+  for (const task of tasks) {
+    const status = String(task?.status || "").toLowerCase();
+    if (COLUMN_MAP.inProgress.includes(status)) counts.active += 1;
+    else if (COLUMN_MAP.inReview.includes(status)) counts.review += 1;
+    else if (COLUMN_MAP.blocked.includes(status)) counts.blocked += 1;
+    else if (COLUMN_MAP.done.includes(status)) counts.done += 1;
+    else counts.backlog += 1;
+  }
+  return [
+    counts.active ? `${counts.active} active` : "",
+    counts.review ? `${counts.review} review` : "",
+    counts.blocked ? `${counts.blocked} blocked` : "",
+    counts.done ? `${counts.done} done` : "",
+    counts.backlog ? `${counts.backlog} backlog` : "",
+  ].filter(Boolean);
+}
+
+function buildKanbanColumnItems(tasks = [], hierarchyView = null, hierarchyModel = null) {
+  const rows = Array.isArray(tasks) ? [...tasks] : [];
+  const groupedTaskIds = new Set();
+  const coveredHeaderTaskIds = new Set();
+  const groups = new Map();
+  const taskById = hierarchyModel?.taskById || new Map();
+  const epicGroupById = new Map((hierarchyView?.epicGroups || []).map((entry) => [String(entry.id || ""), entry]));
+  rows.sort((left, right) => getHierarchySortOrder(hierarchyModel, left?.id) - getHierarchySortOrder(hierarchyModel, right?.id));
+
+  const ensureGroup = (key, create) => {
+    if (!groups.has(key)) groups.set(key, create());
+    return groups.get(key);
+  };
+
+  for (const task of rows) {
+    const taskId = String(task?.id || "");
+    const node = hierarchyView?.nodeStateById?.get?.(taskId) || null;
+    const parentId = String(node?.meta?.parentTaskId || "");
+    if (parentId && hierarchyView?.nodeStateById?.get?.(parentId)?.isParentNode) {
+      const parentNode = hierarchyView.nodeStateById.get(parentId);
+      const parentTask = taskById.get(parentId) || parentNode?.task || null;
+      const group = ensureGroup(`parent:${parentId}`, () => ({
+        key: `parent:${parentId}`,
+        kind: "parent",
+        parentTask,
+        parentNode,
+        title: parentTask?.title || parentId,
+        children: [],
+      }));
+      if (taskId === parentId) {
+        coveredHeaderTaskIds.add(taskId);
+        continue;
+      }
+      groupedTaskIds.add(taskId);
+      group.children.push(task);
+      continue;
+    }
+
+    const epicId = String(node?.meta?.epicId || "");
+    const epicGroup = epicId ? epicGroupById.get(epicId) : null;
+    const taskType = getTaskHierarchyTaskType(task, "task");
+    if (epicGroup && epicGroup.visibleTaskCount > 1 && taskType !== "epic") {
+      const anchorTask = epicGroup.anchorTaskId ? taskById.get(epicGroup.anchorTaskId) : null;
+      const group = ensureGroup(`epic:${epicId}`, () => ({
+        key: `epic:${epicId}`,
+        kind: "epic",
+        parentTask: anchorTask,
+        parentNode: anchorTask ? hierarchyView?.nodeStateById?.get?.(String(anchorTask.id)) || null : null,
+        epicGroup,
+        title: epicGroup.label || epicId,
+        children: [],
+      }));
+      if (anchorTask?.id && taskId === String(anchorTask.id)) {
+        coveredHeaderTaskIds.add(taskId);
+        continue;
+      }
+      groupedTaskIds.add(taskId);
+      group.children.push(task);
+    }
+  }
+
+  const items = [];
+  for (const group of groups.values()) {
+    if (!group.children.length) continue;
+    group.children.sort((left, right) => getHierarchySortOrder(hierarchyModel, left?.id) - getHierarchySortOrder(hierarchyModel, right?.id));
+    const groupOrder = group.parentTask?.id
+      ? getHierarchySortOrder(hierarchyModel, group.parentTask.id)
+      : Math.min(...group.children.map((entry) => getHierarchySortOrder(hierarchyModel, entry?.id)));
+    items.push({
+      kind: "group",
+      order: groupOrder,
+      group,
+    });
+  }
+
+  for (const task of rows) {
+    const taskId = String(task?.id || "");
+    if (groupedTaskIds.has(taskId) || coveredHeaderTaskIds.has(taskId)) continue;
+    items.push({
+      kind: "task",
+      order: getHierarchySortOrder(hierarchyModel, taskId),
+      task,
+    });
+  }
+
+  items.sort((left, right) => left.order - right.order);
+  return items;
 }
 
 function getTaskStatusLabel(status) {
@@ -1179,7 +1292,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "", hierarchyModel = null, tasks = null }) {
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const [hydratedWorkspaceScope, setHydratedWorkspaceScope] = useState(workspaceScope);
   const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
@@ -1188,8 +1301,14 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     openContextMenu: openTaskContextMenuState,
     closeContextMenu: closeTaskContextMenu,
   } = useContextMenuState();
-  const allTasks = tasksData.value || [];
+  const allTasks = Array.isArray(tasks) ? tasks : (tasksData.value || []);
   const boardTasksLoaded = Boolean(tasksLoaded.value);
+  const sharedHierarchyModel = useMemo(
+    () => hierarchyModel && typeof hierarchyModel === "object"
+      ? hierarchyModel
+      : buildTaskHierarchyModel(allTasks),
+    [allTasks, hierarchyModel],
+  );
   const knownRepos = useMemo(() => {
     const repos = new Set();
     for (const task of allTasks) {
@@ -1234,22 +1353,26 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     persistBoardFilters({ workspaceId: workspaceScope, filters });
   }, [workspaceScope, hydratedWorkspaceScope, filters]);
 
-  const filteredTasks = useMemo(() => {
-    let tasks = allTasks;
-    if (filters.repo) tasks = tasks.filter((t) => (t.repo || t.repository) === filters.repo);
-    if (filters.assignee) tasks = tasks.filter((t) => t.assignee === filters.assignee);
-    if (filters.priority) tasks = tasks.filter((t) => t.priority === filters.priority);
-    if (filters.search) {
-      const q = filters.search.toLowerCase();
-      tasks = tasks.filter((t) =>
-        (t.title || "").toLowerCase().includes(q) ||
-        (t.id || "").toString().toLowerCase().includes(q) ||
-        (t.repo || "").toLowerCase().includes(q) ||
-        (t.assignee || "").toLowerCase().includes(q)
-      );
-    }
-    return tasks;
-  }, [allTasks, filters]);
+  const hierarchyView = useMemo(() => deriveTaskHierarchyView(sharedHierarchyModel, {
+    matchTask: (task) => {
+      if (filters.repo && (task?.repo || task?.repository) !== filters.repo) return false;
+      if (filters.assignee && task?.assignee !== filters.assignee) return false;
+      if (filters.priority && task?.priority !== filters.priority) return false;
+      if (filters.search) {
+        const q = filters.search.toLowerCase();
+        const searchDoc = `${task?.title || ""} ${task?.description || ""} ${task?.id || ""} ${task?.repo || task?.repository || ""} ${task?.assignee || ""}`.toLowerCase();
+        if (!searchDoc.includes(q)) return false;
+      }
+      return true;
+    },
+  }), [filters, sharedHierarchyModel]);
+
+  const filteredTasks = useMemo(
+    () => [...hierarchyView.visibleTaskIds]
+      .map((taskId) => sharedHierarchyModel.taskById.get(taskId))
+      .filter(Boolean),
+    [hierarchyView.visibleTaskIds, sharedHierarchyModel],
+  );
 
   const cols = useMemo(() => {
     const result = {};

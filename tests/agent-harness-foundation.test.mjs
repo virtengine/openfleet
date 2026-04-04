@@ -1318,6 +1318,43 @@ describe("harness agent service foundation", () => {
     expect(result).toEqual({ success: true, output: "resume-path" });
   });
 
+  it("maps workflow env input onto pooled launcher envOverrides", async () => {
+    const launchOrResumeThread = vi.fn(async () => ({ success: true, output: "resume-path" }));
+    const service = createHarnessAgentService({
+      agentPool: {
+        launchOrResumeThread,
+        launchEphemeralThread: vi.fn(),
+      },
+    });
+
+    await service.runTask("resume with env", {
+      autoRecover: false,
+      taskKey: "task-env",
+      cwd: "C:/repo",
+      timeoutMs: 4321,
+      env: {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "safe.directory",
+        GIT_CONFIG_VALUE_0: "C:/repo/.bosun/worktrees/task-env",
+      },
+    });
+
+    expect(launchOrResumeThread).toHaveBeenCalledWith(
+      "resume with env",
+      "C:/repo",
+      4321,
+      expect.objectContaining({
+        env: expect.objectContaining({
+          GIT_CONFIG_KEY_0: "safe.directory",
+        }),
+        envOverrides: expect.objectContaining({
+          GIT_CONFIG_KEY_0: "safe.directory",
+          GIT_CONFIG_VALUE_0: "C:/repo/.bosun/worktrees/task-env",
+        }),
+      }),
+    );
+  });
+
   it("exposes a canonical facade for surface and worker bridges", async () => {
     const listener = vi.fn();
     const addActiveSessionListener = vi.fn(() => "listener-1");

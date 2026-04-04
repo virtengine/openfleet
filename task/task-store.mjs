@@ -262,6 +262,31 @@ export function configureTaskStore(options = {}) {
   return storePath;
 }
 
+export async function _resetForTests() {
+  await _writeChain.catch(() => null);
+  _store = { _meta: defaultMeta(), tasks: {}, sprints: {} };
+  _loaded = true;
+  _writeChain = Promise.resolve();
+  _writeScheduled = false;
+  _writeDirty = false;
+  _didLogInitialLoad = false;
+  _lastLoadedMtimeMs = 0;
+  _lastLoadedSizeBytes = 0;
+
+  if (isLikelyTestRuntime() || isTestIsolatedStorePath(storePath)) {
+    try {
+      unlinkSync(storePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    try {
+      unlinkSync(storeTmpPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

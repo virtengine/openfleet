@@ -220,6 +220,7 @@
     "agent/tool-runtime-context.mjs",
     "agent/harness/",
     "agent/harness-agent-service.mjs",
+    "agent/harness-executor-config.mjs",
     "agent/internal-harness-control-plane.mjs",
     "agent/internal-harness-profile.mjs",
     "agent/internal-harness-runtime.mjs",

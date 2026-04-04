@@ -199,17 +199,19 @@ function readApprovalQueue(repoRoot) {
   const filePath = resolveApprovalQueuePath(repoRoot);
   const data = readJsonFile(filePath, { version: 1, requests: [] });
   let requests = Array.isArray(data?.requests) ? data.requests : [];
-  try {
-    const sqlRequests = listApprovalRequestsFromStateLedger({
-      ...resolveWorkflowLedgerOptions(repoRoot),
-      includeResolved: true,
-      limit: 500,
-    });
-    if (Array.isArray(sqlRequests) && sqlRequests.length > 0) {
-      requests = sqlRequests;
+  if (requests.length === 0) {
+    try {
+      const sqlRequests = listApprovalRequestsFromStateLedger({
+        ...resolveWorkflowLedgerOptions(repoRoot),
+        includeResolved: true,
+        limit: 500,
+      });
+      if (Array.isArray(sqlRequests) && sqlRequests.length > 0) {
+        requests = sqlRequests;
+      }
+    } catch {
+      // fall back to the legacy JSON queue
     }
-  } catch {
-    // fall back to the legacy JSON queue
   }
   return {
     path: filePath,
@@ -628,6 +630,10 @@ function getApprovalRequestIndex(requests, scopeType, scopeId) {
 
 export function getApprovalRequest(scopeType, scopeId, options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  const queue = readApprovalQueue(repoRoot);
+  const requests = Array.isArray(queue.data.requests) ? queue.data.requests : [];
+  const index = getApprovalRequestIndex(requests, scopeType, scopeId);
+  if (index >= 0) return cloneJson(requests[index]);
   try {
     const sqlRequest = getApprovalRequestByScopeFromStateLedger(
       scopeType,
@@ -636,16 +642,19 @@ export function getApprovalRequest(scopeType, scopeId, options = {}) {
     );
     if (sqlRequest) return sqlRequest;
   } catch {
-    // fall back to legacy JSON queue below
+    // fall back to null below
   }
-  const queue = readApprovalQueue(repoRoot);
-  const requests = Array.isArray(queue.data.requests) ? queue.data.requests : [];
-  const index = getApprovalRequestIndex(requests, scopeType, scopeId);
-  return index >= 0 ? cloneJson(requests[index]) : null;
+  return null;
 }
 
 export function getApprovalRequestById(requestId, options = {}) {
   const repoRoot = resolve(String(options.repoRoot || process.cwd()));
+  const queue = readApprovalQueue(repoRoot);
+  const normalizedRequestId = normalizeText(requestId);
+  const request = (queue.data.requests || []).find(
+    (entry) => normalizeText(entry?.requestId) === normalizedRequestId,
+  ) || null;
+  if (request) return cloneJson(request);
   try {
     const sqlRequest = getApprovalRequestFromStateLedger(
       requestId,
@@ -653,14 +662,9 @@ export function getApprovalRequestById(requestId, options = {}) {
     );
     if (sqlRequest) return sqlRequest;
   } catch {
-    // fall back to legacy JSON queue below
+    // fall back to null below
   }
-  const queue = readApprovalQueue(repoRoot);
-  const normalizedRequestId = normalizeText(requestId);
-  const request = (queue.data.requests || []).find(
-    (entry) => normalizeText(entry?.requestId) === normalizedRequestId,
-  ) || null;
-  return request ? cloneJson(request) : null;
+  return null;
 }
 
 export function upsertApprovalRequest(request = {}, options = {}) {
@@ -740,21 +744,20 @@ export function listApprovalRequests(options = {}) {
   const scopeType = requestedScopeType === "all" ? "" : requestedScopeType;
   const includeResolved = options.includeResolved === true;
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(500, Math.trunc(Number(options.limit)))) : 100;
-  let requests = [];
-  try {
-    requests = listApprovalRequestsFromStateLedger({
-      ...resolveWorkflowLedgerOptions(repoRoot),
-      scopeType,
-      status,
-      includeResolved,
-      limit,
-    });
-  } catch {
-    requests = [];
-  }
-  if (!Array.isArray(requests) || requests.length === 0) {
-    const queue = readApprovalQueue(repoRoot);
-    requests = Array.isArray(queue.data.requests) ? queue.data.requests.slice() : [];
+  const queue = readApprovalQueue(repoRoot);
+  let requests = Array.isArray(queue.data.requests) ? queue.data.requests.slice() : [];
+  if (requests.length === 0) {
+    try {
+      requests = listApprovalRequestsFromStateLedger({
+        ...resolveWorkflowLedgerOptions(repoRoot),
+        scopeType,
+        status,
+        includeResolved,
+        limit,
+      });
+    } catch {
+      requests = [];
+    }
   }
   if (scopeType) {
     requests = requests.filter((entry) => normalizeText(entry?.scopeType).toLowerCase() === scopeType);

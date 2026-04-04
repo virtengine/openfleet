@@ -855,8 +855,8 @@ const EXECUTOR_SECTION_ORDER = [
 const EXECUTOR_SECTION_DESCRIPTIONS = {
   "Primary Runtime": "Choose whether Bosun runs primarily on the Bosun-native Harness or the legacy SDK/CLI stack.",
   "Harness Control Plane": "Harness activation, profile source, and validation settings for the Bosun-native runtime.",
-  "Harness Provider Fabric": "Choose the primary harness provider, enable eligible providers, and define how Harness routes across them.",
-  "Harness Provider Credentials": "Credentials used by harness providers when they run via API keys or endpoint-specific auth.",
+  "Harness Provider Fabric": "Shared provider defaults and auth posture for the Harness runtime. Use the Harness Chat Executors editor above this section to define the actual chat-visible runtime instances.",
+  "Harness Provider Credentials": "Shared API keys and endpoint-level credentials that Harness executors can inherit when they do not supply their own endpoint overrides.",
   "Queued Task Execution": "Concurrency, timeouts, retries, review handoff, and planning posture for Bosun's queued task engine.",
   "SDK/CLI Compatibility": "Legacy shell runtime selection, SDK family pinning, and routing behavior used only when SDK/CLI mode is primary.",
   "SDK/CLI Availability": "Disable legacy SDK families you never want Bosun to consider in compatibility mode.",
@@ -1004,6 +1004,421 @@ function AgentArchitectureGuide({ architecture }) {
           </div>
         `)}
       </div>
+    <//>
+  `;
+}
+
+const HARNESS_EXECUTOR_API_STYLE_OPTIONS = [
+  { value: "provider-default", label: "Provider default" },
+  { value: "responses", label: "Responses API" },
+  { value: "chat-completions", label: "Chat Completions API" },
+];
+
+function formatHarnessProviderStatus(authState = {}) {
+  if (authState?.authenticated) return "Connected";
+  if (authState?.canRun) return "Runnable";
+  if (authState?.requiresAction) return "Needs auth";
+  if (authState?.status) {
+    return String(authState.status)
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (match) => match.toUpperCase());
+  }
+  return "Unknown";
+}
+
+function HarnessExecutorsEditor() {
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [executors, setExecutors] = useState([]);
+  const [providerOptions, setProviderOptions] = useState([]);
+  const [providerItems, setProviderItems] = useState([]);
+  const [primaryExecutor, setPrimaryExecutor] = useState("");
+  const [routingMode, setRoutingMode] = useState("default-only");
+  const [dirty, setDirty] = useState(false);
+  const [savedState, setSavedState] = useState(null);
+
+  const normalizeExecutor = useCallback((entry = {}, index = 0) => ({
+    _id: entry._id || entry.id || `harness-executor-${Date.now()}-${index}`,
+    id: String(entry.id || entry._id || `harness-executor-${index + 1}`).trim(),
+    name: String(entry.name || entry.label || `Harness Executor ${index + 1}`).trim(),
+    providerId: String(entry.providerId || "openai-responses").trim(),
+    enabled: entry.enabled !== false,
+    defaultModel: String(entry.defaultModel || "").trim(),
+    modelsText: Array.isArray(entry.models) ? entry.models.join(", ") : String(entry.modelsText || "").trim(),
+    authMode: String(entry.authMode || "").trim(),
+    endpoint: String(entry.endpoint || "").trim(),
+    baseUrl: String(entry.baseUrl || "").trim(),
+    deployment: String(entry.deployment || "").trim(),
+    apiVersion: String(entry.apiVersion || "").trim(),
+    workspace: String(entry.workspace || "").trim(),
+    organization: String(entry.organization || "").trim(),
+    project: String(entry.project || "").trim(),
+    apiStyle: String(entry.apiStyle || "provider-default").trim() || "provider-default",
+  }), []);
+
+  const snapshotState = useCallback((state) => JSON.stringify(state), []);
+
+  const getProviderOption = useCallback((providerId) => (
+    providerOptions.find((entry) => String(entry.id || "").trim() === String(providerId || "").trim()) || null
+  ), [providerOptions]);
+
+  const getProviderInventoryEntry = useCallback((providerId) => (
+    providerItems.find((entry) => String(entry.providerId || "").trim() === String(providerId || "").trim()) || null
+  ), [providerItems]);
+
+  const captureSavedState = useCallback((nextExecutors, nextPrimary, nextRouting) => ({
+    executors: nextExecutors.map((entry) => ({ ...entry })),
+    primaryExecutor: String(nextPrimary || "").trim(),
+    routingMode: String(nextRouting || "default-only").trim() || "default-only",
+  }), []);
+
+  const runnableCount = useMemo(() => executors.filter((entry) => {
+    const providerInfo = providerItems.find((item) => String(item?.providerId || "").trim() === String(entry?.providerId || "").trim());
+    return entry?.enabled !== false && (providerInfo?.auth?.canRun === true || providerInfo?.auth?.authenticated === true);
+  }).length, [executors, providerItems]);
+
+  const primaryExecutorLabel = useMemo(() => (
+    executors.find((entry) => entry.id === primaryExecutor)?.name
+    || executors.find((entry) => entry.id === primaryExecutor)?.id
+    || "Not set"
+  ), [executors, primaryExecutor]);
+
+  const applyLoadedState = useCallback((payload = {}) => {
+    const nextExecutors = Array.isArray(payload.executors)
+      ? payload.executors.map((entry, index) => normalizeExecutor(entry, index))
+      : [];
+    const nextPrimary = String(payload.primaryExecutorId || payload.primaryExecutor || nextExecutors[0]?.id || "").trim();
+    const nextRouting = String(payload.routingMode || "default-only").trim() || "default-only";
+    const nextSaved = captureSavedState(nextExecutors, nextPrimary, nextRouting);
+    setExecutors(nextExecutors);
+    setPrimaryExecutor(nextPrimary);
+    setRoutingMode(nextRouting);
+    setSavedState(nextSaved);
+    setDirty(false);
+  }, [captureSavedState, normalizeExecutor]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/harness/executors");
+        setProviderOptions(Array.isArray(res?.providerOptions) ? res.providerOptions : []);
+        setProviderItems(Array.isArray(res?.providers?.items) ? res.providers.items : []);
+        applyLoadedState(res || {});
+        setLoadError("");
+      } catch (err) {
+        setLoadError(err.message || "Failed to load harness executors");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [applyLoadedState]);
+
+  useEffect(() => {
+    const key = "settings-harness-executors";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const markDirty = useCallback((nextExecutors, nextPrimary, nextRouting) => {
+    const current = snapshotState(captureSavedState(nextExecutors, nextPrimary, nextRouting));
+    const saved = snapshotState(savedState || captureSavedState([], "", "default-only"));
+    setDirty(current !== saved);
+  }, [captureSavedState, savedState, snapshotState]);
+
+  const addExecutorForProvider = useCallback((providerId = "") => {
+    const fallbackProvider = String(providerId || providerOptions[0]?.id || "openai-responses").trim() || "openai-responses";
+    const providerInfo = getProviderInventoryEntry(fallbackProvider);
+    const providerOption = getProviderOption(fallbackProvider);
+    const baseName = providerOption?.label || providerInfo?.label || fallbackProvider;
+    const sequence = executors.filter((entry) => entry.providerId === fallbackProvider).length + 1;
+    const created = normalizeExecutor({
+      id: `${fallbackProvider}-${Date.now()}`,
+      name: sequence > 1 ? `${baseName} ${sequence}` : baseName,
+      providerId: fallbackProvider,
+      defaultModel: providerInfo?.modelCatalog?.defaultModel || providerOptions[0]?.defaultModel || "",
+      authMode: providerInfo?.auth?.preferredMode || "",
+      apiStyle: providerOption?.apiStyle || providerOptions[0]?.apiStyle || "provider-default",
+    }, executors.length);
+    const nextExecutors = [...executors, created];
+    const nextPrimary = primaryExecutor || created.id;
+    setExecutors(nextExecutors);
+    setPrimaryExecutor(nextPrimary);
+    markDirty(nextExecutors, nextPrimary, routingMode);
+    haptic("light");
+  }, [executors, getProviderInventoryEntry, getProviderOption, markDirty, normalizeExecutor, primaryExecutor, providerOptions, routingMode]);
+
+  const addExecutor = useCallback(() => addExecutorForProvider(""), [addExecutorForProvider]);
+
+  const removeExecutor = useCallback((_id) => {
+    const nextExecutors = executors.filter((entry) => entry._id !== _id);
+    const removed = executors.find((entry) => entry._id === _id);
+    const nextPrimary = removed?.id === primaryExecutor
+      ? (nextExecutors[0]?.id || "")
+      : primaryExecutor;
+    setExecutors(nextExecutors);
+    setPrimaryExecutor(nextPrimary);
+    markDirty(nextExecutors, nextPrimary, routingMode);
+    haptic("light");
+  }, [executors, markDirty, primaryExecutor, routingMode]);
+
+  const updateExecutor = useCallback((_id, field, value) => {
+    const nextExecutors = executors.map((entry, index) => {
+      if (entry._id !== _id) return entry;
+      const next = { ...entry, [field]: value };
+      if (field === "name" && (!next.id || next.id === entry.id)) {
+        next.id = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `executor-${index + 1}`;
+      }
+      if (field === "providerId") {
+        const providerInfo = getProviderInventoryEntry(value);
+        const providerOption = getProviderOption(value);
+        next.authMode = providerInfo?.auth?.preferredMode || "";
+        next.defaultModel = providerInfo?.modelCatalog?.defaultModel || providerOption?.defaultModel || "";
+        next.apiStyle = providerOption?.apiStyle || "provider-default";
+        if (!String(value || "").includes("azure")) {
+          next.deployment = "";
+          next.apiVersion = "";
+        }
+      }
+      return next;
+    });
+    let nextPrimary = primaryExecutor;
+    if (field === "id" && primaryExecutor === executors.find((entry) => entry._id === _id)?.id) {
+      nextPrimary = String(value || "").trim();
+      setPrimaryExecutor(nextPrimary);
+    }
+    setExecutors(nextExecutors);
+    markDirty(nextExecutors, nextPrimary, routingMode);
+  }, [executors, getProviderInventoryEntry, getProviderOption, markDirty, primaryExecutor, routingMode]);
+
+  const handleSave = useCallback(async () => {
+    const payload = executors.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      providerId: entry.providerId,
+      enabled: entry.enabled !== false,
+      defaultModel: entry.defaultModel || undefined,
+      models: String(entry.modelsText || "").split(",").map((item) => item.trim()).filter(Boolean),
+      authMode: entry.authMode || undefined,
+      endpoint: entry.endpoint || undefined,
+      baseUrl: entry.baseUrl || undefined,
+      deployment: entry.deployment || undefined,
+      apiVersion: entry.apiVersion || undefined,
+      workspace: entry.workspace || undefined,
+      organization: entry.organization || undefined,
+      project: entry.project || undefined,
+      apiStyle: entry.apiStyle || undefined,
+    }));
+    const res = await apiFetch("/api/harness/executors", {
+      method: "POST",
+      body: JSON.stringify({
+        executors: payload,
+        primaryExecutor,
+        routingMode,
+      }),
+    });
+    setProviderOptions(Array.isArray(res?.providerOptions) ? res.providerOptions : providerOptions);
+    setProviderItems(Array.isArray(res?.providers?.items) ? res.providers.items : providerItems);
+    applyLoadedState(res || {});
+  }, [applyLoadedState, executors, primaryExecutor, providerItems, providerOptions, routingMode]);
+
+  const handleDiscard = useCallback(async () => {
+    if (!savedState) return;
+    setExecutors((savedState.executors || []).map((entry, index) => normalizeExecutor(entry, index)));
+    setPrimaryExecutor(savedState.primaryExecutor || "");
+    setRoutingMode(savedState.routingMode || "default-only");
+    setDirty(false);
+    setLoadError("");
+  }, [normalizeExecutor, savedState]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-harness-executors", {
+      isDirty: () => dirty,
+      save: handleSave,
+      discard: handleDiscard,
+    });
+  }, [dirty, handleDiscard, handleSave]);
+
+  if (loading) return html`<${SkeletonCard} height="120px" />`;
+
+  return html`
+    <${Card} title="Harness Chat Executors"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Named Bosun Harness executors are the chat-visible runtime instances. Configure as many provider-backed endpoints as you need, choose the primary one, and Bosun will route future Harness sessions through these IDs instead of legacy SDK executors.
+      </div>
+      <div class="settings-arch-grid" style="margin-bottom:12px">
+        <div class="settings-arch-card">
+          <div class="settings-arch-title">Configured Executors</div>
+          <div class="settings-arch-current">Current: <code>${executors.length}</code></div>
+          <div class="settings-arch-note">These are the IDs that appear in chat, workflows, Telegram, and other Harness-native surfaces.</div>
+        </div>
+        <div class="settings-arch-card">
+          <div class="settings-arch-title">Runnable Now</div>
+          <div class="settings-arch-current">Current: <code>${runnableCount}</code></div>
+          <div class="settings-arch-note">Runnable means the backing provider currently has enough auth and configuration to execute a Harness session.</div>
+        </div>
+        <div class="settings-arch-card">
+          <div class="settings-arch-title">Primary Selection</div>
+          <div class="settings-arch-current">Current: <code>${primaryExecutorLabel}</code></div>
+          <div class="settings-arch-note">This is the default Harness executor Bosun uses when a surface does not explicitly pick another one.</div>
+        </div>
+      </div>
+      ${loadError && html`<div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>`}
+      ${providerOptions.length > 0 && html`
+        <div style="margin-bottom:12px">
+          <div class="setting-row-label" style="margin-bottom:6px">Quick Add Runtime Endpoint</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${providerOptions.map((option) => html`
+              <${Button} key=${option.id} variant="outlined" size="small" onClick=${() => addExecutorForProvider(option.id)}>
+                + ${option.label}
+              <//>
+            `)}
+          </div>
+          <div class="meta-text" style="margin-top:6px">
+            Use one named executor per real runtime endpoint or account, for example <code>azure-us</code>, <code>azure-sweden</code>, <code>copilot-oauth</code>, <code>codex-oauth</code>, or <code>local-openai</code>.
+          </div>
+        </div>
+      `}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <div class="setting-row-label">Primary Harness Executor</div>
+          <${Select} size="small" value=${primaryExecutor} onChange=${(e) => {
+            const nextPrimary = e.target.value;
+            setPrimaryExecutor(nextPrimary);
+            markDirty(executors, nextPrimary, routingMode);
+          }} fullWidth>
+            ${executors.length === 0 && html`<${MenuItem} value="">— No executors configured —<//>`}
+            ${executors.map((entry) => html`<${MenuItem} value=${entry.id}>${entry.name || entry.id}<//>`)}
+          <//>
+        </div>
+        <div>
+          <div class="setting-row-label">Harness Routing Mode</div>
+          <${Select} size="small" value=${routingMode} onChange=${(e) => {
+            const nextRouting = e.target.value;
+            setRoutingMode(nextRouting);
+            markDirty(executors, primaryExecutor, nextRouting);
+          }} fullWidth>
+            <${MenuItem} value="default-only">Default only<//>
+            <${MenuItem} value="fallback">Failover<//>
+            <${MenuItem} value="spread">Spread<//>
+          <//>
+        </div>
+      </div>
+      ${executors.map((entry, index) => {
+        const providerInfo = getProviderInventoryEntry(entry.providerId);
+        const providerOption = getProviderOption(entry.providerId);
+        const authState = providerInfo?.auth || {};
+        const supportsEndpoint = ["azure-openai-responses", "openai-responses", "openai-compatible", "ollama"].includes(entry.providerId);
+        const supportsWorkspace = ["openai-codex-subscription", "claude-subscription-shim"].includes(entry.providerId);
+        const supportsOrgProject = entry.providerId === "openai-responses";
+        const supportsAzureDeployment = entry.providerId === "azure-openai-responses";
+        const isPrimary = entry.id === primaryExecutor;
+        return html`
+          <div key=${entry._id} style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+              <div>
+                <strong>${entry.name || `Executor ${index + 1}`}</strong>
+                <div class="meta-text">${entry.id || `executor-${index + 1}`} · ${providerOption?.label || providerInfo?.label || entry.providerId}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <${Toggle} checked=${entry.enabled !== false} onChange=${(value) => updateExecutor(entry._id, "enabled", value)} label="Enabled" />
+                <${Button} variant="outlined" size="small" onClick=${() => removeExecutor(entry._id)}>Remove<//>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+              ${isPrimary && html`<${Chip} size="small" color="primary" label="Primary" />`}
+              <${Chip} size="small" variant="outlined" label=${formatHarnessProviderStatus(authState)} />
+              <${Chip} size="small" variant="outlined" label=${HARNESS_EXECUTOR_API_STYLE_OPTIONS.find((option) => option.value === (entry.apiStyle || "provider-default"))?.label || "Provider default"} />
+              ${entry.defaultModel && html`<${Chip} size="small" variant="outlined" label=${entry.defaultModel} />`}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div>
+                <div class="setting-row-label">Display Name</div>
+                <${TextField} size="small" variant="outlined" value=${entry.name} onInput=${(e) => updateExecutor(entry._id, "name", e.target.value)} fullWidth />
+              </div>
+              <div>
+                <div class="setting-row-label">Stable ID</div>
+                <${TextField} size="small" variant="outlined" value=${entry.id} onInput=${(e) => updateExecutor(entry._id, "id", e.target.value)} fullWidth />
+              </div>
+              <div>
+                <div class="setting-row-label">Provider Runtime</div>
+                <${Select} size="small" value=${entry.providerId} onChange=${(e) => updateExecutor(entry._id, "providerId", e.target.value)} fullWidth>
+                  ${providerOptions.map((option) => html`<${MenuItem} value=${option.id}>${option.label}<//>`)}
+                <//>
+              </div>
+              <div>
+                <div class="setting-row-label">API Style</div>
+                <${Select} size="small" value=${entry.apiStyle || "provider-default"} onChange=${(e) => updateExecutor(entry._id, "apiStyle", e.target.value)} fullWidth>
+                  ${HARNESS_EXECUTOR_API_STYLE_OPTIONS.map((option) => html`<${MenuItem} value=${option.value}>${option.label}<//>`)}
+                <//>
+              </div>
+              <div>
+                <div class="setting-row-label">Default Model</div>
+                <${TextField} size="small" variant="outlined" value=${entry.defaultModel} onInput=${(e) => updateExecutor(entry._id, "defaultModel", e.target.value)} placeholder="gpt-5.4 / claude-sonnet-4.6 / ..." fullWidth />
+              </div>
+              <div>
+                <div class="setting-row-label">Allowed Models</div>
+                <${TextField} size="small" variant="outlined" value=${entry.modelsText} onInput=${(e) => updateExecutor(entry._id, "modelsText", e.target.value)} placeholder="comma-separated model ids" fullWidth />
+              </div>
+              <div>
+                <div class="setting-row-label">Auth Mode</div>
+                <${TextField} size="small" variant="outlined" value=${entry.authMode} onInput=${(e) => updateExecutor(entry._id, "authMode", e.target.value)} placeholder=${authState.preferredMode || "provider default"} fullWidth />
+              </div>
+              ${supportsEndpoint && html`
+                <div>
+                  <div class="setting-row-label">${supportsAzureDeployment ? "Endpoint URL" : "Base URL / Endpoint"}</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.endpoint || entry.baseUrl || ""} onInput=${(e) => {
+                    const nextValue = e.target.value;
+                    if (supportsAzureDeployment) {
+                      updateExecutor(entry._id, "endpoint", nextValue);
+                    } else {
+                      updateExecutor(entry._id, "baseUrl", nextValue);
+                    }
+                  }} placeholder="https://..." fullWidth />
+                </div>
+              `}
+              ${supportsAzureDeployment && html`
+                <div>
+                  <div class="setting-row-label">Azure Deployment</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.deployment} onInput=${(e) => updateExecutor(entry._id, "deployment", e.target.value)} placeholder="deployment name" fullWidth />
+                </div>
+                <div>
+                  <div class="setting-row-label">Azure API Version</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.apiVersion} onInput=${(e) => updateExecutor(entry._id, "apiVersion", e.target.value)} placeholder="2025-03-01-preview" fullWidth />
+                </div>
+              `}
+              ${supportsWorkspace && html`
+                <div>
+                  <div class="setting-row-label">Workspace / Org Scope</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.workspace} onInput=${(e) => updateExecutor(entry._id, "workspace", e.target.value)} placeholder="optional workspace selector" fullWidth />
+                </div>
+              `}
+              ${supportsOrgProject && html`
+                <div>
+                  <div class="setting-row-label">OpenAI Organization</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.organization} onInput=${(e) => updateExecutor(entry._id, "organization", e.target.value)} placeholder="org_xxx" fullWidth />
+                </div>
+                <div>
+                  <div class="setting-row-label">OpenAI Project</div>
+                  <${TextField} size="small" variant="outlined" value=${entry.project} onInput=${(e) => updateExecutor(entry._id, "project", e.target.value)} placeholder="proj_xxx" fullWidth />
+                </div>
+              `}
+            </div>
+            <div class="meta-text" style="margin-top:8px">
+              Provider auth: <strong>${authState.status || "unknown"}</strong>
+              ${authState.authenticated ? " · connected" : authState.requiresAction ? " · needs auth" : ""}
+              ${authState.connection?.accountId ? ` · account ${authState.connection.accountId}` : ""}
+              ${providerInfo?.description ? ` · ${providerInfo.description}` : ""}
+            </div>
+          </div>
+        `;
+      })}
+      <${Button} variant="outlined" size="small" onClick=${addExecutor}>+ Add Harness Executor<//>
+      ${executors.length === 0 && !loadError && html`
+        <div class="meta-text" style="margin-top:8px">
+          No named Harness executors yet. Add one here to make it appear as a selectable chat/runtime executor.
+        </div>
+      `}
     <//>
   `;
 }
@@ -2037,7 +2452,10 @@ function ServerConfigMode() {
         ${activeCat?.description &&
         html`<div class="settings-cat-desc">${activeCat.description}</div>`}
 
-        ${activeCategory === "executor" && html`<${AgentArchitectureGuide} architecture=${agentArchitecture} />`}
+        ${activeCategory === "executor" && html`
+          <${AgentArchitectureGuide} architecture=${agentArchitecture} />
+          <${HarnessExecutorsEditor} />
+        `}
 
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}

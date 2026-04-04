@@ -120,6 +120,21 @@ describe("task-claims", () => {
       expect(claim.metadata.agent).toBe("codex");
     });
 
+    it("registers explicit claim owners in presence when granting a claim", async () => {
+      const { notePresence } = vi.mocked(await import("../infra/presence.mjs"));
+
+      const result = await claimTask({
+        taskId: "task-presence",
+        instanceId: "instance-explicit",
+      });
+
+      expect(result.success).toBe(true);
+      expect(notePresence).toHaveBeenCalledWith(
+        expect.objectContaining({ instance_id: "instance-explicit" }),
+        expect.objectContaining({ source: "task-claim" }),
+      );
+    });
+
     it("reclaims a task when existing owner is stale/offline and shared state accepts the takeover", async () => {
       vi.resetModules();
       const claimInSharedStateMock = vi.fn(async () => ({ success: true }));

@@ -3145,6 +3145,8 @@ describe("action.build_task_prompt", () => {
       expect(userPrompt).toContain("Repo instructions marker.");
       expect(userPrompt).toContain("Copilot instructions marker.");
       expect(userPrompt).toContain("## Agent Status Endpoint");
+      expect(userPrompt).toContain("- URL: http://127.0.0.1:19623/api/tasks/T2b");
+      expect(userPrompt).toContain('- POST /complete {"hasCommits":true} — Signal completion');
       expect(userPrompt).toContain("## Tool Discovery");
       expect(userPrompt).toContain("search` -> `get_schema` -> `execute`");
 

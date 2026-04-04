@@ -96,6 +96,19 @@ const state = {
   auditPath: null,
 };
 
+function normalizeRepoRoot(repoRoot) {
+  const candidate = String(repoRoot || "").trim();
+  return candidate ? resolve(candidate) : "";
+}
+
+async function ensureRepoContext(repoRoot) {
+  const normalizedRepoRoot = normalizeRepoRoot(repoRoot);
+  if (!normalizedRepoRoot) return;
+  if (!state.initialized || normalizeRepoRoot(state.repoRoot) !== normalizedRepoRoot) {
+    await initTaskClaims({ repoRoot: normalizedRepoRoot });
+  }
+}
+
 // ── In-process mutex ─────────────────────────────────────────────────────────
 // Serializes all load→modify→save cycles on the claims registry to prevent
 // concurrent async operations from clobbering each other's writes.
@@ -437,6 +450,25 @@ function isProcessAlive(pid) {
   }
 }
 
+async function noteClaimOwnerPresence(instanceId, metadata = {}, source = "task-claim") {
+  const normalizedInstanceId = String(instanceId || "").trim();
+  if (!normalizedInstanceId) return;
+  const pid = Number(metadata?.pid);
+  try {
+    const presence = {
+      ...(buildLocalPresence() || {}),
+      instance_id: normalizedInstanceId,
+      host: metadata?.host || os.hostname(),
+      pid: Number.isFinite(pid) && pid > 0 ? pid : process.pid,
+    };
+    if (presence?.instance_id) {
+      await notePresence(presence, { source });
+    }
+  } catch (err) {
+    console.warn(`[task-claims] presence note warning for ${normalizedInstanceId}: ${err?.message || err}`);
+  }
+}
+
 function shouldTreatClaimAsStale(claim, ownerStaleTtlMs) {
   if (!claim || !claim.instance_id) {
     return { stale: false, reason: null };
@@ -645,6 +677,7 @@ function resolveDuplicateClaim(existingClaim, newClaim, opts = {}) {
  * @returns {Promise<object>} { success, token, claim?, error?, resolution? }
  */
 export async function claimTask(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   return withRegistryLock(() => _claimTaskInner(opts));
 }
@@ -805,6 +838,8 @@ async function _claimTaskInner(opts) {
       return { success: false, error: sharedSync.error };
     }
 
+    await noteClaimOwnerPresence(instanceId, claimMetadata, "task-claim");
+
     return { success: true, token: claimToken, claim: newClaim };
   }
 
@@ -837,6 +872,8 @@ async function _claimTaskInner(opts) {
     if (!sharedSync.success) {
       return { success: false, error: sharedSync.error };
     }
+
+    await noteClaimOwnerPresence(instanceId, claimMetadata, "task-claim-override");
 
     return {
       success: true,
@@ -876,6 +913,8 @@ async function _claimTaskInner(opts) {
     if (!sharedSync.success) {
       return { success: false, error: sharedSync.error };
     }
+
+    await noteClaimOwnerPresence(instanceId, claimMetadata, "task-claim-override");
 
     return {
       success: true,
@@ -922,6 +961,7 @@ async function _claimTaskInner(opts) {
  * @returns {Promise<object>} { success, error? }
  */
 export async function releaseTask(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   return withRegistryLock(() => _releaseTaskInner(opts));
 }
@@ -1008,6 +1048,7 @@ async function _releaseTaskInner(opts) {
  * @returns {Promise<object>} { success, claim?, error? }
  */
 export async function renewClaim(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   return withRegistryLock(() => _renewClaimInner(opts));
 }
@@ -1056,10 +1097,7 @@ async function _renewClaimInner(opts) {
   // Refresh our own presence so shouldTreatClaimAsStale() continues to
   // see this instance as active between fleet-sync intervals.
   try {
-    const selfPresence = buildLocalPresence();
-    if (selfPresence?.instance_id) {
-      await notePresence(selfPresence, { source: "claim-renew" });
-    }
+    await noteClaimOwnerPresence(instanceId, claim.metadata || {}, "claim-renew");
   } catch {
     /* best-effort — don't fail the renewal for a presence write error */
   }
@@ -1123,7 +1161,8 @@ async function _renewClaimInner(opts) {
  * @param {string} taskId - Task ID
  * @returns {Promise<object|null>} Claim object or null
  */
-export async function getClaim(taskId) {
+export async function getClaim(taskId, opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   const registry = await loadClaimsRegistry();
   return registry.claims[taskId] || null;
@@ -1138,6 +1177,7 @@ export async function getClaim(taskId) {
  * @returns {Promise<Array<object>>} Array of claim objects
  */
 export async function listClaims(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   const {
     instanceId,
@@ -1173,9 +1213,10 @@ export async function listClaims(opts = {}) {
  * @param {string} taskId - Task ID
  * @returns {Promise<boolean>} True if claimed (and not expired)
  */
-export async function isTaskClaimed(taskId) {
+export async function isTaskClaimed(taskId, opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
-  const claim = await getClaim(taskId);
+  const claim = await getClaim(taskId, opts);
   if (!claim) return false;
   return !isClaimExpired(claim);
 }
@@ -1185,7 +1226,8 @@ export async function isTaskClaimed(taskId) {
  *
  * @returns {Promise<object>} Statistics object
  */
-export async function getClaimStats() {
+export async function getClaimStats(opts = {}) {
+  await ensureRepoContext(opts.repoRoot);
   ensureInitialized();
   const registry = await loadClaimsRegistry();
   const now = new Date();

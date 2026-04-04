@@ -147,6 +147,9 @@ export function resolveTrustedAuthorList(value, options = {}) {
 }
 
 function resolveConfigDir(repoRoot) {
+  if (process.env.BOSUN_CONFIG_PATH) {
+    return dirname(resolve(process.env.BOSUN_CONFIG_PATH));
+  }
   // 1. Explicit env override (BOSUN_HOME supersedes BOSUN_DIR; both are aliases)
   if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
@@ -409,6 +412,18 @@ function validateKanbanBackendConfig({ kanbanBackend, kanban, jira, repoMirror }
 }
 
 function loadConfigFile(configDir) {
+  const explicitConfigPath = process.env.BOSUN_CONFIG_PATH ? resolve(process.env.BOSUN_CONFIG_PATH) : "";
+  if (explicitConfigPath) {
+    if (!existsSync(explicitConfigPath)) {
+      return { path: explicitConfigPath, data: null };
+    }
+    try {
+      const raw = JSON.parse(readFileSync(explicitConfigPath, "utf8"));
+      return { path: explicitConfigPath, data: raw };
+    } catch {
+      return { path: explicitConfigPath, data: null, error: "invalid-json" };
+    }
+  }
   for (const name of CONFIG_FILES) {
     const p = resolve(configDir, name);
     if (!existsSync(p)) continue;
@@ -2378,6 +2393,11 @@ export function loadConfig(argv = process.argv, options = {}) {
         ? harnessValidationModeRaw
         : "report",
     }),
+    primaryExecutor: String(harnessData.primaryExecutor ?? "").trim() || "",
+    routingMode: String(harnessData.routingMode ?? providersData.routingMode ?? "default-only").trim().toLowerCase() || "default-only",
+    executors: Array.isArray(harnessData.executors)
+      ? harnessData.executors.map((entry) => ({ ...(entry && typeof entry === "object" ? entry : {}) }))
+      : [],
   });
   const providers = Object.freeze({
     ...(providersData || {}),

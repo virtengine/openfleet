@@ -26,10 +26,90 @@ function toTrimmedString(value) {
   return String(value ?? "").trim();
 }
 
+function normalizeContinuationRole(role, fallback = "user") {
+  const normalized = toTrimmedString(role).toLowerCase();
+  if (["system", "user", "assistant", "tool", "developer"].includes(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
 function toPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? { ...value }
     : {};
+}
+
+function extractTextParts(parts = []) {
+  return (Array.isArray(parts) ? parts : [])
+    .filter((entry) => String(entry?.type || "").trim().toLowerCase() === "text")
+    .map((entry) => toTrimmedString(entry?.text || entry?.content || ""))
+    .filter(Boolean);
+}
+
+function countStructuredParts(parts = [], targetType = "") {
+  const normalizedTarget = toTrimmedString(targetType).toLowerCase();
+  if (!normalizedTarget) return 0;
+  return (Array.isArray(parts) ? parts : []).filter((entry) =>
+    String(entry?.type || "").trim().toLowerCase() === normalizedTarget).length;
+}
+
+function summarizeCompactedAssistantStep(message = {}) {
+  const parts = Array.isArray(message?.content) ? message.content : [];
+  const toolCallCount = Math.max(
+    Array.isArray(message?.toolCalls) ? message.toolCalls.length : 0,
+    countStructuredParts(parts, "tool_call"),
+  );
+  const toolResultCount = Math.max(
+    Array.isArray(message?.toolResults) ? message.toolResults.length : 0,
+    countStructuredParts(parts, "tool_result"),
+  );
+  const reasoningCount = Math.max(
+    Array.isArray(message?.reasoning) ? message.reasoning.length : 0,
+    countStructuredParts(parts, "reasoning"),
+  );
+  const summaryParts = [];
+  if (toolCallCount > 0) {
+    summaryParts.push(`${toolCallCount} tool call${toolCallCount === 1 ? "" : "s"}`);
+  }
+  if (toolResultCount > 0) {
+    summaryParts.push(`${toolResultCount} tool result${toolResultCount === 1 ? "" : "s"}`);
+  }
+  if (reasoningCount > 0) {
+    summaryParts.push(`${reasoningCount} reasoning step${reasoningCount === 1 ? "" : "s"}`);
+  }
+  if (!summaryParts.length) return "";
+  return `Completed prior step using ${summaryParts.join(", ")}.`;
+}
+
+function compactContinuationMessage(message = {}) {
+  if (!message || typeof message !== "object") return null;
+  const role = normalizeContinuationRole(message.role, "user");
+  if (role === "tool") return null;
+  const content = Array.isArray(message.content) ? message.content : [];
+  const textCandidates = [
+    toTrimmedString(message.text),
+    extractTextParts(content).join("\n").trim(),
+  ].filter(Boolean);
+  let text = textCandidates[0] || "";
+  if (!text && role === "assistant") {
+    text = summarizeCompactedAssistantStep(message);
+  }
+  if (!text) return null;
+  const next = cloneValue(message);
+  next.role = role;
+  next.text = text;
+  next.content = [{ type: "text", text }];
+  delete next.toolCalls;
+  delete next.toolResults;
+  delete next.reasoning;
+  return next;
+}
+
+export function buildCompactedContinuationHistory(messages = []) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((message) => compactContinuationMessage(message))
+    .filter(Boolean);
 }
 
 function createEventEmitter(hooks = []) {
@@ -494,7 +574,7 @@ export function createProviderSession(providerId = null, options = {}) {
         && !finalError
         && !["failed", "error"].includes(toTrimmedString(normalized.status).toLowerCase());
       const finalMessages = workingMessages.length > 0 ? workingMessages : buildAssistantMessagesFromResult(normalized, 0);
-      messageHistory = finalMessages.map((entry) => cloneValue(entry));
+      messageHistory = buildCompactedContinuationHistory(finalMessages);
       activeModel = normalized.model || lastPayload.model || activeModel;
       activeSessionId = normalized.sessionId || lastPayload.sessionId || activeSessionId;
       activeThreadId = normalized.threadId || lastPayload.threadId || activeThreadId || activeSessionId;

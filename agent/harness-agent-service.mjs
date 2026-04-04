@@ -122,6 +122,19 @@ function normalizeEphemeralLaunchOptions(input = {}) {
   return normalized;
 }
 
+function normalizePoolLaunchOptions(input = {}) {
+  const normalized = { ...input };
+  if (
+    normalized.env
+    && typeof normalized.env === "object"
+    && !Array.isArray(normalized.env)
+    && (!normalized.envOverrides || typeof normalized.envOverrides !== "object")
+  ) {
+    normalized.envOverrides = { ...normalized.env };
+  }
+  return normalized;
+}
+
 function normalizeAgentPool(pool = {}) {
   const hasInjectedPool = pool && typeof pool === "object" && Object.keys(pool).length > 0;
   return {
@@ -649,15 +662,16 @@ export function createHarnessAgentService(options = {}) {
     },
 
     async runTask(prompt, input = {}) {
-      const cwd = input.cwd || process.cwd();
-      const timeoutMs = Number(input.timeoutMs || input.timeout || 60 * 60 * 1000);
-      const taskKey = input.taskKey || null;
+      const normalizedInput = normalizePoolLaunchOptions(input);
+      const cwd = normalizedInput.cwd || process.cwd();
+      const timeoutMs = Number(normalizedInput.timeoutMs || normalizedInput.timeout || 60 * 60 * 1000);
+      const taskKey = normalizedInput.taskKey || null;
       const launchOptions = {
-        ...input,
+        ...normalizedInput,
         timeoutMs,
       };
 
-      if (input.autoRecover !== false && typeof agentPool.execWithRetry === "function") {
+      if (normalizedInput.autoRecover !== false && typeof agentPool.execWithRetry === "function") {
         return await agentPool.execWithRetry(prompt, launchOptions);
       }
       if (taskKey && typeof agentPool.launchOrResumeThread === "function") {
@@ -684,22 +698,23 @@ export function createHarnessAgentService(options = {}) {
 
     async execWithRetry(prompt, input = {}) {
       if (typeof agentPool.execWithRetry === "function") {
-        return await agentPool.execWithRetry(prompt, input);
+        return await agentPool.execWithRetry(prompt, normalizePoolLaunchOptions(input));
       }
       return await this.runTask(prompt, { ...input, autoRecover: false });
     },
 
     async launchEphemeralThread(prompt, cwd, timeoutMs, input = {}) {
+      const normalizedInput = normalizePoolLaunchOptions(input);
       if (typeof agentPool.launchEphemeralThread === "function") {
         return await agentPool.launchEphemeralThread(
           prompt,
           cwd,
           timeoutMs,
-          normalizeEphemeralLaunchOptions(input),
+          normalizeEphemeralLaunchOptions(normalizedInput),
         );
       }
       return await this.runTask(prompt, {
-        ...input,
+        ...normalizedInput,
         cwd,
         timeoutMs,
         autoRecover: false,
@@ -707,29 +722,31 @@ export function createHarnessAgentService(options = {}) {
     },
 
     async launchOrResumeThread(prompt, cwd, timeoutMs, input = {}) {
+      const normalizedInput = normalizePoolLaunchOptions(input);
       if (typeof agentPool.launchOrResumeThread === "function") {
-        return await agentPool.launchOrResumeThread(prompt, cwd, timeoutMs, input);
+        return await agentPool.launchOrResumeThread(prompt, cwd, timeoutMs, normalizedInput);
       }
       return await this.runTask(prompt, {
-        ...input,
+        ...normalizedInput,
         cwd,
         timeoutMs,
       });
     },
 
     async continueSession(sessionId, prompt, options = {}) {
+      const normalizedOptions = normalizePoolLaunchOptions(options);
       const normalizedSessionId = toTrimmedString(sessionId);
       if (normalizedSessionId && interactiveSessions.has(normalizedSessionId)) {
         ensureInteractiveSession({
           ...interactiveSessions.get(normalizedSessionId),
-          ...options,
+          ...normalizedOptions,
           sessionId: normalizedSessionId,
         });
         return await sessionManager.continueSession(normalizedSessionId, {
-          action: options.action || "continue",
-          lifecycleState: options.lifecycleState || "running",
+          action: normalizedOptions.action || "continue",
+          lifecycleState: normalizedOptions.lifecycleState || "running",
           runRequest: {
-            ...options,
+            ...normalizedOptions,
             sessionId: normalizedSessionId,
             prompt,
           },
@@ -741,10 +758,10 @@ export function createHarnessAgentService(options = {}) {
         && sessionManager.getSessionController(normalizedSessionId)
       ) {
         return await sessionManager.continueSession(normalizedSessionId, {
-          action: options.action || "continue",
-          lifecycleState: options.lifecycleState || "running",
+          action: normalizedOptions.action || "continue",
+          lifecycleState: normalizedOptions.lifecycleState || "running",
           runRequest: {
-            ...options,
+            ...normalizedOptions,
             sessionId: normalizedSessionId,
             prompt,
           },
@@ -754,14 +771,14 @@ export function createHarnessAgentService(options = {}) {
         typeof rawAgentPool.continueSession !== "function"
         && typeof rawAgentPool.launchEphemeralThread === "function"
       ) {
-        const cwd = options.cwd || process.cwd();
-        const timeoutMs = Number(options.timeoutMs || options.timeout || 60 * 60 * 1000);
+        const cwd = normalizedOptions.cwd || process.cwd();
+        const timeoutMs = Number(normalizedOptions.timeoutMs || normalizedOptions.timeout || 60 * 60 * 1000);
         return await rawAgentPool.launchEphemeralThread(prompt, cwd, timeoutMs, normalizeEphemeralLaunchOptions({
-          ...options,
+          ...normalizedOptions,
           timeoutMs,
         }));
       }
-      return await agentPool.continueSession(normalizedSessionId, prompt, options);
+      return await agentPool.continueSession(normalizedSessionId, prompt, normalizedOptions);
     },
 
     async continueSessionPrompt(sessionId, prompt, options = {}) {

@@ -154,6 +154,53 @@
           "type": "string",
           "description": "Path to the internal harness profile source file. Supports JSON or markdown fenced JSON."
         },
+        "primaryExecutor": {
+          "type": "string",
+          "description": "Named Harness executor ID to use as the default interactive/runtime selection."
+        },
+        "routingMode": {
+          "type": "string",
+          "enum": ["default-only", "fallback", "spread"],
+          "default": "default-only",
+          "description": "How the Harness runtime should route across named executors."
+        },
+        "executors": {
+          "type": "array",
+          "description": "Named Harness executor instances. These are the Bosun-native runtime selections exposed to chat, workflow, TUI, web UI, and Telegram when Harness is primary.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "providerId"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "providerId": {
+                "type": "string",
+                "enum": ["openai-responses", "openai-codex-subscription", "azure-openai-responses", "anthropic-messages", "claude-subscription-shim", "openai-compatible", "ollama", "copilot-oauth"]
+              },
+              "enabled": { "type": "boolean", "default": true },
+              "defaultModel": { "type": "string" },
+              "models": {
+                "oneOf": [
+                  { "type": "array", "items": { "type": "string" } },
+                  { "type": "string" }
+                ]
+              },
+              "authMode": { "type": "string" },
+              "endpoint": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "deployment": { "type": "string" },
+              "apiVersion": { "type": "string" },
+              "workspace": { "type": "string" },
+              "organization": { "type": "string" },
+              "project": { "type": "string" },
+              "apiStyle": {
+                "type": "string",
+                "enum": ["provider-default", "responses", "chat-completions"]
+              }
+            }
+          }
+        },
         "validation": {
           "type": "object",
           "additionalProperties": true,

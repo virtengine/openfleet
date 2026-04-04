@@ -987,7 +987,12 @@ registerNodeType("trigger.task_available", {
       const claimsMod = await ensureTaskClaimsMod();
       await ensureTaskClaimsInitialized(ctx, claimsMod);
       if (typeof claimsMod.listClaims === "function") {
-        const activeClaims = await claimsMod.listClaims();
+        const repoRoot = resolve(pickTaskString(
+          ctx?.data?.repoRoot,
+          ctx?.data?.workspace,
+          process.cwd(),
+        ));
+        const activeClaims = await claimsMod.listClaims({ repoRoot });
         if (Array.isArray(activeClaims) && activeClaims.length > 0) {
           const claimedTaskIds = new Set(
             activeClaims

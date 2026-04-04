@@ -100,6 +100,14 @@ const AGENT_ICONS = {
   "codex-sdk": "zap",
   "copilot-sdk": "bot",
   "claude-sdk": "cpu",
+  "azure-openai-responses": "globe",
+  "openai-responses": "zap",
+  "openai-codex-subscription": "zap",
+  "anthropic-messages": "cpu",
+  "claude-subscription-shim": "cpu",
+  "openai-compatible": "monitor",
+  "ollama": "monitor",
+  "copilot-oauth": "bot",
 };
 
 // Mirrors EXECUTOR_MODEL_REGISTRY in task-complexity.mjs — keep in sync
@@ -145,6 +153,18 @@ const EXECUTOR_DISPLAY_NAMES = {
   "copilot-sdk": "Copilot",
   "claude-sdk":  "Claude",
 };
+
+function resolveAgentIconKey(agent = {}) {
+  return agent?.id || agent?.providerId || agent?.provider || "";
+}
+
+function resolveAgentSubtitle(agent = {}) {
+  const explicit = String(agent?.subtitle || "").trim();
+  if (explicit) return explicit;
+  const providerLabel = String(agent?.providerLabel || agent?.provider || agent?.providerId || "").trim();
+  const modelLabel = String(agent?.defaultModel || agent?.modelCatalog?.defaultModel || "").trim();
+  return [providerLabel, modelLabel].filter(Boolean).join(" · ");
+}
 
 /**
  * Convert a model string like "gpt-5.3-codex" → "GPT-5.3 Codex"
@@ -805,7 +825,6 @@ export function AgentPicker() {
   const currentName = EXECUTOR_DISPLAY_NAMES[current]
     || (currentAgent ? String(currentAgent.name || "").replace(/\s*\(busy\)\s*$/i, "").trim() : "")
     || "Executor";
-  const providerColor = currentAgent ? (PROVIDER_COLORS[currentAgent.provider?.toLowerCase()] || "#666") : "#666";
 
   return html`
     <${Tooltip} title="Select AI executor" arrow>
@@ -815,7 +834,7 @@ export function AgentPicker() {
         variant="outlined"
         onClick=${handleOpen}
         disabled=${loading}
-        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon(AGENT_ICONS[current] || "bot")}</span>`}
+        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon(AGENT_ICONS[resolveAgentIconKey(currentAgent || { id: current })] || "bot")}</span>`}
         sx=${{
           flexShrink: 0,
           cursor: "pointer",
@@ -844,8 +863,8 @@ export function AgentPicker() {
         const rawName = EXECUTOR_DISPLAY_NAMES[agent.id] || agent.name || "";
         const name = String(rawName).replace(/\s*\(busy\)\s*$/i, "").trim() || "Executor";
         const isActive = agent.id === current;
-        const pColor = PROVIDER_COLORS[agent.provider?.toLowerCase()] || "#666";
         const statusColor = agent.busy ? "#eab308" : agent.available ? "#22c55e" : "#6b7280";
+        const secondary = resolveAgentSubtitle(agent);
 
         return html`
           <${MenuItem}
@@ -858,12 +877,12 @@ export function AgentPicker() {
                 width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center",
                 borderRadius: "6px", bgcolor: "rgba(255,255,255,0.04)", fontSize: 18,
               }}>
-                ${resolveIcon(AGENT_ICONS[agent.id] || "bot")}
+                ${resolveIcon(AGENT_ICONS[resolveAgentIconKey(agent)] || "bot")}
               </${Box}>
             </${ListItemIcon}>
             <${ListItemText}
               primary=${name}
-              secondary=${agent.provider || ""}
+              secondary=${secondary || agent.provider || ""}
               primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
               secondaryTypographyProps=${{ fontSize: 11, color: "var(--tg-theme-hint-color, #888)" }}
             />

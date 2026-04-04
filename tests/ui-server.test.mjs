@@ -43,7 +43,9 @@ function sanitizedGitEnv(extra = {}) {
 
 async function settleUiRuntimeCleanup() {
   const mod = await import("../server/ui-server.mjs");
+  const taskStore = await import("../task/task-store.mjs");
   mod.stopTelegramUiServer();
+  await taskStore._resetForTests();
   resetSessionTrackerSingleton({ persistDir: null });
   _resetRuntimeAccumulatorForTests();
   resetStateLedgerCache();
@@ -215,6 +217,7 @@ describeUiServer("ui-server mini app", () => {
   }
 
   it("exports mini app server helpers", async () => {
+    vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
     expect(typeof mod.startTelegramUiServer).toBe("function");
     expect(typeof mod.stopTelegramUiServer).toBe("function");
@@ -240,6 +243,7 @@ describeUiServer("ui-server mini app", () => {
       "utf8",
     );
 
+    vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -441,6 +445,7 @@ describeUiServer("ui-server mini app", () => {
   });
 
   it("getLocalLanIp returns a string", async () => {
+    vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
@@ -449,6 +454,7 @@ describeUiServer("ui-server mini app", () => {
 
   it("preserves launch query params when exchanging session token", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -475,6 +481,7 @@ describeUiServer("ui-server mini app", () => {
   it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_TOKEN = "a".repeat(64);
+    vi.resetModules();
     vi.resetModules();
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
@@ -1045,6 +1052,200 @@ describeUiServer("ui-server mini app", () => {
       else process.env.BOSUN_PROVIDER_OLLAMA_ENABLED = savedOllamaEnabled;
       if (savedOllamaBaseUrl === undefined) delete process.env.BOSUN_PROVIDER_OLLAMA_BASE_URL;
       else process.env.BOSUN_PROVIDER_OLLAMA_BASE_URL = savedOllamaBaseUrl;
+    }
+  }, 15000);
+
+  it("surfaces named harness executors in chat agent inventory and persists executor fabric updates", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-executors-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(configPath, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      agentRuntime: "harness",
+      harness: {
+        primaryExecutor: "azure-us",
+        routingMode: "spread",
+        executors: [
+          {
+            id: "azure-us",
+            name: "Azure US",
+            providerId: "azure-openai-responses",
+            enabled: true,
+            defaultModel: "gpt-5.4",
+            models: ["gpt-5.4", "gpt-5.4-mini"],
+            endpoint: "https://azure-us.example.test",
+            deployment: "gpt-5-prod",
+            apiVersion: "2025-03-01-preview",
+          },
+          {
+            id: "codex-oauth",
+            name: "Codex OAuth",
+            providerId: "openai-codex-subscription",
+            enabled: true,
+            defaultModel: "gpt-5.4",
+            workspace: "chatgpt-team-alpha",
+          },
+        ],
+      },
+      providers: {
+        defaultProvider: "openai-responses",
+        routingMode: "fallback",
+      },
+    }, null, 2));
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const [executorsResponse, agentsResponse] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/harness/executors`),
+        fetch(`http://127.0.0.1:${port}/api/agents/available`),
+      ]);
+      const executorsJson = await executorsResponse.json();
+      const agentsJson = await agentsResponse.json();
+
+      expect(executorsResponse.status).toBe(200);
+      expect(executorsJson.ok).toBe(true);
+      expect(executorsJson.primaryExecutorId).toBe("azure-us");
+      expect(executorsJson.routingMode).toBe("spread");
+      expect(executorsJson.executors.map((entry) => entry.id)).toEqual(expect.arrayContaining(["azure-us", "codex-oauth"]));
+
+      expect(agentsResponse.status).toBe(200);
+      expect(agentsJson.ok).toBe(true);
+      expect(agentsJson.active).toBe("azure-us");
+      expect(agentsJson.agents.map((entry) => entry.id)).toEqual(["azure-us", "codex-oauth"]);
+      expect(agentsJson.agents.find((entry) => entry.id === "azure-us")).toEqual(expect.objectContaining({
+        providerId: "azure-openai-responses",
+        providerLabel: "Azure OpenAI Responses",
+        runtimeKind: "harness",
+        models: ["gpt-5.4", "gpt-5.4-mini"],
+        subtitle: "Azure OpenAI Responses · gpt-5.4 · Responses API",
+      }));
+
+      const updateResponse = await fetch(`http://127.0.0.1:${port}/api/harness/executors`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          primaryExecutor: "local-openai",
+          routingMode: "fallback",
+          executors: [
+            {
+              id: "local-openai",
+              name: "Local OpenAI Compatible",
+              providerId: "openai-compatible",
+              enabled: true,
+              defaultModel: "qwen2.5-coder:latest",
+              models: ["qwen2.5-coder:latest", "llama3.3:70b"],
+              baseUrl: "http://127.0.0.1:4000/v1",
+              apiStyle: "chat-completions",
+            },
+          ],
+        }),
+      });
+      const updateJson = await updateResponse.json();
+      expect(updateResponse.status).toBe(200);
+      expect(updateJson.ok).toBe(true);
+      expect(updateJson.primaryExecutorId).toBe("local-openai");
+      expect(updateJson.executors.map((entry) => entry.id)).toEqual(["local-openai"]);
+
+      const savedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(savedConfig.harness).toEqual(expect.objectContaining({
+        primaryExecutor: "local-openai",
+        routingMode: "fallback",
+        executors: [
+          expect.objectContaining({
+            id: "local-openai",
+            providerId: "openai-compatible",
+            baseUrl: "http://127.0.0.1:4000/v1",
+            apiStyle: "chat-completions",
+          }),
+        ],
+      }));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (savedConfigPath == null) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
+      await removeDirWithRetries(tmpDir);
+    }
+  }, 15000);
+
+  it("prefers harness-native provider inventory over legacy SDK pool profiles when Harness is primary", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-harness-provider-chat-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const savedConfigPath = process.env.BOSUN_CONFIG_PATH;
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(configPath, JSON.stringify({
+      $schema: "./bosun.schema.json",
+      agentRuntime: "harness",
+      harness: {
+        enabled: true,
+        executors: [],
+      },
+      executorConfig: {
+        executors: [
+          {
+            name: "primary-codex-us",
+            executor: "CODEX",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["gpt-5.3-codex"],
+          },
+          {
+            name: "copilot-backup",
+            executor: "COPILOT",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["claude-opus-4.6"],
+          },
+        ],
+      },
+      providers: {
+        defaultProvider: "azure-openai-responses",
+        azureOpenAi: {
+          enabled: true,
+          defaultModel: "gpt-5.4-mini",
+          endpoint: "https://azure-us.example.test",
+          deployment: "gpt-5-prod",
+          apiVersion: "2025-03-01-preview",
+        },
+        openaiResponses: {
+          enabled: true,
+          defaultModel: "gpt-5.4",
+        },
+      },
+    }, null, 2));
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    try {
+      const port = server.address().port;
+      const response = await fetch(`http://127.0.0.1:${port}/api/agents/available`);
+      const json = await response.json();
+      const agentIds = json.agents.map((entry) => entry.id);
+
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(agentIds).toContain("openai-responses");
+      expect(agentIds).not.toContain("primary-codex-us");
+      expect(agentIds).not.toContain("copilot-backup");
+      expect(agentIds.every((id) => !["primary-codex-us", "copilot-backup"].includes(id))).toBe(true);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (savedConfigPath === undefined) delete process.env.BOSUN_CONFIG_PATH;
+      else process.env.BOSUN_CONFIG_PATH = savedConfigPath;
     }
   }, 15000);
 

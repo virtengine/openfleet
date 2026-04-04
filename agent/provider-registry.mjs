@@ -15,6 +15,10 @@ import {
   resolveProviderAdapterId,
 } from "./providers/index.mjs";
 
+function toTrimmedString(value) {
+  return String(value ?? "").trim();
+}
+
 function envFlagEnabled(value) {
   const raw = String(value ?? "").trim().toLowerCase();
   return ["1", "true", "yes", "on", "y"].includes(raw);
@@ -198,12 +202,13 @@ function buildConfiguredProviders(options = {}) {
       || adapter.displayName
       || adapter.name
       || providerId;
+    const selectionId = String(entry?.id || entry?.name || "").trim() || `${providerId}-${index + 1}`;
     return buildProviderEntry(
       providerId,
       definition,
       adapter,
       {
-        id: name || `${providerId}-${index + 1}`,
+        id: selectionId,
         name,
         provider: definition?.provider || adapter.provider || String(entry?.executor || "").toUpperCase() || providerId,
         executor: definition?.executor || String(entry?.executor || "").toUpperCase() || adapter.provider || providerId,

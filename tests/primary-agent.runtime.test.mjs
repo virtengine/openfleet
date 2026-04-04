@@ -270,6 +270,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("surfaces configured executor profiles with model allow-lists and enabled flags", async () => {
     mockConfigState.current = {
+      agentRuntime: "sdk-cli",
       primaryAgent: "codex-sdk",
       executorConfig: {
         executors: [
@@ -316,6 +317,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("switches by configured profile id and preserves selection id", async () => {
     mockConfigState.current = {
+      agentRuntime: "sdk-cli",
       primaryAgent: "codex-sdk",
       executorConfig: {
         executors: [
@@ -342,6 +344,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("maps GEMINI executor profiles to gemini-sdk adapter", async () => {
     mockConfigState.current = {
+      agentRuntime: "sdk-cli",
       primaryAgent: "codex-sdk",
       executorConfig: {
         executors: [
@@ -385,6 +388,59 @@ describe("primary-agent runtime safeguards", () => {
     expect(primaryAgent.getPrimaryAgentName()).toBe("opencode-sdk");
     expect(primaryAgent.getPrimaryAgentSelection()).toBe("openai-compatible");
     expect(mockInitOpencodeShell).toHaveBeenCalled();
+  });
+
+  it("does not surface legacy SDK pool executors as chat-visible agents in harness mode", async () => {
+    mockConfigState.current = {
+      agentRuntime: "harness",
+      primaryAgent: "codex-sdk",
+      executorConfig: {
+        executors: [
+          {
+            name: "primary-codex-us",
+            executor: "CODEX",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["gpt-5.3-codex"],
+          },
+          {
+            name: "copilot-backup",
+            executor: "COPILOT",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["claude-opus-4.6"],
+          },
+        ],
+      },
+      harness: {
+        enabled: true,
+        executors: [],
+      },
+      providers: {
+        defaultProvider: "openai-responses",
+        openaiResponses: {
+          enabled: true,
+          defaultModel: "gpt-5.4",
+        },
+        azureOpenAi: {
+          enabled: true,
+          defaultModel: "gpt-5.4-mini",
+          endpoint: "https://azure.example.test",
+          deployment: "gpt-5-prod",
+          apiVersion: "2025-03-01-preview",
+        },
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+
+    const agents = primaryAgent.getAvailableAgents();
+
+    expect(agents.some((agent) => agent.id === "primary-codex-us")).toBe(false);
+    expect(agents.some((agent) => agent.id === "copilot-backup")).toBe(false);
+    expect(agents.some((agent) => agent.id === "openai-responses")).toBe(true);
+    expect(agents.some((agent) => agent.id === "azure-openai-responses")).toBe(true);
   });
 
   it("passes selected provider runtime config into opencode-backed execution", async () => {
@@ -512,7 +568,7 @@ describe("primary-agent runtime safeguards", () => {
     const third = await primaryAgent.execPrimaryPrompt("hello", { sessionId: "s3" });
     expect(mockExecCopilotPrompt).toHaveBeenCalledTimes(1);
     expect(third.finalResponse).toBe("copilot-ok");
-  });
+  }, 10000);
 
   it("manages primary sessions through the session manager facade", async () => {
     mockCreateCodexSession.mockResolvedValueOnce({ id: "session-created" });

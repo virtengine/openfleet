@@ -11,7 +11,7 @@
  * @module session-tracker
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,8 @@ import { addCompletedSession } from "./runtime-accumulator.mjs";
 import { recordHarnessTelemetryEvent } from "./session-telemetry.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const requireModule = createRequire(import.meta.url);
+const { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync } = requireModule("node:fs");
 const WORKSPACE_MIRROR_MARKER = `${sep}.bosun${sep}workspaces${sep}`.toLowerCase();
 
 function resolveSessionTrackerSourceRepoRoot(startDir = __dirname) {
@@ -268,6 +270,26 @@ function normalizeSessionMetadata(metadata = {}) {
   normalized.delegationDepth = Number.isFinite(delegationDepth)
     ? Math.max(0, Math.trunc(delegationDepth))
     : 0;
+  if (Array.isArray(source.queuedFollowups)) {
+    normalized.queuedFollowups = source.queuedFollowups
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const content = String(entry.content ?? entry.message ?? "").trim();
+        const attachments = Array.isArray(entry.attachments) ? entry.attachments.filter(Boolean).slice(0, 20) : [];
+        if (!content && attachments.length === 0) return null;
+        return {
+          id: String(entry.id || `queued-${randomToken(10)}`).trim(),
+          content: content.slice(0, MAX_MESSAGE_CHARS),
+          queuedAt: String(entry.queuedAt || entry.createdAt || new Date().toISOString()).trim() || new Date().toISOString(),
+          deliveryMode: String(entry.deliveryMode || entry.mode || "queue").trim() || "queue",
+          agent: String(entry.agent || "").trim() || null,
+          model: String(entry.model || "").trim() || null,
+          attachments,
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 50);
+  }
   return normalized;
 }
 
@@ -1763,6 +1785,76 @@ export class SessionTracker {
     this.#markDirty(sessionId);
     persistSessionRecordToStateLedger(session);
     emitSessionStateEvent(session, "session-status", { status: session.status });
+  }
+
+  updateSessionMetadata(sessionId, updater) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return null;
+    const currentMetadata =
+      session.metadata && typeof session.metadata === "object" && !Array.isArray(session.metadata)
+        ? { ...session.metadata }
+        : {};
+    const nextValue = typeof updater === "function"
+      ? updater(currentMetadata)
+      : { ...currentMetadata, ...(updater && typeof updater === "object" ? updater : {}) };
+    const nextMetadata = normalizeSessionMetadata(nextValue || {});
+    session.metadata = nextMetadata;
+    session.lastActivityAt = Date.now();
+    session.lastActiveAt = new Date().toISOString();
+    this.#scheduleDerivedStateRefresh(session, { force: true });
+    this.#markDirty(sessionId);
+    persistSessionRecordToStateLedger(session);
+    emitSessionStateEvent(session, "session-metadata", { metadata: nextMetadata });
+    return nextMetadata;
+  }
+
+  enqueueFollowup(sessionId, payload = {}) {
+    const content = String(payload?.content ?? payload?.message ?? "").trim();
+    const attachments = Array.isArray(payload?.attachments) ? payload.attachments.filter(Boolean).slice(0, 20) : [];
+    if (!content && attachments.length === 0) return null;
+    let queuedEntry = null;
+    const metadata = this.updateSessionMetadata(sessionId, (currentMetadata = {}) => {
+      const queuedFollowups = Array.isArray(currentMetadata.queuedFollowups)
+        ? currentMetadata.queuedFollowups.slice()
+        : [];
+        queuedEntry = {
+          id: `queued-${Date.now()}-${randomToken(6)}`,
+          content: content.slice(0, MAX_MESSAGE_CHARS),
+          queuedAt: new Date().toISOString(),
+          deliveryMode: String(payload?.deliveryMode || payload?.mode || "queue").trim() || "queue",
+          agent: String(payload?.agent || "").trim() || null,
+          model: String(payload?.model || "").trim() || null,
+          attachments,
+        };
+      queuedFollowups.push(queuedEntry);
+      return {
+        ...currentMetadata,
+        queuedFollowups,
+      };
+    });
+    if (!metadata || !queuedEntry) return null;
+    return {
+      entry: queuedEntry,
+      queuedFollowups: Array.isArray(metadata.queuedFollowups) ? metadata.queuedFollowups.slice() : [],
+    };
+  }
+
+  dequeueFollowup(sessionId) {
+    let dequeuedEntry = null;
+    const metadata = this.updateSessionMetadata(sessionId, (currentMetadata = {}) => {
+      const queuedFollowups = Array.isArray(currentMetadata.queuedFollowups)
+        ? currentMetadata.queuedFollowups.slice()
+        : [];
+      dequeuedEntry = queuedFollowups.shift() || null;
+      return {
+        ...currentMetadata,
+        queuedFollowups,
+      };
+    });
+    return {
+      entry: dequeuedEntry,
+      queuedFollowups: Array.isArray(metadata?.queuedFollowups) ? metadata.queuedFollowups.slice() : [],
+    };
   }
 
   /**

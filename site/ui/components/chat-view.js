@@ -12,6 +12,7 @@ import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { buildTraceTimelineBlocks } from "../modules/stream-timeline.js";
+import { buildChatTurnGroups } from "../modules/chat-turn-groups.js";
 import { showToast } from "../modules/state.js";
 import { formatRelative, truncate, formatBytes } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -848,6 +849,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   });
   const [editingMsgRef, setEditingMsgRef] = useState(null);
   const [editingText, setEditingText] = useState("");
+  const [expandedTurnKeys, setExpandedTurnKeys] = useState({});
   const messagesRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1025,17 +1027,17 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     statusText = paused ? "Stream paused" : "Ready";
   }
 
-  const renderItems = useMemo(() => {
+  const buildLinearRenderItems = useCallback((messageList = []) => {
     const items = [];
     let i = 0;
-    while (i < visibleMessages.length) {
-      const msg = visibleMessages[i];
+    while (i < messageList.length) {
+      const msg = messageList[i];
       if (isTraceEventMessage(msg)) {
         // Collect consecutive trace events; discard completely empty ones.
         const group = [];
         let groupKey = null;
-        while (i < visibleMessages.length && isTraceEventMessage(visibleMessages[i])) {
-          const m = visibleMessages[i];
+        while (i < messageList.length && isTraceEventMessage(messageList[i])) {
+          const m = messageList[i];
           if (messageText(m).trim()) {
             group.push(m);
             if (!groupKey) groupKey = m.id || m.timestamp || `trace-${i}`;
@@ -1064,7 +1066,17 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       }
     }
     return items;
-  }, [visibleMessages]);
+  }, []);
+
+  const renderItems = useMemo(
+    () => buildLinearRenderItems(visibleMessages),
+    [visibleMessages, buildLinearRenderItems],
+  );
+
+  const turnGroups = useMemo(() => {
+    if (activeFilters.length > 0) return [];
+    return buildChatTurnGroups(visibleMessages);
+  }, [visibleMessages, activeFilters.length]);
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
@@ -1168,6 +1180,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setVisibleCount(CHAT_PAGE_SIZE);
     setUnreadCount(0);
     setAutoScroll(true);
+    setExpandedTurnKeys({});
     topLoadArmedRef.current = true;
   }, [sessionId, filterKey]);
 
@@ -1436,6 +1449,28 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const clearFilters = useCallback(() => {
     setFilters({ tool: false, result: false, error: false });
   }, []);
+
+  const toggleTurnGroup = useCallback((groupKey) => {
+    setExpandedTurnKeys((prev) => ({
+      ...prev,
+      [groupKey]: !prev[groupKey],
+    }));
+  }, []);
+
+  const renderLinearItem = useCallback((item) => item.kind === "thinking-group"
+    ? html`<${ThinkingGroup}
+        key=${item.key}
+        msgs=${item.msgs}
+        isLatest=${!!item.isLatest}
+        isAgentActive=${statusState !== "idle" && statusState !== "paused"}
+        verbosity=${traceVerbosity}
+      />`
+    : html`<${ChatBubble}
+        key=${item.key}
+        msg=${item.msg}
+        embedded=${embedded}
+        isFinalModelResponse=${item.messageKey === latestModelMessageKey}
+      />`, [embedded, latestModelMessageKey, statusState, traceVerbosity]);
 
   const handleCopyStream = useCallback(() => {
     if (!sessionId) return;
@@ -1743,21 +1778,111 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </${Button}>
           </${Box}>
         `}
-        ${renderItems.map((item) => item.kind === "thinking-group"
-          ? html`<${ThinkingGroup}
-              key=${item.key}
-              msgs=${item.msgs}
-              isLatest=${!!item.isLatest}
-              isAgentActive=${statusState !== "idle" && statusState !== "paused"}
-              verbosity=${traceVerbosity}
-            />`
-          : html`<${ChatBubble}
-              key=${item.key}
-              msg=${item.msg}
-              embedded=${embedded}
-              isFinalModelResponse=${item.messageKey === latestModelMessageKey}
-            />`
-        )}
+        ${activeFilters.length > 0
+          ? renderItems.map((item) => renderLinearItem(item))
+          : turnGroups.map((group) => {
+              const expanded = group.isLatest || expandedTurnKeys[group.key] === true;
+              if (!expanded && group.collapsedByDefault) {
+                return html`
+                  <${Paper}
+                    key=${group.key}
+                    variant="outlined"
+                    onClick=${() => toggleTurnGroup(group.key)}
+                    sx=${{
+                      mb: 1,
+                      borderRadius: 2,
+                      overflow: 'hidden',
+                      cursor: 'pointer',
+                      borderStyle: 'dashed',
+                      bgcolor: 'rgba(15,23,42,0.025)',
+                      '&:hover': { bgcolor: 'rgba(15,23,42,0.04)' },
+                    }}
+                  >
+                    <${Box} sx=${{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.9, flexWrap: 'wrap' }}>
+                      <${Chip}
+                        label=${group.collapsedLabel}
+                        size="small"
+                        color="default"
+                        variant="outlined"
+                        sx=${{ height: 22, fontSize: '0.6875rem' }}
+                      />
+                      ${group.hiddenToolCount > 0
+                        ? html`<${Chip}
+                            label=${`${group.hiddenToolCount} hidden tool event${group.hiddenToolCount === 1 ? "" : "s"}`}
+                            size="small"
+                            color="info"
+                            variant="outlined"
+                            sx=${{ height: 20, fontSize: '0.625rem' }}
+                          />`
+                        : null}
+                      ${group.contextShredded
+                        ? html`<${Chip}
+                            label=${`Context shredded · ${group.hiddenTraceCount} hidden trace event${group.hiddenTraceCount === 1 ? "" : "s"}`}
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            sx=${{ height: 20, fontSize: '0.625rem' }}
+                          />`
+                        : null}
+                      <${Typography} variant="caption" color="text.secondary" sx=${{ ml: 'auto' }}>
+                        ▸
+                      </${Typography}>
+                    </${Box}>
+                    ${group.preview.length > 0
+                      ? html`
+                          <${Box} sx=${{ px: 1.25, pb: 1 }}>
+                            ${group.preview.map((entry) => html`
+                              <${Typography}
+                                key=${entry.id}
+                                variant="caption"
+                                color="text.secondary"
+                                sx=${{ display: 'block', lineHeight: 1.5 }}
+                              >
+                                <strong>${entry.role === "user" ? "You" : entry.role === "assistant" ? "Assistant" : entry.role}</strong>
+                                ${`: ${entry.text}`}
+                              </${Typography}>
+                            `)}
+                          </${Box}>
+                        `
+                      : null}
+                  </${Paper}>
+                `;
+              }
+              const groupItems = buildLinearRenderItems(group.messages);
+              return html`
+                <${Box} key=${group.key}>
+                  ${!group.isLatest && group.collapsedByDefault
+                    ? html`
+                        <${Box}
+                          sx=${{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 0.75,
+                            px: 0.25,
+                            pb: 0.75,
+                            color: 'text.secondary',
+                          }}
+                        >
+                          <${Button}
+                            size="small"
+                            variant="text"
+                            onClick=${() => toggleTurnGroup(group.key)}
+                            sx=${{ minWidth: 'auto', fontSize: '0.6875rem', textTransform: 'none' }}
+                          >
+                            ▾ ${group.collapsedLabel}
+                          </${Button}>
+                          ${group.hiddenToolCount > 0
+                            ? html`<${Typography} variant="caption" color="text.secondary">
+                                ${group.hiddenToolCount} tool event${group.hiddenToolCount === 1 ? "" : "s"} retained
+                              </${Typography}>`
+                            : null}
+                        </${Box}>
+                      `
+                    : null}
+                  ${groupItems.map((item) => renderLinearItem(item))}
+                </${Box}>
+              `;
+            })}
 
         ${/* Pending messages (optimistic rendering) — use .peek() to avoid
               subscribing ChatView to pendingMessages signal. Pending messages

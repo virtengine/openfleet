@@ -29,6 +29,7 @@ describe("agent configuration guide", () => {
 
     expect(guide.agentRuntime).toBe("harness");
     expect(guide.runtimeArchitecture.currentLabel).toBe("Harness");
+    expect(guide.providerFabric.title).toBe("Harness Executor Fabric");
     expect(guide.providerFabric.currentLabel).toContain("OpenAI Responses");
     expect(guide.providerFabric.currentLabel).toContain("Spread");
     expect(guide.providerFabric.items[0].statusLabel).toBe("connected");

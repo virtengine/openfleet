@@ -59,6 +59,38 @@ export function buildProviderKernelSettings(config = {}) {
   return flattened;
 }
 
+function resolveKernelProviderSettings(config = {}, providerId = "") {
+  const providers = config?.providers && typeof config.providers === "object"
+    ? config.providers
+    : {};
+  const normalizedProviderId = normalizeProviderDefinitionId(providerId, "") || "";
+  const providerConfigById = {
+    "openai-responses": providers.openaiResponses,
+    "openai-codex-subscription": providers.chatgptCodex,
+    "azure-openai": providers.azureOpenAi,
+    anthropic: providers.anthropic,
+    "claude-subscription-shim": providers.claudeSubscription,
+    "openai-compatible": providers.openaiCompatible,
+    ollama: providers.ollama,
+    "copilot-oauth": providers.copilotOAuth,
+  };
+  const providerConfig = providerConfigById[normalizedProviderId];
+  if (!providerConfig || typeof providerConfig !== "object") {
+    return {};
+  }
+  return {
+    defaultModel: providerConfig.defaultModel || null,
+    authMode: providerConfig.mode || providerConfig.authMode || null,
+    endpoint: providerConfig.endpoint || null,
+    baseUrl: providerConfig.baseUrl || null,
+    deployment: providerConfig.deployment || null,
+    apiVersion: providerConfig.apiVersion || null,
+    workspace: providerConfig.workspace || null,
+    organization: providerConfig.organization || null,
+    project: providerConfig.project || null,
+  };
+}
+
 function renderProviderMessage(message = {}) {
   const role = String(message?.role || "user").trim().toUpperCase() || "USER";
   const lines = [];
@@ -111,9 +143,11 @@ function createRegistryFactory(options = {}) {
     }
     const config = resolveKernelConfig(options);
     const harnessFabric = readHarnessExecutorFabric(config);
+    const agentRuntime = String(config?.agentRuntime || "").trim().toLowerCase();
+    const allowLegacyExecutorProfiles = agentRuntime === "sdk-cli";
     const configExecutors = harnessFabric.hasExplicitExecutors
       ? harnessFabric.explicitExecutors
-      : Array.isArray(config?.executorConfig?.executors)
+      : allowLegacyExecutorProfiles && Array.isArray(config?.executorConfig?.executors)
         ? config.executorConfig.executors
         : [];
     const settings = buildProviderKernelSettings(config);
@@ -158,6 +192,7 @@ export function createProviderKernel(options = {}) {
 
   function resolveRuntime(selectionId = "", adapterName = "") {
     const registry = createRegistryInstance();
+    const kernelConfig = resolveKernelConfig(options);
     const normalizedSelectionId = String(selectionId || "").trim();
     const resolvedRuntime = normalizedSelectionId
       ? (
@@ -183,14 +218,15 @@ export function createProviderKernel(options = {}) {
     const providerSettings = providerEntry?.auth?.settings && typeof providerEntry.auth.settings === "object"
       ? providerEntry.auth.settings
       : {};
+    const kernelProviderSettings = resolveKernelProviderSettings(kernelConfig, providerId);
     const providerOverrides = {
-      model: providerSettings.defaultModel || providerEntry?.defaultModel || resolvedSelection.model || null,
-      authMode: providerSettings.authMode || providerEntry?.auth?.preferredMode || null,
-      endpoint: providerSettings.endpoint || null,
-      baseUrl: providerSettings.baseUrl || null,
-      deployment: providerSettings.deployment || null,
-      apiVersion: providerSettings.apiVersion || null,
-      workspace: providerSettings.workspace || null,
+      model: kernelProviderSettings.defaultModel || providerSettings.defaultModel || providerEntry?.defaultModel || resolvedSelection.model || null,
+      authMode: kernelProviderSettings.authMode || providerSettings.authMode || providerEntry?.auth?.preferredMode || null,
+      endpoint: kernelProviderSettings.endpoint || providerSettings.endpoint || null,
+      baseUrl: kernelProviderSettings.baseUrl || providerSettings.baseUrl || null,
+      deployment: kernelProviderSettings.deployment || providerSettings.deployment || null,
+      apiVersion: kernelProviderSettings.apiVersion || providerSettings.apiVersion || null,
+      workspace: kernelProviderSettings.workspace || providerSettings.workspace || null,
     };
     const providerConfig = providerEntry?.providerId
       ? (
@@ -200,13 +236,15 @@ export function createProviderKernel(options = {}) {
               env: options.env || process.env,
               ...providerOverrides,
               settings: {
-                defaultModel: providerSettings.defaultModel || providerEntry?.defaultModel || null,
-                authMode: providerSettings.authMode || null,
-                endpoint: providerSettings.endpoint || null,
-                baseUrl: providerSettings.baseUrl || null,
-                deployment: providerSettings.deployment || null,
-                apiVersion: providerSettings.apiVersion || null,
-                workspace: providerSettings.workspace || null,
+                defaultModel: kernelProviderSettings.defaultModel || providerSettings.defaultModel || providerEntry?.defaultModel || null,
+                authMode: kernelProviderSettings.authMode || providerSettings.authMode || null,
+                endpoint: kernelProviderSettings.endpoint || providerSettings.endpoint || null,
+                baseUrl: kernelProviderSettings.baseUrl || providerSettings.baseUrl || null,
+                deployment: kernelProviderSettings.deployment || providerSettings.deployment || null,
+                apiVersion: kernelProviderSettings.apiVersion || providerSettings.apiVersion || null,
+                workspace: kernelProviderSettings.workspace || providerSettings.workspace || null,
+                organization: kernelProviderSettings.organization || providerSettings.organization || null,
+                project: kernelProviderSettings.project || providerSettings.project || null,
               },
             })
       )

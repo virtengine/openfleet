@@ -131,12 +131,19 @@ function profileRecord(env, profileName, globalProvider) {
 }
 
 function resolveCodexHomeDir(env = process.env) {
-  return clean(env?.HOME) || clean(env?.USERPROFILE) || homedir();
+  const explicitHome = clean(env?.HOME) || clean(env?.USERPROFILE);
+  if (explicitHome) return explicitHome;
+  if (env === process.env) return homedir();
+  return "";
 }
 
 export function readCodexConfigRuntimeDefaults(env = process.env) {
   try {
-    const configPath = resolve(resolveCodexHomeDir(env), ".codex", "config.toml");
+    const homeDir = resolveCodexHomeDir(env);
+    if (!homeDir) {
+      return { model: "", modelProvider: "", providers: {} };
+    }
+    const configPath = resolve(homeDir, ".codex", "config.toml");
     if (!existsSync(configPath)) {
       return { model: "", modelProvider: "", providers: {} };
     }
